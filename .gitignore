@@ -20,3 +20,7 @@ apps/desktop/vite.config.d.ts
 .env
 .env.*
 !.env.example
+
+# Local agent skills and personal Codex configuration
+/.agents/
+/.codex/
