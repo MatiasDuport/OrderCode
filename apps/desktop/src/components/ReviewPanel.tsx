@@ -115,11 +115,14 @@ function Editor() {
   const dirty = editorContent !== editorOriginal;
   const save = async () => {
     if (!session || !openFile || !dirty || saving) return;
+    const revision = useDesktopStore.getState().sessionRevision;
+    const isCurrent = () => useDesktopStore.getState().sessionRevision === revision && useDesktopStore.getState().openFile === openFile;
     setSaving(true); setError('');
     try {
       const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(editorOriginal));
       const expectedSha256 = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
       const result = await invokeHarnessTool(session.id, 'fs.write', { path: openFile, content: editorContent, expectedSha256 });
+      if (!isCurrent()) return;
       const pending = result.data && typeof result.data === 'object' ? (result.data as Record<string, unknown>).permissionRequest : undefined;
       if (pending && typeof pending === 'object') {
         set('pendingPermission', pending as Record<string, unknown>); set('runtimeState', 'WAITING_APPROVAL');
@@ -128,9 +131,10 @@ function Editor() {
       if (result.status !== 'completed') throw new Error(String(result.summary ?? 'No se pudo guardar el archivo.'));
       set('editorOriginal', editorContent);
       const saved = await loadSession(session.id);
+      if (!isCurrent()) return;
       set('events', saved.events);
       set('session', saved.session);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    } catch (cause) { if (isCurrent()) setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setSaving(false); }
   };
   if (!openFile) return <Localized><div className="editor-empty"><FileCode2 size={20} /><span>Selecciona un archivo del workspace para revisarlo o editarlo.</span></div></Localized>;
@@ -140,6 +144,7 @@ function Editor() {
 export function ReviewPanel({ onClose }: { onClose: () => void }) {
   const { events, openFile, editorOriginal, editorContent, session, set } = useDesktopStore();
   const [selectionError, setSelectionError] = useState('');
+  const selectionRequest = useRef(0);
   const files = [...new Set(events.flatMap((event) => event.changedFiles ?? []))];
   const latestDiff = useMemo(() => [...events].reverse().find((event) => event.diff && (!openFile || event.changedFiles?.includes(openFile)))?.diff, [events, openFile]);
   const diff = dirtyText(editorOriginal, editorContent) ? lineDiff(editorOriginal, editorContent).join('\n') : latestDiff;
@@ -151,13 +156,16 @@ export function ReviewPanel({ onClose }: { onClose: () => void }) {
       return;
     }
     setSelectionError('');
+    const request = ++selectionRequest.current;
+    const revision = active.sessionRevision;
     try {
       const result = await invokeHarnessTool(session.id, 'fs.read', { path: file });
+      if (request !== selectionRequest.current || useDesktopStore.getState().sessionRevision !== revision) return;
       if (result.status !== 'completed' || !result.data || typeof result.data !== 'object') throw new Error(String(result.summary ?? 'No se pudo abrir el archivo.'));
       const data = result.data as Record<string, unknown>;
       if (typeof data.content !== 'string') throw new Error('El resultado de lectura no contiene el texto del archivo.');
       set('openFile', file); set('editorContent', data.content); set('editorOriginal', data.content);
-    } catch (cause) { setSelectionError(cause instanceof Error ? cause.message : String(cause)); }
+    } catch (cause) { if (request === selectionRequest.current && useDesktopStore.getState().sessionRevision === revision) setSelectionError(cause instanceof Error ? cause.message : String(cause)); }
   };
   return <Localized><aside className="review-panel" aria-label="Revisión de cambios">
     <div className="review-header"><strong>Revisión</strong><span className="change-count">{files.length}</span><span className="panel-title-spacer" /><IconButton icon={X} label="Cerrar revisión" onClick={onClose} /></div>

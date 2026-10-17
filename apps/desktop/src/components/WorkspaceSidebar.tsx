@@ -1,5 +1,5 @@
 import { Code2, FileCode2, FileText, FolderOpen, GitBranch, Plus, Search } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Divider, IconButton, Kbd, PanelTitle } from './ui';
 import { useDesktopStore } from '../lib/store';
 import { createSession, gitStatus, health, invokeHarnessTool, pickWorkspaceFolder, workspaceTree } from '../lib/ipc';
@@ -12,12 +12,16 @@ export function WorkspaceSidebar() {
   const [git, setGit] = useState('');
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
+  const openingFile = useRef(0);
   const workspaceName = session?.projectPath?.split(/[\\/]/).filter(Boolean).at(-1) ?? 'Sin workspace';
   const visibleEntries = useMemo(() => entries.filter((entry) => entry.path.toLowerCase().includes(query.trim().toLowerCase())), [entries, query]);
   useEffect(() => {
     if (!session) { setEntries([]); setGit(''); return; }
+    let current = true;
     setError('');
-    void Promise.all([workspaceTree(), gitStatus()]).then(([tree, status]) => { setEntries(tree); setGit(status); }).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
+    setEntries([]); setGit('');
+    void Promise.all([workspaceTree(), gitStatus()]).then(([tree, status]) => { if (current) { setEntries(tree); setGit(status); } }).catch((cause) => { if (current) setError(cause instanceof Error ? cause.message : String(cause)); });
+    return () => { current = false; };
   }, [session?.id, session?.projectPath]);
 
   const connectWorkspace = async () => {
@@ -35,7 +39,8 @@ export function WorkspaceSidebar() {
       set('model', next.providerId && next.model ? `${next.providerId}::${next.model}` : next.model);
       set('freeOnly', next.freeOnly ?? false);
       set('sessions', [next, ...useDesktopStore.getState().sessions.filter((item) => item.id !== next.id)]);
-      set('messages', []); set('events', []); set('runtimeState', next.state);
+      set('messages', []); set('events', []); set('runtimeState', next.state); set('streamingText', ''); set('pendingPermission', null);
+      set('openFile', null); set('editorContent', ''); set('editorOriginal', '');
       set('health', await health());
       setEntries(await workspaceTree()); setGit(await gitStatus());
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
@@ -49,13 +54,16 @@ export function WorkspaceSidebar() {
       return;
     }
     setError('');
+    const request = ++openingFile.current;
+    const revision = active.sessionRevision;
     try {
       const result = await invokeHarnessTool(session.id, 'fs.read', { path });
+      if (request !== openingFile.current || useDesktopStore.getState().sessionRevision !== revision) return;
       if (result.status !== 'completed' || !result.data || typeof result.data !== 'object') throw new Error(String(result.summary ?? 'No se pudo leer el archivo.'));
       const data = result.data as Record<string, unknown>;
       if (typeof data.content !== 'string') throw new Error('El contenido no está disponible en el resultado compacto.');
       set('openFile', path); set('editorContent', data.content); set('editorOriginal', data.content); set('reviewOpen', true);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    } catch (cause) { if (request === openingFile.current && useDesktopStore.getState().sessionRevision === revision) setError(cause instanceof Error ? cause.message : String(cause)); }
   };
 
   return <Localized><aside className="workspace-sidebar" aria-label="Workspace">

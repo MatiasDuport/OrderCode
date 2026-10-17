@@ -10,7 +10,7 @@ import type { CodeIndexedFile, CodeRelationship, CodeSymbol } from "./types.js";
 export type { CodeRelationship, CodeSymbol } from "./types.js";
 
 const extensions = new Set([".ts", ".tsx", ".js", ".jsx", ".py", ".rs"]);
-const ignored = new Set([".git", "node_modules", "target", "dist", "build", ".turbo"]);
+const ignored = new Set([".git", "node_modules", "target", "dist", "build", ".turbo", ".agents", ".codex", ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".next", ".nuxt", "coverage", ".cache", ".pnpm-store"]);
 const MAX_FILE_BYTES = 1_000_000;
 const MAX_FILES = 100_000;
 const MAX_RIPGREP_OUTPUT_BYTES = 2_000_000;
@@ -26,6 +26,7 @@ export interface CodeGraphResult { query: string; files: number; symbols: number
 export interface CodeIntelligenceOptions { ripgrepCommand?: string | null; ripgrepTimeoutMs?: number }
 
 export class CodeIntelligence {
+  private readonly indexing = new Map<string, Promise<{ projectPath: string; files: number; symbols: number; updatedFiles: number }>>();
   private readonly indexes = new Map<string, CodeIndexedFile[]>();
   private readonly invalidated = new Set<string>();
 
@@ -45,6 +46,14 @@ export class CodeIntelligence {
 
   async index(projectPath: string): Promise<{ projectPath: string; files: number; symbols: number; updatedFiles: number }> {
     const root = resolve(projectPath);
+    const pending = this.indexing.get(root);
+    if (pending) return pending;
+    const task = this.indexProject(root).finally(() => { if (this.indexing.get(root) === task) this.indexing.delete(root); });
+    this.indexing.set(root, task);
+    return task;
+  }
+
+  private async indexProject(root: string): Promise<{ projectPath: string; files: number; symbols: number; updatedFiles: number }> {
     const candidates = await this.collect(root);
     if (candidates.length > MAX_FILES) throw new Error(`The project contains more than ${MAX_FILES} supported source files; narrow the workspace before indexing.`);
     const previous = new Map(this.persistence.listCodeIndexFiles(root).map((file) => [file.path, file]));

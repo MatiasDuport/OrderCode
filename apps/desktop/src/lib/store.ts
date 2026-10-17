@@ -93,6 +93,7 @@ interface DesktopState {
   runtimeState: RuntimeState;
   pendingPermission: Record<string, unknown> | null;
   session: SessionRecord | null;
+  sessionRevision: number;
   sessions: SessionRecord[];
   health: BrokerHealth | null;
   updateView: UpdateViewState;
@@ -127,6 +128,7 @@ export const useDesktopStore = create<DesktopState>((set) => ({
   runtimeState: 'CREATED',
   pendingPermission: null,
   session: null,
+  sessionRevision: 0,
   sessions: [],
   health: null,
   updateView: initialUpdateViewState,
@@ -138,6 +140,7 @@ export const useDesktopStore = create<DesktopState>((set) => ({
   editorOriginal: '',
   set: (key, value) => set((state) => {
     const next = { [key]: value } as Partial<DesktopState>;
+    if (key === 'session' && (value as SessionRecord | null)?.id !== state.session?.id) next.sessionRevision = state.sessionRevision + 1;
     if (key === 'theme') next.themePreference = value as ThemePreference;
     if (key === 'themePreference') next.theme = resolveTheme(value as ThemePreference);
     const updated = { ...state, ...next };
@@ -159,5 +162,5 @@ export const useDesktopStore = create<DesktopState>((set) => ({
     const events = [...state.events.filter((item) => item.id !== event.id), event].sort((left, right) => left.sequence - right.sequence);
     return { events, ...(event.runId ? { runtimeState: event.state } : {}), ...(event.permissionRequest ? { pendingPermission: event.permissionRequest } : {}), ...(event.summary === 'provider.chunk' ? { streamingText: state.streamingText + (event.detail ?? '') } : {}) };
   }),
-  resetSession: () => set({ session: null, messages: [], streamingText: '', events: [], runtimeState: 'CREATED', pendingPermission: null, openFile: null, editorContent: '', editorOriginal: '' }),
+  resetSession: () => set((state) => ({ session: null, sessionRevision: state.sessionRevision + 1, messages: [], streamingText: '', events: [], runtimeState: 'CREATED', pendingPermission: null, openFile: null, editorContent: '', editorOriginal: '' })),
 }));

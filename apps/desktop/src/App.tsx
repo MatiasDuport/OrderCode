@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { Activity, BookOpen, Bot, Code2, FolderOpen, GitBranch, Moon, PanelLeftClose, PanelLeftOpen, Puzzle, Server, Sun } from 'lucide-react';
 import { ChatPanel } from './components/ChatPanel';
 import { listen } from '@tauri-apps/api/event';
@@ -17,6 +17,7 @@ import { TopBar } from './components/TopBar';
 import { WorkspaceSidebar } from './components/WorkspaceSidebar';
 import { activateSession, cancelSession, configureVercelDeployHook, invokeHarnessTool, isDesktopApp, listSessions, loadSession, openNativeTerminal, removeVercelDeployHook, resolvePermission, searchCode, searchCodeGraph, startHarness, vercelDeployHookStatus } from './lib/ipc';
 import { useDesktopStore } from './lib/store';
+import { followSessionOperation, watchSessionExecution } from './lib/sessionExecution';
 import { checkForUpdates, downloadUpdate, initializeUpdater, installUpdate, reportUpdateProgress } from './lib/updater';
 import { Localized } from './lib/localization';
 const SettingsView = lazy(() => import('./components/SettingsView').then((module) => ({ default: module.SettingsView })));
@@ -63,7 +64,7 @@ function CodeSurface() {
   };
   const openGraph = () => { if (!session) return; setActiveTab('graph'); if (!graph || graph.query !== query.trim()) void runGraph(); };
   return <Localized><div className={`surface-page code-surface ${activeTab === 'graph' ? 'code-surface--graph' : ''}`}>
-    <div className="surface-heading"><Code2 size={18} /><div><h2>Code Intelligence</h2><p>Análisis sintáctico local, búsqueda con ripgrep y respaldo FTS5; relaciones persistentes.</p></div></div>
+    <div className="surface-heading"><Code2 size={18} /><div><h2>Inteligencia de código</h2><p>Análisis sintáctico local, búsqueda con ripgrep y respaldo FTS5; relaciones persistentes.</p></div></div>
     <div className="code-search"><input value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void (activeTab === 'graph' ? runGraph() : runSearch()); }} placeholder={session ? 'Buscar funciones, clases o archivos…' : 'Conecta un workspace para buscar'} disabled={!session} aria-label="Buscar símbolos" /><button type="button" onClick={() => void runSearch()} disabled={!session || !query.trim()}>Buscar</button><button type="button" onClick={() => void runGraph()} disabled={!session}>{graphLoading ? 'Indexando…' : 'Abrir grafo'}</button></div>
     <div className="code-index-tabs"><button type="button" className={activeTab === 'search' ? 'is-active' : ''} onClick={() => setActiveTab('search')}>Símbolos y texto</button><button type="button" className={activeTab === 'graph' ? 'is-active' : ''} disabled={!session} onClick={openGraph}>Grafo</button></div>
     {error && <p className="inline-error">{error}</p>}
@@ -278,7 +279,7 @@ function ReleaseSurface() {
 
   const selectedRemote = remotes.find((item) => item.name === remoteName);
   return <Localized><div className="surface-page release-surface">
-    <div className="surface-heading"><GitBranch size={18} /><div><h2>Release Center</h2><p>Verifica el estado local y prepara tags y publicaciones con autorización explícita.</p></div><button type="button" className="surface-refresh" onClick={() => void refresh()} disabled={!session || !!busy}>Actualizar</button></div>
+    <div className="surface-heading"><GitBranch size={18} /><div><h2>Centro de versiones</h2><p>Verifica el estado local y prepara tags y publicaciones con autorización explícita.</p></div><button type="button" className="surface-refresh" onClick={() => void refresh()} disabled={!session || !!busy}>Actualizar</button></div>
     {!session ? <div className="surface-empty">Conecta un workspace para preparar una versión.</div> : <>
       <div className="release-checks">
         <div className="release-check"><span className={branch ? 'is-pass' : 'is-fail'}>{branch ? 'PASS' : 'FAIL'}</span><strong>Rama</strong><small>{branch || 'No hay una rama disponible.'}</small></div>
@@ -320,7 +321,7 @@ function ExtensionsSurface() {
   };
 
   return <Localized><div className="surface-page extension-surface">
-    <div className="surface-heading"><Puzzle size={18} /><div><h2>Extensions</h2><p>Agrega y administra Skills y servidores MCP del workspace.</p></div></div>
+    <div className="surface-heading"><Puzzle size={18} /><div><h2>Extensiones</h2><p>Agrega y administra Skills y servidores MCP del workspace.</p></div></div>
     <div className="extension-tabs" role="tablist" aria-label="Tipos de extensiones">
       <button id="extensions-tab-skills" type="button" role="tab" aria-selected={activeTab === 'skills'} aria-controls="extensions-panel-skills" tabIndex={activeTab === 'skills' ? 0 : -1} className={activeTab === 'skills' ? 'is-active' : ''} onClick={() => activateTab('skills')} onKeyDown={handleTabKeyDown}>
         <span className="extension-tab-icon"><BookOpen size={15} /></span><span className="extension-tab-copy"><strong>Skills</strong><small>Instrucciones reutilizables del proyecto</small></span>
@@ -342,14 +343,14 @@ function Surface({ view, onSelectSession, onOpenSettings }: { view: string; onSe
   const { sessions, session, set, events } = useDesktopStore();
   const [activityTab, setActivityTab] = useState<'usage' | 'events'>('usage');
   const usageRefreshKey = events.slice().reverse().find((event) => event.summary === 'run.completed' || event.summary === 'run.failed' || event.state === 'CANCELLED')?.id;
-  if (view === 'Sessions') return <Localized><div className="surface-page"><div className="surface-heading"><Activity size={18} /><div><h2>Sessions</h2><p>Sesiones guardadas en la base local del Harness.</p></div></div>{sessions.length ? <div className="surface-list">{sessions.map((item) => <button type="button" className={`surface-row surface-row--button ${item.id === session?.id ? 'is-active' : ''}`} key={item.id} onClick={() => onSelectSession(item)}><strong>{item.projectPath.split(/[\\/]/).filter(Boolean).at(-1) ?? 'Sesión'}</strong><span>{item.mode} · {item.state.toLowerCase()}</span><small>{timeLabel(item.updatedAt ?? item.createdAt)}</small></button>)}</div> : <div className="surface-empty">No hay sesiones guardadas. Conecta un workspace para empezar.</div>}</div></Localized>;
+  if (view === 'Sessions') return <Localized><div className="surface-page"><div className="surface-heading"><Activity size={18} /><div><h2>Sesiones</h2><p>Sesiones guardadas en la base local del Harness.</p></div></div>{sessions.length ? <div className="surface-list">{sessions.map((item) => <button type="button" className={`surface-row surface-row--button ${item.id === session?.id ? 'is-active' : ''}`} key={item.id} onClick={() => onSelectSession(item)}><strong>{item.projectPath.split(/[\\/]/).filter(Boolean).at(-1) ?? 'Sesión'}</strong><span>{item.mode} · {item.state.toLowerCase()}</span><small>{timeLabel(item.updatedAt ?? item.createdAt)}</small></button>)}</div> : <div className="surface-empty">No hay sesiones guardadas. Conecta un workspace para empezar.</div>}</div></Localized>;
   if (view === 'Agents') return <Suspense fallback={<div className="surface-empty" role="status">Cargando agentes…</div>}><AgentStudio officialAgents={agents} /></Suspense>;
   if (view === 'Extensions') return <ExtensionsSurface />;
   if (view === 'Settings') return <Suspense fallback={<div className="surface-empty" role="status">Cargando ajustes…</div>}><SettingsView onOpenWorkspace={onOpenSettings} /></Suspense>;
   if (view === 'Code Intelligence') return <CodeSurface />;
   if (view === 'Git') return <GitSurface />;
   if (view === 'Release Center') return <ReleaseSurface />;
-  if (view === 'Activity') return <Localized><div className="surface-page activity-page"><div className="surface-heading"><Activity size={18} /><div><h2>Activity</h2><p>Uso de modelos, ahorro estimado y eventos del Harness.</p></div></div><div className="activity-tabs" role="tablist" aria-label="Actividad del Harness"><button type="button" role="tab" aria-selected={activityTab === 'usage'} className={activityTab === 'usage' ? 'is-active' : ''} onClick={() => setActivityTab('usage')}>Uso y ahorro</button><button type="button" role="tab" aria-selected={activityTab === 'events'} className={activityTab === 'events' ? 'is-active' : ''} onClick={() => setActivityTab('events')}>Eventos de sesión</button></div>{activityTab === 'usage' ? <Suspense fallback={<div className="surface-empty" role="status">Cargando métricas…</div>}><UsageOverview sessions={sessions} activeSession={session} refreshKey={usageRefreshKey} /></Suspense> : events.length ? <div className="surface-list">{events.slice().reverse().map((event) => <div className="surface-row" key={event.id}><strong>{event.summary}</strong><span>{event.state}</span><small>{event.detail ?? event.runId ?? `Evento ${event.sequence}`}</small></div>)}</div> : <div className="surface-empty">Sin eventos guardados para la sesión activa.</div>}</div></Localized>;
+  if (view === 'Activity') return <Localized><div className="surface-page activity-page"><div className="surface-heading"><Activity size={18} /><div><h2>Actividad</h2><p>Uso de modelos, ahorro estimado y eventos del Harness.</p></div></div><div className="activity-tabs" role="tablist" aria-label="Actividad del Harness"><button type="button" role="tab" aria-selected={activityTab === 'usage'} className={activityTab === 'usage' ? 'is-active' : ''} onClick={() => setActivityTab('usage')}>Uso y ahorro</button><button type="button" role="tab" aria-selected={activityTab === 'events'} className={activityTab === 'events' ? 'is-active' : ''} onClick={() => setActivityTab('events')}>Eventos de sesión</button></div>{activityTab === 'usage' ? <Suspense fallback={<div className="surface-empty" role="status">Cargando métricas…</div>}><UsageOverview sessions={sessions} activeSession={session} refreshKey={usageRefreshKey} /></Suspense> : events.length ? <div className="surface-list">{events.slice().reverse().map((event) => <div className="surface-row" key={event.id}><strong>{event.summary}</strong><span>{event.state}</span><small>{event.detail ?? event.runId ?? `Evento ${event.sequence}`}</small></div>)}</div> : <div className="surface-empty">Sin eventos guardados para la sesión activa.</div>}</div></Localized>;
   return <Localized><div className="empty-surface"><span className="empty-icon"><FolderOpen size={24} /></span><h2>{view}</h2><p>Conecta un workspace para abrir esta superficie.</p></div></Localized>;
 }
 
@@ -357,8 +358,16 @@ export default function App() {
   const { theme, themePreference, language, density, reducedMotion, currentView, sidebarOpen, reviewOpen, terminalOpen, runtimeState, pendingPermission, session, set } = useDesktopStore();
   const terminalSessions = useDesktopStore((state) => state.terminalSessions);
   const autoCheckUpdates = useDesktopStore((state) => state.autoCheckUpdates);
+  const sessionRevision = useDesktopStore((state) => state.sessionRevision);
+  const executing = runtimeState === 'RUNNING' || runtimeState === 'PREPARING';
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [bootstrapError, setBootstrapError] = useState('');
+  const openingSession = useRef(0);
+  const resolvingPermission = useRef<string | null>(null);
+  useEffect(() => {
+    if (!session || !executing) return;
+    return watchSessionExecution(session.id, sessionRevision);
+  }, [session?.id, sessionRevision, executing]);
   useEffect(() => {
     const root = document.documentElement;
     root.dataset.theme = theme;
@@ -434,9 +443,15 @@ export default function App() {
         setBootstrapError('Guarda o descarta los cambios del editor antes de cambiar de sesión.');
         return;
       }
+      const request = ++openingSession.current;
+      if (active.session?.id !== item.id) useDesktopStore.setState({ sessionRevision: active.sessionRevision + 1 });
       const data = await loadSession(item.id);
+      if (request !== openingSession.current) return;
       await activateSession(item);
+      if (request !== openingSession.current) return;
       set('session', data.session);
+      set('streamingText', '');
+      set('openFile', null); set('editorContent', ''); set('editorOriginal', '');
       set('model', data.session.providerId && data.session.model ? `${data.session.providerId}::${data.session.model}` : data.session.model);
       set('freeOnly', data.session.freeOnly ?? false);
       set('mode', data.session.mode);
@@ -467,38 +482,48 @@ export default function App() {
 
   const approvePermission = async (decision: 'reject' | 'once' | 'session' | 'project') => {
     const pending = useDesktopStore.getState().pendingPermission;
-    if (!pending || typeof pending.id !== 'string' || typeof pending.sessionId !== 'string') return;
+    if (!pending || typeof pending.id !== 'string' || typeof pending.sessionId !== 'string' || resolvingPermission.current) return;
+    const sessionId = pending.sessionId;
+    const revision = useDesktopStore.getState().sessionRevision;
+    const isCurrent = () => useDesktopStore.getState().sessionRevision === revision && useDesktopStore.getState().session?.id === sessionId;
+    resolvingPermission.current = pending.id;
+    set('runtimeState', 'PREPARING');
+    set('streamingText', '');
     try {
       let openedTerminal: Awaited<ReturnType<typeof openNativeTerminal>> | undefined;
-      await resolvePermission(pending.id, decision);
+      await followSessionOperation(sessionId, async () => {
+      await resolvePermission(pending.id as string, decision);
       if (decision !== 'reject' && !pending.runId && typeof pending.toolName === 'string' && pending.arguments && typeof pending.arguments === 'object') {
-        const result = await invokeHarnessTool(pending.sessionId, pending.toolName, pending.arguments as Record<string, unknown>);
+        const result = await invokeHarnessTool(sessionId, pending.toolName, pending.arguments as Record<string, unknown>);
         if (result.status !== 'completed') throw new Error(String(result.summary ?? 'La operación autorizada no se completó.'));
         const current = useDesktopStore.getState();
         const args = pending.arguments as Record<string, unknown>;
         if (pending.toolName === 'desktop.terminal.open') {
           const data = result.data && typeof result.data === 'object' ? result.data as Record<string, unknown> : {};
           if (typeof data.authorizationId !== 'string') throw new Error('El Harness no devolvió una autorización de terminal válida.');
-          const savedSession = await loadSession(pending.sessionId);
-          openedTerminal = { ...await openNativeTerminal(pending.sessionId, savedSession.session.projectPath, data.authorizationId, typeof args.shell === 'string' ? args.shell : 'default'), startedAt: Date.now() };
+          const savedSession = await loadSession(sessionId);
+          openedTerminal = { ...await openNativeTerminal(sessionId, savedSession.session.projectPath, data.authorizationId, typeof args.shell === 'string' ? args.shell : 'default'), startedAt: Date.now() };
         }
-        if (pending.toolName === 'fs.write' && typeof args.content === 'string' && typeof args.path === 'string' && current.openFile === args.path) {
+        if (isCurrent() && pending.toolName === 'fs.write' && typeof args.content === 'string' && typeof args.path === 'string' && current.openFile === args.path) {
           set('editorContent', args.content);
           set('editorOriginal', args.content);
         }
       }
-      const saved = await loadSession(pending.sessionId);
-      set('session', saved.session);
-      set('runtimeState', saved.pendingPermissions.length ? 'WAITING_APPROVAL' : saved.session.state);
-      set('messages', saved.messages.map((message) => ({ id: message.id, role: message.role, content: message.content, timestamp: new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) })));
-      set('events', saved.events);
-      set('pendingPermission', saved.pendingPermissions[0] ?? null);
+      });
       if (openedTerminal) {
         const currentTerminals = useDesktopStore.getState().terminalSessions;
         set('terminalSessions', [...currentTerminals, openedTerminal]);
         set('terminalOpen', true);
       }
-    } catch (error) { setBootstrapError(error instanceof Error ? error.message : String(error)); }
+    } catch (error) {
+      if (isCurrent()) {
+        setBootstrapError(error instanceof Error ? error.message : String(error));
+        try {
+          const saved = await loadSession(sessionId);
+          if (isCurrent()) { set('pendingPermission', saved.pendingPermissions[0] ?? null); set('runtimeState', saved.pendingPermissions.length ? 'WAITING_APPROVAL' : saved.session.state); }
+        } catch { if (isCurrent()) set('runtimeState', 'FAILED'); }
+      }
+    } finally { resolvingPermission.current = null; }
   };
 
   const systemReducedMotion = useReducedMotion();

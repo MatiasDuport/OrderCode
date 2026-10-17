@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 import { optimizeToolResult, compactOutput, type LogStore } from "./logging.js";
 import { HarnessError } from "./errors.js";
 import { PermissionEngine, type PermissionCheckInput } from "./permissions.js";
@@ -227,7 +228,7 @@ export class ToolRegistry {
     try {
       result = await tool.invoke(invocation.input, invocation.context);
     } catch (error) {
-      result = { ok: false, status: "failed", toolName: invocation.name, summary: error instanceof Error ? error.message : String(error), durationMs: Date.now() - startedAt };
+      result = { ok: false, status: invocation.context.signal?.aborted ? "cancelled" : "failed", toolName: invocation.name, summary: error instanceof Error ? error.message : String(error), durationMs: Date.now() - startedAt };
     }
     result.durationMs = Date.now() - startedAt;
     const visibleData = invocation.name === "fs.write" || invocation.name === "process.exec" ? result.data : undefined;
@@ -462,21 +463,47 @@ export class ToolRegistry {
     let stdout = "";
     let stderr = "";
     let timedOut = false;
-    const child = spawn(command, { cwd, shell: true, windowsHide: true, signal: context.signal });
-    const append = (target: "stdout" | "stderr", chunk: Buffer): void => {
-      if (target === "stdout") stdout += chunk.toString("utf8");
-      else stderr += chunk.toString("utf8");
-      if (stdout.length + stderr.length > 2_000_000) child.kill();
+    let cancelled = false;
+    let outputLimitExceeded = false;
+    let terminating = false;
+    let forceTimer: ReturnType<typeof setTimeout> | undefined;
+    context.signal?.throwIfAborted();
+    const child = spawn(command, { cwd, shell: true, windowsHide: true, detached: process.platform !== "win32" });
+    const terminate = () => {
+      if (terminating || !child.pid) return;
+      terminating = true;
+      if (process.platform === "win32") {
+        const killer = spawn(`${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\taskkill.exe`, ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+        killer.once("error", () => { child.kill(); });
+        killer.once("close", (code) => { if (code !== 0) child.kill(); });
+      } else {
+        try { process.kill(-child.pid, "SIGTERM"); } catch { child.kill(); }
+        forceTimer = setTimeout(() => { try { process.kill(-child.pid!, "SIGKILL"); } catch { /* Process group already exited. */ } }, 1_000);
+        forceTimer.unref();
+      }
     };
+    const append = (target: "stdout" | "stderr", chunk: Buffer): void => {
+      const text = decoders[target].write(chunk);
+      const remaining = Math.max(0, 2_000_000 - stdout.length - stderr.length);
+      if (target === "stdout") stdout += text.slice(0, remaining);
+      else stderr += text.slice(0, remaining);
+      if (text.length > remaining) { outputLimitExceeded = true; terminate(); }
+    };
+    const decoders = { stdout: new StringDecoder("utf8"), stderr: new StringDecoder("utf8") };
     child.stdout.on("data", (chunk: Buffer) => append("stdout", chunk));
     child.stderr.on("data", (chunk: Buffer) => append("stderr", chunk));
-    const timer = setTimeout(() => { timedOut = true; child.kill(); }, timeoutMs);
+    const abort = () => { cancelled = true; terminate(); };
+    context.signal?.addEventListener("abort", abort, { once: true });
+    if (context.signal?.aborted) abort();
+    const timer = setTimeout(() => { timedOut = true; terminate(); }, timeoutMs);
     const exitCode = await new Promise<number>((resolveExit, reject) => {
       child.once("error", reject);
       child.once("close", (code) => resolveExit(code ?? 1));
-    }).finally(() => clearTimeout(timer));
-    const raw = `command: ${command}\ncwd: ${cwd}\nexitCode: ${exitCode}\ntimedOut: ${timedOut}\n\n--- stdout ---\n${stdout}\n\n--- stderr ---\n${stderr}`;
-    return optimizeToolResult({ ok: exitCode === 0 && !timedOut, status: timedOut ? "failed" : exitCode === 0 ? "completed" : "failed", toolName: "process.exec", exitCode, summary: timedOut ? `Command timed out after ${timeoutMs}ms.` : `Command exited with code ${exitCode}.`, diagnostics: compactOutput(stderr || stdout), data: { command, cwd, timedOut, stdout: compactOutput(stdout), stderr: compactOutput(stderr) } }, this.logs, raw);
+    }).finally(() => { clearTimeout(timer); if (forceTimer) clearTimeout(forceTimer); context.signal?.removeEventListener("abort", abort); });
+    stdout += decoders.stdout.end(); stderr += decoders.stderr.end();
+    const raw = `command: ${command}\ncwd: ${cwd}\nexitCode: ${exitCode}\ntimedOut: ${timedOut}\ncancelled: ${cancelled}\noutputLimitExceeded: ${outputLimitExceeded}\n\n--- stdout ---\n${stdout}\n\n--- stderr ---\n${stderr}`;
+    const ok = exitCode === 0 && !timedOut && !cancelled && !outputLimitExceeded;
+    return optimizeToolResult({ ok, status: cancelled ? "cancelled" : ok ? "completed" : "failed", toolName: "process.exec", exitCode, summary: cancelled ? "Command and its managed process tree were cancelled." : timedOut ? `Command timed out after ${timeoutMs}ms.` : outputLimitExceeded ? "Command stopped after reaching the output limit." : `Command exited with code ${exitCode}.`, diagnostics: compactOutput(stderr || stdout), data: { command, cwd, timedOut, cancelled, outputLimitExceeded, stdout: compactOutput(stdout), stderr: compactOutput(stderr) } }, this.logs, raw);
   }
 
   private redactInput(toolName: string, input: Record<string, unknown>): Record<string, unknown> {

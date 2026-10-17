@@ -16,6 +16,12 @@
   --slate: #95a3b7;
   --muted: #929b96;
   --muted-2: #a0a8a3;
+  --spectrum-ambient-low: .7;
+  --spectrum-ambient-high: .92;
+  --spectrum-ambient-end: .76;
+  --spectrum-line-opacity: .72;
+  --spectrum-page-blue: 6%;
+  --spectrum-page-violet: 5%;
   --surface: #10161f;
   --surface-2: #151e2b;
   --panel: #111923;
@@ -41,6 +47,12 @@
   --slate: #4e5c52;
   --muted: #626e65;
   --muted-2: #58665c;
+  --spectrum-ambient-low: .3;
+  --spectrum-ambient-high: .42;
+  --spectrum-ambient-end: .34;
+  --spectrum-line-opacity: .38;
+  --spectrum-page-blue: 3%;
+  --spectrum-page-violet: 2.5%;
   --surface: #f2f4ef;
   --surface-2: #ebefe7;
   --panel: #fff;
@@ -158,7 +170,7 @@ kbd { background: var(--surface-raised); border-color: var(--border); box-shadow
 .status-dot { box-shadow: none; }
 .theme-switch { right: 220px; bottom: 3px; padding: 0; gap: 0; background: transparent; border: 0; box-shadow: none; }
 .theme-switch button { width: 25px; height: 22px; }
-.surface-page { padding: 38px clamp(24px, 4.5vw, 72px); background: var(--obsidian); color: var(--muted); }
+.surface-page { padding: 38px clamp(24px, 4.5vw, 72px); background: transparent; color: var(--muted); }
 .surface-heading, .surface-list, .agent-grid, .surface-empty, .extension-tabs, .extension-tab-panel { max-width: 1080px; }
 .surface-heading { margin-bottom: 28px; color: var(--muted); gap: 14px; }
 .surface-heading > svg { margin-top: 6px; }
@@ -295,10 +307,11 @@ kbd { background: var(--surface-raised); border-color: var(--border); box-shadow
 @keyframes workbench-enter { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: translateY(0); } }
 /* Ion Spectrum: finite, layered motion and contextual color. */
 .topbar { position: relative; background: linear-gradient(110deg,var(--surface),color-mix(in srgb,var(--blue) 4%,var(--surface)) 55%,color-mix(in srgb,var(--violet) 4%,var(--surface))); }
+.topbar::before { content: ''; position: absolute; z-index: 1; bottom: -1px; left: 0; width: 16%; height: 1px; background: linear-gradient(90deg,transparent,var(--brand-ion) 28%,var(--brand-blue) 68%,var(--brand-violet) 88%,transparent); opacity: 0; pointer-events: none; transform: translate3d(0,0,0); animation: spectrum-sweep 30s linear infinite; }
 .topbar::after { content: ''; position: absolute; bottom: -1px; left: 0; right: 0; height: 1px; background: var(--spectrum); opacity: .35; pointer-events: none; }
 .icon-button:hover { background: linear-gradient(120deg,color-mix(in srgb,var(--blue) 10%,transparent),color-mix(in srgb,var(--violet) 13%,transparent)); color: var(--blue); }
 .chat-panel { position: relative; isolation: isolate; }
-.chat-panel::before { content: ''; position: absolute; z-index: -1; inset: 5% 0 8%; pointer-events: none; background: radial-gradient(ellipse 36% 30% at 48% 37%,color-mix(in srgb,var(--blue) 15%,transparent),transparent),radial-gradient(ellipse 36% 28% at 66% 50%,color-mix(in srgb,var(--violet) 16%,transparent),transparent),radial-gradient(ellipse 32% 24% at 38% 57%,color-mix(in srgb,var(--ion) 4%,transparent),transparent); animation: spectrum-arrive 800ms cubic-bezier(.22,1,.36,1) both; }
+.chat-panel::before { content: ''; position: absolute; z-index: -1; inset: 5% 0 8%; pointer-events: none; background: radial-gradient(ellipse 36% 30% at 48% 37%,color-mix(in srgb,var(--blue) 15%,transparent),transparent),radial-gradient(ellipse 36% 28% at 66% 50%,color-mix(in srgb,var(--violet) 16%,transparent),transparent),radial-gradient(ellipse 32% 24% at 38% 57%,color-mix(in srgb,var(--ion) 4%,transparent),transparent); animation: spectrum-ambience 36s ease-in-out infinite alternate; }
 .conversation-header { min-height: 62px; margin: 20px 24px 0; }
 .conversation-header h1 { font-size: 15px; }
 .conversation-header p { font-size: 11px; }
@@ -333,7 +346,7 @@ kbd { background: var(--surface-raised); border-color: var(--border); box-shadow
 .workspace-start-actions button { font-size: 11px; border-color: color-mix(in srgb,var(--blue) 18%,var(--border)); }
 .workspace-start-actions button:hover { background: linear-gradient(120deg,color-mix(in srgb,var(--blue) 9%,var(--surface)),color-mix(in srgb,var(--violet) 8%,var(--surface))); border-color: var(--blue); transform: translateY(-2px); }
 .surface-heading h2, .settings-page-heading h1 { font-size: 23px; }
-.surface-page { background: radial-gradient(ellipse 70% 30% at 60% 0%,color-mix(in srgb,var(--violet) 5%,transparent),transparent),var(--obsidian); }
+.surface-page { background: radial-gradient(ellipse 70% 42% at 32% 25%,color-mix(in srgb,var(--blue) var(--spectrum-page-blue),transparent),transparent),radial-gradient(ellipse 60% 40% at 74% 54%,color-mix(in srgb,var(--violet) var(--spectrum-page-violet),transparent),transparent),var(--obsidian); background-size: 150% 150%,150% 150%,auto; background-position: 0% 0%,100% 100%,0 0; animation: spectrum-page-wash 44s ease-in-out infinite alternate; }
 .surface-heading > svg { color: var(--blue); }
 .settings-nav button.is-active, :root[data-theme='light'] .settings-nav button.is-active { background: linear-gradient(110deg,color-mix(in srgb,var(--ion) 8%,var(--surface)),color-mix(in srgb,var(--blue) 8%,var(--surface)),color-mix(in srgb,var(--violet) 8%,var(--surface))); }
 .settings-nav button > svg { color: var(--blue); }
@@ -349,9 +362,10 @@ kbd { background: var(--surface-raised); border-color: var(--border); box-shadow
 .extension-tabs [role='tab'].is-active { border-image: var(--spectrum) 1; }
 .code-graph-panel, .usage-panel { background: linear-gradient(145deg,color-mix(in srgb,var(--blue) 3%,var(--surface)),color-mix(in srgb,var(--violet) 3%,var(--code-bg))); }
 :root[data-theme='light'] .composer { background: linear-gradient(120deg,#fff,color-mix(in srgb,var(--brand-blue) 6%,#fff),color-mix(in srgb,var(--brand-violet) 6%,#fff)) padding-box,var(--spectrum) border-box; box-shadow: 0 12px 32px #2530500a; }
-:root[data-theme='light'] .chat-panel::before { opacity: .6; }
 :root[data-theme='light'] .dropdown-menu { background: linear-gradient(135deg,#fff,color-mix(in srgb,var(--brand-violet) 5%,#fff)) padding-box,var(--spectrum) border-box; box-shadow: 0 15px 40px #24305020; }
-@keyframes spectrum-arrive { from { opacity: 0; transform: scale(.94) translateY(16px); } to { opacity: 1; transform: none; } }
+@keyframes spectrum-ambience { 0% { opacity: var(--spectrum-ambient-low); transform: translate3d(-1.3%,-.8%,0) scale(.99); } 50% { opacity: var(--spectrum-ambient-high); transform: translate3d(1.1%,.7%,0) scale(1.012); } 100% { opacity: var(--spectrum-ambient-end); transform: translate3d(-.4%,.5%,0) scale(1.004); } }
+@keyframes spectrum-page-wash { from { background-position: 0% 0%,100% 100%,0 0; } to { background-position: 100% 35%,0% 65%,0 0; } }
+@keyframes spectrum-sweep { 0% { opacity: 0; transform: translate3d(0,0,0); } 9%,88% { opacity: var(--spectrum-line-opacity); } 100% { opacity: 0; transform: translate3d(525%,0,0); } }
 @keyframes spectrum-edge { 0% { opacity: 0; background-position: 100% 0; } 30% { opacity: .8; } 100% { opacity: 0; background-position: 0 0; } }
 @keyframes spectrum-option { from { opacity: 0; transform: translateX(-5px); } to { opacity: 1; transform: none; } }
 :root[data-density='compact'] .nav-item { min-height: 38px; }

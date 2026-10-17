@@ -12,7 +12,7 @@
     "build": "tsc -p tsconfig.json && node build.mjs",
     "typecheck": "pnpm --filter @ordercode/shared build && tsc -p tsconfig.json --noEmit",
     "dev": "tsx src/index.ts",
-    "test": "pnpm --filter @ordercode/shared build && pnpm build && node dist/smoke.js",
+    "test": "pnpm --filter @ordercode/shared build && pnpm build && node --test dist/providers.test.js dist/runtime-regressions.test.js && node dist/smoke.js",
     "smoke": "node dist/smoke.js"
   },
   "engines": {

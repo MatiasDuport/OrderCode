@@ -242,11 +242,11 @@ Definir componentes reutilizables para:
 - Usar transiciones de **100-180 ms** para controles y **180-240 ms** para apertura/cierre de paneles cuando aporten orientación.
 - Animar principalmente opacity y transform; evitar efectos que disparen layout costoso.
 - El cambio de modo, actividad de agentes, apertura de archivos y aparición de resultados puede tener microinteracciones discretas.
-- Evitar partículas y confeti. No usar fondos en movimiento continuo ni pulsaciones decorativas infinitas; los halos pueden tener una entrada finita. Las animaciones no deben dificultar el trabajo.
+- Evitar partículas, confeti y movimiento ambiental intenso. Se permite un desplazamiento sutil y lento de los degradados de fondo de OrderCode, siempre detrás del contenido y sin dificultar la lectura ni el trabajo.
 - Respetar `prefers-reduced-motion`: reemplazar movimiento no esencial por cambios inmediatos de estado.
 - Objetivo de fluidez: 60 FPS en hardware de referencia, incluyendo streaming, indexación y listas largas mediante virtualización.
 
-Coreografiar transiciones de vista, selección lateral con resorte, menús con profundidad y escala sutil, opciones escalonadas, borde luminoso al enfocar el compositor y elevación de tarjetas. Son secuencias finitas ligadas a interacción, sin bucles decorativos. Mantener movimiento reducido del sistema y del ajuste local, también en JavaScript.
+Coreografiar transiciones de vista, selección lateral con resorte, menús con profundidad y escala sutil, opciones escalonadas, borde luminoso al enfocar el compositor y elevación de tarjetas. Mantener movimiento reducido del sistema y del ajuste local, también en JavaScript; la excepción ambiental es el desplazamiento muy lento y discreto de degradados de fondo.
 
 Los selectores del compositor se abren al pasar el ratón (120 ms) y cierran con margen de 180 ms al salir; permiten cruzar desde el control al menú. También admiten clic, flechas, Enter, Tab, cierre con Escape y clic exterior. El hover nunca ejecuta acciones ni cambia modelo, modo o permisos. El menú activo se mantiene mientras el usuario escribe o navega dentro.
 

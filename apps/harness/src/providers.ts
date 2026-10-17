@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { HarnessError } from "./errors.js";
 import type { CustomProviderConfig, ProviderModel, ProviderRequest, ProviderToolCall, ProviderTurn, ToolDefinition } from "./types.js";
 
@@ -40,8 +40,9 @@ function envKey(providerId: string): string | undefined {
 function parseJsonObject(text: string): Record<string, unknown> {
   try {
     const value: unknown = JSON.parse(text);
-    return value && typeof value === "object" ? value as Record<string, unknown> : {};
-  } catch { return {}; }
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Expected an object.");
+    return value as Record<string, unknown>;
+  } catch { throw new HarnessError("INVALID_PROVIDER_RESPONSE", "The provider returned invalid JSON."); }
 }
 
 function parseToolArguments(value: unknown): Record<string, unknown> {
@@ -54,10 +55,62 @@ function parseToolArguments(value: unknown): Record<string, unknown> {
       throw new HarnessError("INVALID_PROVIDER_RESPONSE", "The provider returned malformed tool arguments.", { diagnostics: error instanceof Error ? error.message : String(error) });
     }
   }
+  if (value !== undefined && value !== null && (typeof value !== "object" || Array.isArray(value))) throw new HarnessError("INVALID_PROVIDER_RESPONSE", "Tool arguments must be an object.");
   return value && typeof value === "object" ? value as Record<string, unknown> : {};
 }
 
-function wireToolName(name: string): string { return name.replace(/[^A-Za-z0-9_-]/g, "_"); }
+function wireToolName(name: string): string {
+  return `${name.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 47)}_${createHash("sha256").update(name).digest("hex").slice(0, 16)}`;
+}
+
+function discoverySignal(signal?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(15_000);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
+async function waitWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  signal?.throwIfAborted();
+  if (!signal) return promise;
+  let abort: (() => void) | undefined;
+  try {
+    return await Promise.race([promise, new Promise<never>((_resolve, reject) => {
+      abort = () => reject(signal.reason ?? new DOMException("The request was aborted.", "AbortError"));
+      signal.addEventListener("abort", abort, { once: true });
+    })]);
+  } finally { if (abort) signal.removeEventListener("abort", abort); }
+}
+
+function rejectProviderError(root: Record<string, unknown>): void {
+  if (!root.error) return;
+  const error = typeof root.error === "object" ? root.error as Record<string, unknown> : {};
+  throw new HarnessError("PROVIDER_ERROR", String(error.message ?? root.error), { diagnostics: String(error.code ?? error.type ?? "provider_error") });
+}
+
+/** Reads SSE frames across arbitrary UTF-8/network boundaries and always releases the response. */
+async function readSse(body: ReadableStream<Uint8Array>, consume: (data: string, event?: string) => void): Promise<void> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const frame = (block: string) => {
+    const lines = block.split(/\r?\n/);
+    const data = lines.filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
+    if (data) consume(data, lines.find((line) => line.startsWith("event:"))?.slice(6).trim());
+  };
+  try {
+    while (true) {
+      const part = await reader.read();
+      buffer += decoder.decode(part.value ?? new Uint8Array(), { stream: !part.done });
+      const blocks = buffer.split(/\r?\n\r?\n/);
+      buffer = blocks.pop() ?? "";
+      for (const block of blocks) frame(block);
+      if (part.done) break;
+    }
+    if (buffer) frame(buffer);
+  } finally {
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+}
 
 function pricePerMillion(value: unknown): number | undefined {
   if (typeof value !== "string" && typeof value !== "number") return undefined;
@@ -65,24 +118,24 @@ function pricePerMillion(value: unknown): number | undefined {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed * 1_000_000 : undefined;
 }
 
-// OpenCode's live model endpoint omits prices. Keep this allowlist aligned with its published free-price table,
-// and only expose models that also appear in the live catalog. Never infer free access from an ID suffix.
-const OPENCODE_ZEN_FREE_CHAT_MODELS = new Map<string, string>([
-  ["big-pickle", "Big Pickle"],
-  ["glm-5.3-flash-free", "GLM 5.3 Flash Free"],
-  ["deepseek-v4.1-flash-free", "DeepSeek V4.1 Flash Free"],
-  ["space-bunny-free", "Space Bunny Free"],
-  ["beam-free", "Beam Free"],
-  ["ll-alpha-free", "LL Alpha Free"],
-  ["longcat-2.5-preview-free", "LongCat 2.5 Preview Free"],
-  ["exo-free", "Exo Free"],
-  ["mimo-v2.6-flash-free", "MiMo V2.6 Flash Free"],
-  ["mimo-v2.5-free", "MiMo V2.5 Free"],
-  ["nemotron-3-ultra-free", "Nemotron 3 Ultra Free"],
-  ["nemotron-3.5-lightning-free", "Nemotron 3.5 Lightning Free"],
-  ["nemotron-3.5-super-vl-free", "Nemotron 3.5 Super VL Free"],
-  ["jev-1.13-free", "Jev 1.13 Free"],
-]);
+// The public API omits prices. Join the provider's current endpoint and pricing tables;
+// names ending in "free" and old promotions are insufficient evidence of a zero price.
+async function openCodeFreeModels(url: string, signal?: AbortSignal): Promise<Map<string, string>> {
+  const response = await fetch(url, { headers: { accept: "text/html" }, signal: discoverySignal(signal), redirect: "error" });
+  if (!response.ok) throw new HarnessError("PROVIDER_ERROR", `OpenCode pricing verification failed (${response.status}).`);
+  const html = await response.text();
+  const cells = (row: string) => [...row.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map((cell) => cell[1]!.replace(/<[^>]*>/g, "").replace(/&(?:nbsp|#160);/g, " ").replace(/&amp;/g, "&").trim());
+  const rows = [...html.matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi)].map((row) => cells(row[0]));
+  const normalize = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const freeNames = new Set(rows.filter((row) => row.length >= 3 && row.slice(1, 3).every((cell) => /^(?:free|\$?0(?:\.0+)?)$/i.test(cell)) && row.slice(3).every((cell) => /^(?:free|\$?0(?:\.0+)?|[-–—])$/i.test(cell))).map((row) => normalize(row[0]!)));
+  const models = new Map<string, string>();
+  for (const row of rows) {
+    if (row.length !== 4 || !row[0] || !row[1] || !/^[a-zA-Z0-9._-]+$/.test(row[1])) continue;
+    if (row[2] === "https://opencode.ai/inference/openai/v1/chat/completions" && freeNames.has(normalize(row[0]))) models.set(row[1], row[0]);
+  }
+  if (!rows.length || !rows.some((row) => row[2]?.startsWith("https://opencode.ai/inference/")) || !rows.some((row) => row.length >= 5)) throw new HarnessError("INVALID_PROVIDER_RESPONSE", "OpenCode's current endpoint and pricing tables could not be verified.");
+  return models;
+}
 
 function mapToolNames(tools: ToolDefinition[]): { wire: ToolDefinition[]; decode: (value: string) => string } {
   const names = new Map(tools.map((tool) => [wireToolName(tool.name), tool.name]));
@@ -95,8 +148,32 @@ function toOpenAIMessages(messages: ProviderRequest["messages"]): Array<Record<s
     content: message.content,
     ...(message.toolCallId ? { tool_call_id: message.toolCallId } : {}),
     ...(message.toolName ? { name: wireToolName(message.toolName) } : {}),
+    ...(message.responseState?.reasoningContent ? { reasoning_content: message.responseState.reasoningContent } : {}),
     ...(message.toolCalls?.length ? { tool_calls: message.toolCalls.map((call) => ({ id: call.id, type: "function", function: { name: wireToolName(call.name), arguments: JSON.stringify(call.arguments) } })) } : {}),
   }));
+}
+
+function responsesPayload(request: ProviderRequest, toolMap?: ReturnType<typeof mapToolNames>): Record<string, unknown> {
+  const system = request.messages.filter((message) => message.role === "system").map((message) => message.content).filter(Boolean).join("\n\n");
+  const input: Array<Record<string, unknown>> = [];
+  for (const message of request.messages) {
+    if (message.role === "system") continue;
+    if (message.role === "tool") {
+      input.push({ type: "function_call_output", call_id: message.toolCallId ?? "", output: message.content });
+    } else if (message.role === "assistant" && message.responseState?.responses?.length) {
+      input.push(...message.responseState.responses);
+    } else if (message.role === "assistant" && message.toolCalls?.length) {
+      if (message.content) input.push({ role: "assistant", content: message.content });
+      for (const call of message.toolCalls) input.push({ type: "function_call", call_id: call.id, name: wireToolName(call.name), arguments: JSON.stringify(call.arguments) });
+    } else {
+      input.push({ role: message.role, content: message.content });
+    }
+  }
+  return { model: request.model, input, store: false, stream: true,
+    max_output_tokens: request.maxOutputTokens ?? 8192,
+    ...(system ? { instructions: system } : {}),
+    ...(toolMap ? { tools: toolMap.wire.map((tool) => ({ type: "function", name: tool.name, description: tool.description, parameters: tool.inputSchema, strict: false })) } : {}),
+  };
 }
 
 /** OpenAI's documented open-source Sign in with ChatGPT plan-sharing flow. */
@@ -107,17 +184,24 @@ export class ChatGPTPlanProvider implements ProviderAdapter {
   configured = false;
   private credential?: ChatGPTOAuthCredential;
   private refreshing?: Promise<void>;
+  private credentialAbort = new AbortController();
 
   constructor(private readonly onTokensRotated?: (credential: ChatGPTOAuthCredential) => void) {}
 
   setOAuthCredential(credential: ChatGPTOAuthCredential | null): void {
+    this.credentialAbort.abort(new HarnessError("PROVIDER_AUTH_CHANGED", "The connected ChatGPT account changed."));
+    this.credentialAbort = new AbortController();
+    this.refreshing = undefined;
     this.credential = credential ?? undefined;
     this.configured = Boolean(credential?.accessToken && credential.refreshToken && credential.clientId && credential.scopes.includes("chatgpt.tokens.use.direct"));
   }
 
   async listModels(signal?: AbortSignal): Promise<ProviderModel[]> {
     if (!this.configured) return [];
-    const response = await fetch(`${this.baseUrl}/models`, { headers: { authorization: `Bearer ${await this.accessToken(signal)}`, accept: "application/json" }, signal, redirect: "error" });
+    signal = AbortSignal.any([discoverySignal(signal), this.credentialAbort.signal]);
+    const send = async (refresh = false) => fetch(`${this.baseUrl}/models`, { headers: { authorization: `Bearer ${await this.accessToken(signal, refresh)}`, accept: "application/json" }, signal, redirect: "error" });
+    let response = await send();
+    if (response.status === 401) { await response.body?.cancel(); response = await send(true); }
     if (!response.ok) throw new HarnessError("PROVIDER_ERROR", `ChatGPT model discovery failed (${response.status}).`, { providerId: this.id, status: response.status, diagnostics: (await response.text()).slice(0, 2_000) });
     const payload = await response.json() as { models?: Array<{ slug?: string; display_name?: string; visibility?: string }> };
     return (payload.models ?? []).filter((model) => typeof model.slug === "string" && model.visibility === "list").map((model) => ({ id: model.slug!, providerId: this.id, label: model.display_name ?? model.slug!, capabilities: ["chat", "streaming", "tool-calling"], available: true, priceKind: "subscription" }));
@@ -129,36 +213,19 @@ export class ChatGPTPlanProvider implements ProviderAdapter {
 
   async stream(request: ProviderRequest, onChunk: (chunk: string) => void): Promise<ProviderTurn> {
     if (!this.configured) throw new HarnessError("PROVIDER_NOT_CONFIGURED", "Sign in with ChatGPT in Settings to use your ChatGPT plan.");
-    const system = request.messages.filter((message) => message.role === "system").map((message) => message.content).filter(Boolean).join("\n\n");
-    const input: Array<Record<string, unknown>> = [];
-    for (const message of request.messages) {
-      if (message.role === "system") continue;
-      if (message.role === "tool") {
-        input.push({ type: "function_call_output", call_id: message.toolCallId ?? "", output: message.content });
-        continue;
-      }
-      if (message.role === "assistant" && message.toolCalls?.length) {
-        for (const call of message.toolCalls) input.push({ type: "function_call", call_id: call.id, name: wireToolName(call.name), arguments: JSON.stringify(call.arguments) });
-        if (message.content) input.push({ role: "assistant", content: message.content });
-        continue;
-      }
-      input.push({ role: message.role, content: message.content });
-    }
     const toolMap = request.tools?.length ? mapToolNames(request.tools) : undefined;
-    const payload: Record<string, unknown> = { model: request.model, input, store: false, stream: true,
-      ...(system ? { instructions: system } : {}),
-      ...(toolMap ? { tools: toolMap.wire.map((tool) => ({ type: "function", name: tool.name, description: tool.description, parameters: tool.inputSchema, strict: false })) } : {}),
-    };
-    let token = await this.accessToken(request.signal);
-    let response = await this.send(payload, token, request.signal);
+    const payload = responsesPayload(request, toolMap);
+    const signal = request.signal ? AbortSignal.any([request.signal, this.credentialAbort.signal]) : this.credentialAbort.signal;
+    let token = await this.accessToken(signal);
+    let response = await this.send(payload, token, signal);
     if (response.status === 401) {
       await response.body?.cancel();
-      token = await this.accessToken(request.signal, true);
-      response = await this.send(payload, token, request.signal);
+      token = await this.accessToken(signal, true);
+      response = await this.send(payload, token, signal);
     }
     if (!response.ok) throw new HarnessError("PROVIDER_ERROR", `ChatGPT plan request failed (${response.status}).`, { providerId: this.id, status: response.status, diagnostics: (await response.text()).slice(0, 2_000) });
     if (!response.body) throw new HarnessError("PROVIDER_STREAM_UNAVAILABLE", "ChatGPT returned no response stream.");
-    return parseChatGPTResponseStream(response.body, onChunk, toolMap?.decode);
+    return parseResponsesStream(response.body, onChunk, toolMap?.decode, this.id);
   }
 
   private async send(payload: Record<string, unknown>, token: string, signal?: AbortSignal): Promise<Response> {
@@ -168,8 +235,12 @@ export class ChatGPTPlanProvider implements ProviderAdapter {
   private async accessToken(signal?: AbortSignal, forceRefresh = false): Promise<string> {
     if (!this.credential) throw new HarnessError("PROVIDER_NOT_CONFIGURED", "Sign in with ChatGPT in Settings to use your ChatGPT plan.");
     if (forceRefresh || this.credential.expiresAt <= Date.now() + 60_000) {
-      if (!this.refreshing) this.refreshing = this.refreshCredential(signal).finally(() => { this.refreshing = undefined; });
-      await this.refreshing;
+      if (!this.refreshing) {
+        // A cancelled inference must not abandon a refresh token already rotated by the server.
+        const refresh = this.refreshCredential(this.credentialAbort.signal).finally(() => { if (this.refreshing === refresh) this.refreshing = undefined; });
+        this.refreshing = refresh;
+      }
+      await waitWithAbort(this.refreshing, signal);
     }
     if (!this.credential?.accessToken) throw new HarnessError("PROVIDER_NOT_CONFIGURED", "The ChatGPT account needs to be reconnected in Settings.");
     return this.credential.accessToken;
@@ -178,42 +249,42 @@ export class ChatGPTPlanProvider implements ProviderAdapter {
   private async refreshCredential(signal?: AbortSignal): Promise<void> {
     const current = this.credential;
     if (!current) throw new HarnessError("PROVIDER_NOT_CONFIGURED", "The ChatGPT account needs to be reconnected in Settings.");
-    const response = await fetch("https://auth.openai.com/api/accounts/oauth/token", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" }, body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: current.refreshToken, client_id: current.clientId, resource: "https://api.openai.com/v1" }), signal, redirect: "error" });
+    const refreshSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000);
+    const response = await fetch("https://auth.openai.com/api/accounts/oauth/token", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" }, body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: current.refreshToken, client_id: current.clientId, resource: "https://api.openai.com/v1" }), signal: refreshSignal, redirect: "error" });
     if (!response.ok) throw new HarnessError("PROVIDER_AUTH_EXPIRED", "The ChatGPT account could not refresh its session. Reconnect it in Settings.", { providerId: this.id, status: response.status, diagnostics: (await response.text()).slice(0, 1_000) });
     const tokens = await response.json() as { access_token?: string; refresh_token?: string; id_token?: string; expires_in?: number; scope?: string };
-    if (!tokens.access_token || !tokens.refresh_token) throw new HarnessError("INVALID_PROVIDER_RESPONSE", "ChatGPT returned an incomplete token refresh.");
+    if (typeof tokens.access_token !== "string" || !tokens.access_token || typeof tokens.refresh_token !== "string" || !tokens.refresh_token || (tokens.expires_in !== undefined && (!Number.isFinite(tokens.expires_in) || tokens.expires_in <= 0))) throw new HarnessError("INVALID_PROVIDER_RESPONSE", "ChatGPT returned an incomplete token refresh.");
     const scopes = tokens.scope?.split(/\s+/).filter(Boolean) ?? current.scopes;
     if (!scopes.includes("chatgpt.tokens.use.direct")) throw new HarnessError("PROVIDER_AUTH_EXPIRED", "ChatGPT plan access is no longer authorized. Reconnect the account in Settings.");
-    this.credential = { ...current, accessToken: tokens.access_token, refreshToken: tokens.refresh_token, expiresAt: Date.now() + Math.max(60, tokens.expires_in ?? 3600) * 1000, scopes };
+    if (this.credential !== current || signal?.aborted) throw new HarnessError("PROVIDER_AUTH_CHANGED", "The connected ChatGPT account changed during refresh.");
+    this.credential = { ...current, accessToken: tokens.access_token, refreshToken: tokens.refresh_token, expiresAt: Date.now() + (tokens.expires_in ?? 3600) * 1000, scopes };
     this.onTokensRotated?.(this.credential);
   }
 }
 
-async function parseChatGPTResponseStream(body: ReadableStream<Uint8Array>, onChunk: (chunk: string) => void, decodeToolName: (name: string) => string = (name) => name): Promise<ProviderTurn> {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
+async function parseResponsesStream(body: ReadableStream<Uint8Array>, onChunk: (chunk: string) => void, decodeToolName: (name: string) => string = (name) => name, providerId = "openai"): Promise<ProviderTurn> {
   let content = "";
   let completed = false;
   let inputTokens: number | undefined;
   let outputTokens: number | undefined;
   let cachedTokens: number | undefined;
   const calls = new Map<number, ProviderToolCall & { rawArguments: string }>();
-  const consume = (block: string): void => {
-    const lines = block.split(/\r?\n/);
-    const eventType = lines.find((line) => line.startsWith("event:"))?.slice(6).trim();
-    const data = lines.filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("\n");
-    if (!eventType || !data || data === "[DONE]") return;
+  const outputItems = new Map<number, Record<string, unknown>>();
+  let responseItems: Array<Record<string, unknown>> | undefined;
+  await readSse(body, (data, eventType) => {
+    if (data === "[DONE]") return;
     const root = parseJsonObject(data);
+    eventType ??= typeof root.type === "string" ? root.type : undefined;
     if (eventType === "response.output_text.delta" && typeof root.delta === "string") { content += root.delta; onChunk(root.delta); }
     if (eventType === "response.output_item.added" || eventType === "response.output_item.done") {
       const item = root.item && typeof root.item === "object" ? root.item as Record<string, unknown> : {};
+      if (eventType === "response.output_item.done") outputItems.set(Number(root.output_index ?? outputItems.size), item);
       if (item.type === "function_call") {
         const index = Number(root.output_index ?? calls.size);
         const current = calls.get(index) ?? { id: String(item.call_id ?? `call_${index}`), name: String(item.name ?? ""), arguments: {}, rawArguments: "" };
         current.id = String(item.call_id ?? current.id);
         current.name = String(item.name ?? current.name);
-        if (typeof item.arguments === "string" && !current.rawArguments) current.rawArguments = item.arguments;
+        if (typeof item.arguments === "string" && (eventType === "response.output_item.done" || !current.rawArguments)) current.rawArguments = item.arguments;
         calls.set(index, current);
       }
     }
@@ -226,6 +297,8 @@ async function parseChatGPTResponseStream(body: ReadableStream<Uint8Array>, onCh
     if (eventType === "response.completed") {
       completed = true;
       const response = root.response && typeof root.response === "object" ? root.response as Record<string, unknown> : {};
+      rejectProviderError(response);
+      if (Array.isArray(response.output)) responseItems = response.output.filter((item): item is Record<string, unknown> => !!item && typeof item === "object" && !Array.isArray(item));
       const usage = response.usage && typeof response.usage === "object" ? response.usage as Record<string, unknown> : {};
       const inputDetails = usage.input_tokens_details && typeof usage.input_tokens_details === "object" ? usage.input_tokens_details as Record<string, unknown> : {};
       if (typeof usage.input_tokens === "number") inputTokens = usage.input_tokens;
@@ -236,22 +309,19 @@ async function parseChatGPTResponseStream(body: ReadableStream<Uint8Array>, onCh
       const response = root.response && typeof root.response === "object" ? root.response as Record<string, unknown> : root;
       const error = response.error && typeof response.error === "object" ? response.error as Record<string, unknown> : response;
       const code = String(error.code ?? "unknown_error");
-      throw new HarnessError(code.startsWith("subscription_sharing_usage") ? "PROVIDER_USAGE_LIMIT" : "PROVIDER_ERROR", String(error.message ?? `ChatGPT response failed (${code}).`), { providerId: "openai_chatgpt", diagnostics: code });
+      throw new HarnessError(code.startsWith("subscription_sharing_usage") ? "PROVIDER_USAGE_LIMIT" : "PROVIDER_ERROR", String(error.message ?? `Response failed (${code}).`), { providerId, diagnostics: code });
     }
-    if (eventType === "response.incomplete") throw new HarnessError("PROVIDER_INCOMPLETE", "ChatGPT ended the response before completing it.", { providerId: "openai_chatgpt" });
-  };
-  while (true) {
-    const part = await reader.read();
-    buffer += decoder.decode(part.value ?? new Uint8Array(), { stream: !part.done });
-    const blocks = buffer.split(/\r?\n\r?\n/);
-    buffer = blocks.pop() ?? "";
-    for (const block of blocks) consume(block);
-    if (part.done) break;
+    if (eventType === "response.incomplete") throw new HarnessError("PROVIDER_INCOMPLETE", "The provider ended the response before completing it.", { providerId });
+  });
+  if (!completed) throw new HarnessError("PROVIDER_STREAM_INCOMPLETE", "The stream ended without a completed response.", { providerId });
+  responseItems ??= [...outputItems.entries()].sort(([left], [right]) => left - right).map(([, item]) => item);
+  if (!content) {
+    content = responseItems.filter((item) => item.type === "message").flatMap((item) => Array.isArray(item.content) ? item.content as Array<Record<string, unknown>> : []).map((part) => typeof part.text === "string" ? part.text : typeof part.refusal === "string" ? part.refusal : "").join("");
+    if (content) onChunk(content);
   }
-  if (buffer) consume(buffer);
-  if (!completed) throw new HarnessError("PROVIDER_STREAM_INCOMPLETE", "ChatGPT's stream ended without a completed response.", { providerId: "openai_chatgpt" });
-  const toolCalls = [...calls.values()].map((call) => ({ id: call.id, name: decodeToolName(call.name), arguments: parseToolArguments(call.rawArguments || call.arguments) })).filter((call) => call.name);
-  return { content, toolCalls, finishReason: toolCalls.length ? "tool_calls" : "stop", ...(inputTokens === undefined ? {} : { inputTokens }), ...(outputTokens === undefined ? {} : { outputTokens }), ...(cachedTokens === undefined ? {} : { cachedTokens }), costKind: "unknown" };
+  const finalCalls = responseItems.filter((item) => item.type === "function_call");
+  const toolCalls = finalCalls.length ? finalCalls.map((item) => ({ id: String(item.call_id ?? ""), name: decodeToolName(String(item.name ?? "")), arguments: parseToolArguments(item.arguments) })) : [...calls.values()].map((call) => ({ id: call.id, name: decodeToolName(call.name), arguments: parseToolArguments(call.rawArguments || call.arguments) })).filter((call) => call.name);
+  return { content, toolCalls, finishReason: toolCalls.length ? "tool_calls" : "stop", ...(responseItems.length ? { responseState: { responses: responseItems } } : {}), ...(inputTokens === undefined ? {} : { inputTokens }), ...(outputTokens === undefined ? {} : { outputTokens }), ...(cachedTokens === undefined ? {} : { cachedTokens }), costKind: "unknown" };
 }
 
 export class OpenAICompatibleProvider implements ProviderAdapter {
@@ -266,10 +336,11 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
     private readonly extraHeaders: Record<string, string> = {},
     private readonly allowUnauthenticated = false,
     private readonly modelsUrl?: string,
+    private readonly pricingUrl = "https://opencode.ai/v2/docs/console/models/",
   ) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
     this.apiKey = apiKey;
-    this.configured = Boolean(apiKey) || allowUnauthenticated;
+    this.configured = Boolean(apiKey) || allowUnauthenticated || id === "ollama" || id === "lmstudio";
   }
 
   readonly baseUrl: string;
@@ -288,12 +359,20 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
     // their models remain unavailable until the user connects that provider's own API key.
     const publicCatalog = this.id === "openrouter" || this.id === "opencode_zen";
     if (!this.configured && !local && !publicCatalog) return [];
-    const response = await fetch(this.modelsUrl ?? `${this.baseUrl}/models`, { headers: this.headers(), signal, redirect: "error" });
+    const [response, openCodeModels] = await Promise.all([
+      fetch(this.modelsUrl ?? `${this.baseUrl}/models`, { headers: { ...this.headers(), accept: "application/json" }, signal: discoverySignal(signal), redirect: "error" }),
+      this.id === "opencode_zen" ? openCodeFreeModels(this.pricingUrl, signal) : undefined,
+    ]);
     if (!response.ok) throw new HarnessError("PROVIDER_ERROR", `Model discovery failed (${response.status}).`, { providerId: this.id, status: response.status });
-    const payload = await response.json() as { data?: Array<{ id?: string; pricing?: { prompt?: string | number; completion?: string | number } }> };
-    return (payload.data ?? []).filter((model): model is { id: string; pricing?: { prompt?: string | number; completion?: string | number } } => typeof model.id === "string").flatMap((model) => {
+    type CatalogModel = { id?: string; name?: string; type?: string; capabilities?: { completion_chat?: boolean; function_calling?: boolean }; supported_parameters?: string[]; architecture?: { output_modalities?: string[] }; pricing?: { prompt?: string | number; completion?: string | number } };
+    const payload = await response.json() as { data?: CatalogModel[] };
+    if (!Array.isArray(payload.data)) throw new HarnessError("INVALID_PROVIDER_RESPONSE", "The model catalog did not contain a models list.");
+    return payload.data.filter((model): model is CatalogModel & { id: string } => typeof model.id === "string").flatMap((model) => {
+      if (model.capabilities?.completion_chat === false || (model.type && !["chat", "language", "model"].includes(model.type)) || (model.architecture?.output_modalities && !model.architecture.output_modalities.includes("text"))) return [];
+      if (this.id === "openai" && (!/^(?:gpt-|chatgpt-|o\d|codex-)/.test(model.id) || /(?:audio|realtime|transcrib|tts|image|instruct|deep-research|search-preview)/i.test(model.id))) return [];
+      if (/(?:^|[\/_-])(?:embed(?:ding)?s?|rerank|whisper|tts|moderation|dall-e)(?:[\/_-]|$)/i.test(model.id)) return [];
       if (this.id === "opencode_zen") {
-        const label = OPENCODE_ZEN_FREE_CHAT_MODELS.get(model.id);
+        const label = openCodeModels?.get(model.id);
         if (!label) return [];
         return [{
           id: model.id, providerId: this.id, label, capabilities: ["chat", "streaming", "tool-calling"], available: this.configured,
@@ -304,9 +383,10 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
       const inputPerMillionUsd = this.id === "openrouter" ? pricePerMillion(model.pricing?.prompt) : undefined;
       const outputPerMillionUsd = this.id === "openrouter" ? pricePerMillion(model.pricing?.completion) : undefined;
       const verifiedPricing = inputPerMillionUsd !== undefined && outputPerMillionUsd !== undefined;
-      const localModel = this.id === "ollama" || this.id === "lmstudio";
+      const localModel = (this.id === "ollama" || this.id === "lmstudio") && isLoopbackEndpoint(this.baseUrl);
+      const toolSupport = model.capabilities?.function_calling ?? (model.supported_parameters ? model.supported_parameters.includes("tools") : true);
       return [{
-        id: model.id, providerId: this.id, label: model.id, capabilities: ["chat", "streaming", "tool-calling"], available: this.configured || localModel,
+        id: model.id, providerId: this.id, label: model.name ?? model.id, capabilities: ["chat", "streaming", ...(toolSupport ? ["tool-calling"] : [])], available: this.configured || localModel,
         priceKind: localModel ? "local" : verifiedPricing ? (inputPerMillionUsd === 0 && outputPerMillionUsd === 0 ? "free" : "paid") : "unknown",
         ...(verifiedPricing ? { pricing: { inputPerMillionUsd, outputPerMillionUsd, updatedAt: new Date().toISOString() } } : {}),
       }];
@@ -317,18 +397,19 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
     const local = this.id === "ollama" || this.id === "lmstudio" || this.allowUnauthenticated;
     if (!this.apiKey && !local) throw new HarnessError("PROVIDER_NOT_CONFIGURED", `Provider ${this.id} is not configured. Supply its API key in Settings or via its environment variable.`);
     const mappedTools = request.tools?.length ? mapToolNames(request.tools) : undefined;
+    const useResponses = this.id === "openai" && !/^(?:gpt-3\.5|gpt-4(?:$|-)|chatgpt-4o)/.test(request.model);
     const payload: Record<string, unknown> = {
       model: request.model,
-      max_tokens: request.maxOutputTokens ?? 8192,
+      ...(this.id === "openai" ? { max_completion_tokens: request.maxOutputTokens ?? 8192 } : { max_tokens: request.maxOutputTokens ?? 8192 }),
       messages: toOpenAIMessages(request.messages),
       stream,
-      ...(stream && this.id === "openrouter" ? { stream_options: { include_usage: true } } : {}),
+      ...(stream && ["openrouter", "openai"].includes(this.id) ? { stream_options: { include_usage: true } } : {}),
       ...(mappedTools ? { tools: mappedTools.wire.map(toOpenAITool) } : {}),
     };
-    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+    const response = await fetch(`${this.baseUrl}/${useResponses ? "responses" : "chat/completions"}`, {
       method: "POST",
       headers: { ...this.headers(), "content-type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(useResponses ? responsesPayload(request, mappedTools) : payload),
       signal: request.signal,
       redirect: "error",
     });
@@ -336,8 +417,9 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
       const diagnostics = (await response.text()).slice(0, 2_000);
       throw new HarnessError("PROVIDER_ERROR", `Provider request failed (${response.status}).`, { providerId: this.id, status: response.status, diagnostics });
     }
-    if (!stream) return parseCompletion(await response.json(), mappedTools?.decode, this.id === "openrouter");
+    if (!stream && !useResponses) return parseCompletion(await response.json(), mappedTools?.decode, this.id === "openrouter");
     if (!response.body) throw new HarnessError("PROVIDER_STREAM_UNAVAILABLE", "Provider returned no response body for a streaming request.");
+    if (useResponses) return parseResponsesStream(response.body, onChunk, mappedTools?.decode, this.id);
     return parseSseStream(response.body, onChunk, mappedTools?.decode, this.id === "openrouter");
   }
 
@@ -345,7 +427,7 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
     return { ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}), accept: "text/event-stream", ...this.extraHeaders };
   }
 
-  setCredential(key: string | undefined): void { this.apiKey = key; this.configured = Boolean(key) || this.allowUnauthenticated; }
+  setCredential(key: string | undefined): void { this.apiKey = key; this.configured = Boolean(key) || this.allowUnauthenticated || this.id === "ollama" || this.id === "lmstudio"; }
 }
 
 function toOpenAITool(definition: ToolDefinition): Record<string, unknown> {
@@ -354,7 +436,9 @@ function toOpenAITool(definition: ToolDefinition): Record<string, unknown> {
 
 function parseCompletion(payload: unknown, decodeToolName: (name: string) => string = (name) => name, includeCost = false): ProviderTurn {
   const root = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
+  rejectProviderError(root);
   const choice = Array.isArray(root.choices) ? root.choices[0] as Record<string, unknown> | undefined : undefined;
+  if (!choice || !choice.message) throw new HarnessError("INVALID_PROVIDER_RESPONSE", "The provider returned no completion.");
   const message = choice?.message && typeof choice.message === "object" ? choice.message as Record<string, unknown> : {};
   const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls.map((call) => {
     const record = call as Record<string, unknown>;
@@ -364,28 +448,28 @@ function parseCompletion(payload: unknown, decodeToolName: (name: string) => str
   const usage = root.usage && typeof root.usage === "object" ? root.usage as Record<string, unknown> : {};
   const promptDetails = usage.prompt_tokens_details && typeof usage.prompt_tokens_details === "object" ? usage.prompt_tokens_details as Record<string, unknown> : {};
   const costUsd = includeCost && typeof usage.cost === "number" && Number.isFinite(usage.cost) && usage.cost >= 0 ? usage.cost : undefined;
-  return { content: typeof message.content === "string" ? message.content : "", toolCalls, finishReason: String(choice?.finish_reason ?? "stop"), ...(typeof usage.prompt_tokens === "number" ? { inputTokens: usage.prompt_tokens } : {}), ...(typeof usage.completion_tokens === "number" ? { outputTokens: usage.completion_tokens } : {}), ...(typeof promptDetails.cached_tokens === "number" ? { cachedTokens: promptDetails.cached_tokens } : {}), ...(costUsd === undefined ? {} : { costUsd, costKind: "exact" as const }), raw: payload };
+  return { content: typeof message.content === "string" ? message.content : "", toolCalls, finishReason: String(choice?.finish_reason ?? "stop"), ...(typeof message.reasoning_content === "string" ? { responseState: { reasoningContent: message.reasoning_content } } : {}), ...(typeof usage.prompt_tokens === "number" ? { inputTokens: usage.prompt_tokens } : {}), ...(typeof usage.completion_tokens === "number" ? { outputTokens: usage.completion_tokens } : {}), ...(typeof promptDetails.cached_tokens === "number" ? { cachedTokens: promptDetails.cached_tokens } : {}), ...(costUsd === undefined ? {} : { costUsd, costKind: "exact" as const }), raw: payload };
 }
 
 async function parseSseStream(body: ReadableStream<Uint8Array>, onChunk: (chunk: string) => void, decodeToolName: (name: string) => string = (name) => name, includeCost = false): Promise<ProviderTurn> {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
   let content = "";
   let finishReason = "stop";
+  let completed = false;
+  let reasoningContent = "";
   const calls = new Map<number, ProviderToolCall>();
   let inputTokens: number | undefined;
   let outputTokens: number | undefined;
   let cachedTokens: number | undefined;
   let costUsd: number | undefined;
-  const consume = (block: string): void => {
-    const data = block.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("");
-    if (!data || data === "[DONE]") return;
+  await readSse(body, (data): void => {
+    if (data === "[DONE]") { completed = true; return; }
     const root = parseJsonObject(data);
+    rejectProviderError(root);
     const choice = Array.isArray(root.choices) ? root.choices[0] as Record<string, unknown> | undefined : undefined;
     const delta = choice?.delta && typeof choice.delta === "object" ? choice.delta as Record<string, unknown> : {};
     if (typeof delta.content === "string") { content += delta.content; onChunk(delta.content); }
-    if (typeof choice?.finish_reason === "string") finishReason = choice.finish_reason;
+    if (typeof delta.reasoning_content === "string") reasoningContent += delta.reasoning_content;
+    if (typeof choice?.finish_reason === "string") { finishReason = choice.finish_reason; completed = true; }
     if (Array.isArray(delta.tool_calls)) for (const rawCall of delta.tool_calls) {
       const call = rawCall as Record<string, unknown>;
       const index = Number(call.index ?? 0);
@@ -402,23 +486,15 @@ async function parseSseStream(body: ReadableStream<Uint8Array>, onChunk: (chunk:
     const promptDetails = usage.prompt_tokens_details && typeof usage.prompt_tokens_details === "object" ? usage.prompt_tokens_details as Record<string, unknown> : {};
     if (typeof promptDetails.cached_tokens === "number") cachedTokens = promptDetails.cached_tokens;
     if (includeCost && typeof usage.cost === "number" && Number.isFinite(usage.cost) && usage.cost >= 0) costUsd = usage.cost;
-  };
-  while (true) {
-    const read = await reader.read();
-    buffer += decoder.decode(read.value ?? new Uint8Array(), { stream: !read.done });
-    const blocks = buffer.split(/\r?\n\r?\n/);
-    buffer = blocks.pop() ?? "";
-    for (const block of blocks) consume(block);
-    if (read.done) break;
-  }
-  if (buffer) consume(buffer);
+  });
+  if (!completed) throw new HarnessError("PROVIDER_STREAM_INCOMPLETE", "The provider stream ended before a completion marker.");
   const toolCalls = [...calls.values()].map((call) => {
     const rawArguments = (call as ProviderToolCall & { rawArguments?: string }).rawArguments;
     if (rawArguments !== undefined) call.arguments = parseToolArguments(rawArguments);
     call.name = decodeToolName(call.name);
     return call;
   }).filter((call) => call.name);
-  return { content, toolCalls, finishReason, ...(inputTokens === undefined ? {} : { inputTokens }), ...(outputTokens === undefined ? {} : { outputTokens }), ...(cachedTokens === undefined ? {} : { cachedTokens }), ...(costUsd === undefined ? {} : { costUsd, costKind: "exact" as const }) };
+  return { content, toolCalls, finishReason, ...(reasoningContent ? { responseState: { reasoningContent } } : {}), ...(inputTokens === undefined ? {} : { inputTokens }), ...(outputTokens === undefined ? {} : { outputTokens }), ...(cachedTokens === undefined ? {} : { cachedTokens }), ...(costUsd === undefined ? {} : { costUsd, costKind: "exact" as const }) };
 }
 
 class AnthropicProvider implements ProviderAdapter {
@@ -433,7 +509,7 @@ class AnthropicProvider implements ProviderAdapter {
 
   async listModels(signal?: AbortSignal): Promise<ProviderModel[]> {
     if (!this.configured) return [];
-    const response = await fetch(`${this.baseUrl.replace(/\/$/, "")}/v1/models?limit=100`, { headers: this.headers(), signal });
+    const response = await fetch(`${this.baseUrl.replace(/\/$/, "")}/v1/models?limit=100`, { headers: { ...this.headers(), accept: "application/json" }, signal: discoverySignal(signal), redirect: "error" });
     if (!response.ok) throw new HarnessError("PROVIDER_ERROR", `Anthropic model discovery failed (${response.status}).`);
     const data = await response.json() as { data?: Array<{ id?: string; display_name?: string }> };
     return (data.data ?? []).filter((model): model is { id: string; display_name?: string } => typeof model.id === "string").map((model) => ({ id: model.id, providerId: this.id, label: model.display_name ?? model.id, capabilities: ["chat", "streaming", "tool-calling"], available: true, priceKind: "unknown" }));
@@ -443,13 +519,21 @@ class AnthropicProvider implements ProviderAdapter {
     if (!this.apiKey) throw new HarnessError("PROVIDER_NOT_CONFIGURED", "Anthropic API credentials are not configured.");
     const mapped = request.tools?.length ? mapToolNames(request.tools) : undefined;
     const system = request.messages.filter((message) => message.role === "system").map((message) => message.content).join("\n\n");
-    const messages = request.messages.filter((message) => message.role !== "system").map((message) => {
-      if (message.role === "tool") return { role: "user", content: [{ type: "tool_result", tool_use_id: message.toolCallId, content: message.content }] };
-      if (message.role === "assistant" && message.toolCalls?.length) return { role: "assistant", content: [...(message.content ? [{ type: "text", text: message.content }] : []), ...message.toolCalls.map((call) => ({ type: "tool_use", id: call.id, name: wireToolName(call.name), input: call.arguments }))] };
-      return { role: message.role === "assistant" ? "assistant" : "user", content: message.content };
-    });
+    const messages: Array<{ role: string; content: string | Array<Record<string, unknown>> }> = [];
+    for (const message of request.messages.filter((message) => message.role !== "system")) {
+      if (message.role === "tool") {
+        const part = { type: "tool_result", tool_use_id: message.toolCallId, content: message.content };
+        const previous = messages.at(-1);
+        if (previous?.role === "user" && Array.isArray(previous.content) && previous.content.every((item) => item.type === "tool_result")) previous.content.push(part);
+        else messages.push({ role: "user", content: [part] });
+        continue;
+      }
+      if (message.role === "assistant" && message.responseState?.anthropicBlocks?.length) { messages.push({ role: "assistant", content: message.responseState.anthropicBlocks }); continue; }
+      if (message.role === "assistant" && message.toolCalls?.length) messages.push({ role: "assistant", content: [...(message.content ? [{ type: "text", text: message.content }] : []), ...message.toolCalls.map((call) => ({ type: "tool_use", id: call.id, name: wireToolName(call.name), input: call.arguments }))] });
+      else messages.push({ role: message.role === "assistant" ? "assistant" : "user", content: message.content });
+    }
     const response = await fetch(`${this.baseUrl.replace(/\/$/, "")}/v1/messages`, {
-      method: "POST", headers: { ...this.headers(), "content-type": "application/json" }, signal: request.signal,
+      method: "POST", headers: { ...this.headers(), "content-type": "application/json" }, signal: request.signal, redirect: "error",
       body: JSON.stringify({ model: request.model, max_tokens: request.maxOutputTokens ?? 8192, messages, ...(system ? { system } : {}), ...(streaming ? { stream: true } : {}), ...(mapped ? { tools: mapped.wire.map((tool) => ({ name: tool.name, description: tool.description, input_schema: tool.inputSchema })) } : {}) }),
     });
     if (!response.ok) throw new HarnessError("PROVIDER_ERROR", `Anthropic request failed (${response.status}).`, { diagnostics: (await response.text()).slice(0, 2_000) });
@@ -465,30 +549,62 @@ class AnthropicProvider implements ProviderAdapter {
 
 function parseAnthropicTurn(value: unknown, decode: (name: string) => string = (name) => name): ProviderTurn {
   const root = value && typeof value === "object" ? value as Record<string, unknown> : {};
-  const blocks = Array.isArray(root.content) ? root.content as Array<Record<string, unknown>> : [];
+  rejectProviderError(root);
+  if (!Array.isArray(root.content)) throw new HarnessError("INVALID_PROVIDER_RESPONSE", "Anthropic returned no content blocks.");
+  const blocks = root.content as Array<Record<string, unknown>>;
   const usage = root.usage && typeof root.usage === "object" ? root.usage as Record<string, unknown> : {};
+  const cachedTokens = typeof usage.cache_read_input_tokens === "number" ? usage.cache_read_input_tokens : undefined;
+  const inputTokens = typeof usage.input_tokens === "number" ? usage.input_tokens + (cachedTokens ?? 0) + (typeof usage.cache_creation_input_tokens === "number" ? usage.cache_creation_input_tokens : 0) : undefined;
   return {
     content: blocks.filter((block) => block.type === "text" && typeof block.text === "string").map((block) => block.text as string).join(""),
-    toolCalls: blocks.filter((block) => block.type === "tool_use" && typeof block.name === "string").map((block) => ({ id: String(block.id), name: decode(String(block.name)), arguments: block.input && typeof block.input === "object" ? block.input as Record<string, unknown> : {} })),
-    finishReason: String(root.stop_reason ?? "stop"), ...(typeof usage.input_tokens === "number" ? { inputTokens: usage.input_tokens } : {}), ...(typeof usage.output_tokens === "number" ? { outputTokens: usage.output_tokens } : {}), ...(typeof usage.cache_read_input_tokens === "number" ? { cachedTokens: usage.cache_read_input_tokens } : {}), raw: value,
+    toolCalls: blocks.filter((block) => block.type === "tool_use" && typeof block.name === "string").map((block) => ({ id: String(block.id), name: decode(String(block.name)), arguments: parseToolArguments(block.input) })),
+    finishReason: String(root.stop_reason ?? "stop"), responseState: { anthropicBlocks: blocks },
+    ...(inputTokens === undefined ? {} : { inputTokens }), ...(typeof usage.output_tokens === "number" ? { outputTokens: usage.output_tokens } : {}), ...(cachedTokens === undefined ? {} : { cachedTokens }),
   };
 }
 
 async function parseAnthropicStream(body: ReadableStream<Uint8Array>, onChunk: (chunk: string) => void, decode: (name: string) => string = (name) => name): Promise<ProviderTurn> {
-  const reader = body.getReader(); const decoder = new TextDecoder(); let buffer = ""; let content = ""; let stopReason = "stop"; let inputTokens: number | undefined; let outputTokens: number | undefined; let cachedTokens: number | undefined;
-  const calls = new Map<number, { id: string; name: string; raw: string }>(); let blockIndex = -1;
-  const consume = (block: string) => {
-    const lines = block.split(/\r?\n/); const event = lines.find((line) => line.startsWith("event:"))?.slice(6).trim(); const data = lines.filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join(""); if (!data) return;
-    let root: Record<string, unknown>; try { root = JSON.parse(data) as Record<string, unknown>; } catch { throw new HarnessError("INVALID_PROVIDER_RESPONSE", "Anthropic sent invalid streaming data."); }
-    if (event === "message_start") { const message = root.message as Record<string, unknown> | undefined; const usage = message?.usage as Record<string, unknown> | undefined; if (typeof usage?.input_tokens === "number") inputTokens = usage.input_tokens; if (typeof usage?.cache_read_input_tokens === "number") cachedTokens = usage.cache_read_input_tokens; }
-    if (event === "content_block_start") { blockIndex = Number(root.index ?? blockIndex + 1); const block = root.content_block as Record<string, unknown> | undefined; if (block?.type === "tool_use") calls.set(blockIndex, { id: String(block.id), name: String(block.name), raw: "" }); }
-    if (event === "content_block_delta") { const delta = root.delta as Record<string, unknown> | undefined; if (delta?.type === "text_delta" && typeof delta.text === "string") { content += delta.text; onChunk(delta.text); } if (delta?.type === "input_json_delta" && typeof delta.partial_json === "string") { const call = calls.get(Number(root.index ?? blockIndex)); if (call) call.raw += delta.partial_json; } }
-    if (event === "message_delta") { const delta = root.delta as Record<string, unknown> | undefined; if (typeof delta?.stop_reason === "string") stopReason = delta.stop_reason; const usage = root.usage as Record<string, unknown> | undefined; if (typeof usage?.output_tokens === "number") outputTokens = usage.output_tokens; if (typeof usage?.cache_read_input_tokens === "number") cachedTokens = usage.cache_read_input_tokens; }
-  };
-  while (true) { const part = await reader.read(); buffer += decoder.decode(part.value ?? new Uint8Array(), { stream: !part.done }); const blocks = buffer.split(/\r?\n\r?\n/); buffer = blocks.pop() ?? ""; for (const block of blocks) consume(block); if (part.done) break; }
-  if (buffer) consume(buffer);
-  const toolCalls = [...calls.values()].map((call) => ({ id: call.id, name: decode(call.name), arguments: parseToolArguments(call.raw || "{}") }));
-  return { content, toolCalls, finishReason: stopReason, ...(inputTokens === undefined ? {} : { inputTokens }), ...(outputTokens === undefined ? {} : { outputTokens }), ...(cachedTokens === undefined ? {} : { cachedTokens }) };
+  const blocks = new Map<number, Record<string, unknown>>();
+  const argumentsByIndex = new Map<number, string>();
+  let usage: Record<string, unknown> = {};
+  let stopReason = "stop";
+  let completed = false;
+  await readSse(body, (data, event) => {
+    const root = parseJsonObject(data);
+    rejectProviderError(root);
+    event ??= typeof root.type === "string" ? root.type : undefined;
+    const index = Number(root.index ?? 0);
+    if (event === "message_start") {
+      const message = root.message as Record<string, unknown> | undefined;
+      if (message?.usage && typeof message.usage === "object") usage = { ...usage, ...message.usage };
+    }
+    if (event === "content_block_start") {
+      const block = root.content_block as Record<string, unknown> | undefined;
+      if (block) {
+        blocks.set(index, { ...block });
+        if (block.type === "text" && typeof block.text === "string" && block.text) onChunk(block.text);
+      }
+    }
+    if (event === "content_block_delta") {
+      const delta = root.delta as Record<string, unknown> | undefined;
+      const block = blocks.get(index);
+      if (block && delta) {
+        if (delta.type === "text_delta" && typeof delta.text === "string") { block.text = String(block.text ?? "") + delta.text; onChunk(delta.text); }
+        if (delta.type === "thinking_delta" && typeof delta.thinking === "string") block.thinking = String(block.thinking ?? "") + delta.thinking;
+        if (delta.type === "signature_delta" && typeof delta.signature === "string") block.signature = String(block.signature ?? "") + delta.signature;
+        if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") argumentsByIndex.set(index, (argumentsByIndex.get(index) ?? "") + delta.partial_json);
+      }
+    }
+    if (event === "message_delta") {
+      const delta = root.delta as Record<string, unknown> | undefined;
+      if (typeof delta?.stop_reason === "string") stopReason = delta.stop_reason;
+      if (root.usage && typeof root.usage === "object") usage = { ...usage, ...root.usage };
+    }
+    if (event === "message_stop") completed = true;
+  });
+  if (!completed) throw new HarnessError("PROVIDER_STREAM_INCOMPLETE", "Anthropic's stream ended before message_stop.");
+  for (const [index, raw] of argumentsByIndex) { const block = blocks.get(index); if (block) block.input = parseToolArguments(raw); }
+  return parseAnthropicTurn({ content: [...blocks.entries()].sort(([left], [right]) => left - right).map(([, block]) => block), stop_reason: stopReason, usage }, decode);
 }
 
 class GeminiProvider implements ProviderAdapter {
@@ -502,7 +618,7 @@ class GeminiProvider implements ProviderAdapter {
   async stream(request: ProviderRequest, onChunk: (chunk: string) => void): Promise<ProviderTurn> { return this.request(request, true, onChunk); }
   async listModels(signal?: AbortSignal): Promise<ProviderModel[]> {
     if (!this.apiKey) return [];
-    const response = await fetch(`${this.baseUrl.replace(/\/$/, "")}/models`, { headers: { "x-goog-api-key": this.apiKey }, signal });
+    const response = await fetch(`${this.baseUrl.replace(/\/$/, "")}/models?pageSize=1000`, { headers: { "x-goog-api-key": this.apiKey }, signal: discoverySignal(signal), redirect: "error" });
     if (!response.ok) throw new HarnessError("PROVIDER_ERROR", `Gemini model discovery failed (${response.status}).`);
     const data = await response.json() as { models?: Array<{ name?: string; displayName?: string; supportedGenerationMethods?: string[] }> };
     return (data.models ?? []).filter((model) => typeof model.name === "string" && (model.supportedGenerationMethods ?? []).includes("generateContent")).map((model) => ({ id: model.name!.replace(/^models\//, ""), providerId: this.id, label: model.displayName ?? model.name!, capabilities: model.supportedGenerationMethods ?? [], available: true, priceKind: "unknown" }));
@@ -511,15 +627,23 @@ class GeminiProvider implements ProviderAdapter {
     if (!this.apiKey) throw new HarnessError("PROVIDER_NOT_CONFIGURED", "Google Gemini API credentials are not configured.");
     const tools = request.tools?.length ? mapToolNames(request.tools) : undefined;
     const system = request.messages.filter((message) => message.role === "system").map((message) => message.content).join("\n\n");
-    const contents = request.messages.filter((message) => message.role !== "system").map((message) => {
-      if (message.role === "tool") return { role: "user", parts: [{ functionResponse: { name: wireToolName(message.toolName ?? "tool"), response: { result: message.content } } }] };
+    const contents: Array<{ role: string; parts: Array<Record<string, unknown>> }> = [];
+    for (const message of request.messages.filter((message) => message.role !== "system")) {
+      if (message.role === "tool") {
+        const part = { functionResponse: { name: wireToolName(message.toolName ?? "tool"), ...(message.toolCallId && !message.toolCallId.startsWith("gemini_") ? { id: message.toolCallId } : {}), response: { result: message.content } } };
+        const previous = contents.at(-1);
+        if (previous?.role === "user" && previous.parts.every((item) => item.functionResponse)) previous.parts.push(part);
+        else contents.push({ role: "user", parts: [part] });
+        continue;
+      }
+      if (message.role === "assistant" && message.responseState?.geminiParts?.length) { contents.push({ role: "model", parts: message.responseState.geminiParts }); continue; }
       const parts: Array<Record<string, unknown>> = [];
       if (message.content) parts.push({ text: message.content });
       if (message.role === "assistant") for (const call of message.toolCalls ?? []) parts.push({ functionCall: { name: wireToolName(call.name), args: call.arguments } });
-      return { role: message.role === "assistant" ? "model" : "user", parts };
-    });
+      contents.push({ role: message.role === "assistant" ? "model" : "user", parts });
+    }
     const method = streaming ? "streamGenerateContent?alt=sse" : "generateContent";
-    const response = await fetch(`${this.baseUrl.replace(/\/$/, "")}/models/${encodeURIComponent(request.model)}:${method}`, { method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": this.apiKey }, body: JSON.stringify({ contents, generationConfig: { maxOutputTokens: request.maxOutputTokens ?? 8192 }, ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}), ...(tools ? { tools: [{ functionDeclarations: tools.wire.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.inputSchema })) }] } : {}) }), signal: request.signal });
+    const response = await fetch(`${this.baseUrl.replace(/\/$/, "")}/models/${encodeURIComponent(request.model)}:${method}`, { method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": this.apiKey }, body: JSON.stringify({ contents, generationConfig: { maxOutputTokens: request.maxOutputTokens ?? 8192 }, ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}), ...(tools ? { tools: [{ functionDeclarations: tools.wire.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.inputSchema })) }] } : {}) }), signal: request.signal, redirect: "error" });
     if (!response.ok) throw new HarnessError("PROVIDER_ERROR", `Gemini request failed (${response.status}).`, { diagnostics: (await response.text()).slice(0, 2_000) });
     if (!streaming) return parseGeminiTurn(await response.json(), tools?.decode);
     if (!response.body) throw new HarnessError("PROVIDER_STREAM_UNAVAILABLE", "Gemini returned no streaming response body.");
@@ -530,17 +654,48 @@ class GeminiProvider implements ProviderAdapter {
 }
 
 function parseGeminiTurn(value: unknown, decode: (name: string) => string = (name) => name): ProviderTurn {
-  const root = value && typeof value === "object" ? value as Record<string, unknown> : {}; const candidates = root.candidates as Array<Record<string, unknown>> | undefined; const candidate = candidates?.[0]; const content = candidate?.content as Record<string, unknown> | undefined; const parts = Array.isArray(content?.parts) ? content.parts as Array<Record<string, unknown>> : []; const usage = root.usageMetadata as Record<string, unknown> | undefined;
-  const calls = parts.filter((part) => part.functionCall && typeof part.functionCall === "object").map((part) => { const call = part.functionCall as Record<string, unknown>; return { id: `gemini_${randomUUID()}`, name: decode(String(call.name ?? "")), arguments: call.args && typeof call.args === "object" ? call.args as Record<string, unknown> : {} }; }).filter((call) => call.name);
-  return { content: parts.filter((part) => typeof part.text === "string").map((part) => part.text as string).join(""), toolCalls: calls, finishReason: String(candidate?.finishReason ?? "stop"), ...(typeof usage?.promptTokenCount === "number" ? { inputTokens: usage.promptTokenCount } : {}), ...(typeof usage?.candidatesTokenCount === "number" ? { outputTokens: usage.candidatesTokenCount } : {}), ...(typeof usage?.cachedContentTokenCount === "number" ? { cachedTokens: usage.cachedContentTokenCount } : {}), raw: value };
+  const root = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  rejectProviderError(root);
+  const candidates = Array.isArray(root.candidates) ? root.candidates as Array<Record<string, unknown>> : [];
+  const candidate = candidates[0];
+  const content = candidate?.content as Record<string, unknown> | undefined;
+  const parts = Array.isArray(content?.parts) ? content.parts as Array<Record<string, unknown>> : [];
+  const usage = root.usageMetadata as Record<string, unknown> | undefined;
+  const feedback = root.promptFeedback as Record<string, unknown> | undefined;
+  if (!candidate && !usage && !feedback) throw new HarnessError("INVALID_PROVIDER_RESPONSE", "Gemini returned no candidates or usage.");
+  const calls = parts.filter((part) => part.functionCall && typeof part.functionCall === "object").map((part) => {
+    const call = part.functionCall as Record<string, unknown>;
+    return { id: typeof call.id === "string" ? call.id : "gemini_" + randomUUID(), name: decode(String(call.name ?? "")), arguments: parseToolArguments(call.args) };
+  }).filter((call) => call.name);
+  const outputTokens = typeof usage?.candidatesTokenCount === "number" || typeof usage?.thoughtsTokenCount === "number" ? Number(usage.candidatesTokenCount ?? 0) + Number(usage.thoughtsTokenCount ?? 0) : undefined;
+  return {
+    content: parts.filter((part) => part.thought !== true && typeof part.text === "string").map((part) => part.text as string).join(""),
+    toolCalls: calls, finishReason: String(candidate?.finishReason ?? feedback?.blockReason ?? ""),
+    ...(parts.length ? { responseState: { geminiParts: parts } } : {}),
+    ...(typeof usage?.promptTokenCount === "number" ? { inputTokens: usage.promptTokenCount } : {}), ...(outputTokens === undefined ? {} : { outputTokens }), ...(typeof usage?.cachedContentTokenCount === "number" ? { cachedTokens: usage.cachedContentTokenCount } : {}),
+  };
 }
 
 async function parseGeminiStream(body: ReadableStream<Uint8Array>, onChunk: (chunk: string) => void, decode?: (name: string) => string): Promise<ProviderTurn> {
-  const reader = body.getReader(); const decoder = new TextDecoder(); let buffer = ""; let content = ""; const calls: ProviderToolCall[] = []; let inputTokens: number | undefined; let outputTokens: number | undefined; let cachedTokens: number | undefined;
-  const consume = (data: string) => { if (!data.trim()) return; let root: unknown; try { root = JSON.parse(data); } catch { throw new HarnessError("INVALID_PROVIDER_RESPONSE", "Gemini sent invalid streaming data."); } const turn = parseGeminiTurn(root, decode); if (turn.content) { content += turn.content; onChunk(turn.content); } calls.push(...turn.toolCalls); if (turn.inputTokens !== undefined) inputTokens = turn.inputTokens; if (turn.outputTokens !== undefined) outputTokens = turn.outputTokens; if (turn.cachedTokens !== undefined) cachedTokens = turn.cachedTokens; };
-  while (true) { const part = await reader.read(); buffer += decoder.decode(part.value ?? new Uint8Array(), { stream: !part.done }); const lines = buffer.split(/\r?\n/); buffer = lines.pop() ?? ""; for (const line of lines) if (line.startsWith("data:")) consume(line.slice(5).trim()); if (part.done) break; }
-  if (buffer.startsWith("data:")) consume(buffer.slice(5).trim());
-  return { content, toolCalls: calls, finishReason: "stop", ...(inputTokens === undefined ? {} : { inputTokens }), ...(outputTokens === undefined ? {} : { outputTokens }), ...(cachedTokens === undefined ? {} : { cachedTokens }) };
+  let content = "";
+  let finishReason = "";
+  const calls: ProviderToolCall[] = [];
+  const parts: Array<Record<string, unknown>> = [];
+  let inputTokens: number | undefined;
+  let outputTokens: number | undefined;
+  let cachedTokens: number | undefined;
+  await readSse(body, (data) => {
+    const turn = parseGeminiTurn(parseJsonObject(data), decode);
+    if (turn.content) { content += turn.content; onChunk(turn.content); }
+    if (turn.finishReason) finishReason = turn.finishReason;
+    calls.push(...turn.toolCalls);
+    parts.push(...turn.responseState?.geminiParts ?? []);
+    if (turn.inputTokens !== undefined) inputTokens = turn.inputTokens;
+    if (turn.outputTokens !== undefined) outputTokens = turn.outputTokens;
+    if (turn.cachedTokens !== undefined) cachedTokens = turn.cachedTokens;
+  });
+  if (!finishReason) throw new HarnessError("PROVIDER_STREAM_INCOMPLETE", "Gemini's stream ended without a finish reason.");
+  return { content, toolCalls: calls, finishReason, ...(parts.length ? { responseState: { geminiParts: parts } } : {}), ...(inputTokens === undefined ? {} : { inputTokens }), ...(outputTokens === undefined ? {} : { outputTokens }), ...(cachedTokens === undefined ? {} : { cachedTokens }) };
 }
 
 export class ProviderRegistry {
@@ -579,7 +734,7 @@ export class ProviderRegistry {
     if (id !== "openai_chatgpt") throw new HarnessError("PROVIDER_AUTH_UNSUPPORTED", `Provider ${id} does not support account authorization.`);
     const adapter = this.adapters.get(id);
     if (!(adapter instanceof ChatGPTPlanProvider)) throw new HarnessError("PROVIDER_NOT_FOUND", `Provider not found: ${id}`);
-    if (credential && (!credential.accessToken || !credential.refreshToken || !credential.idToken || !credential.clientId || !credential.subject || !credential.hostId || !Number.isFinite(credential.expiresAt) || !Array.isArray(credential.scopes) || !credential.scopes.includes("chatgpt.tokens.use.direct"))) {
+    if (credential && (![credential.accessToken, credential.refreshToken, credential.idToken, credential.clientId, credential.subject, credential.hostId].every((value) => typeof value === "string" && value.length > 0) || !Number.isFinite(credential.expiresAt) || credential.expiresAt <= 0 || !Array.isArray(credential.scopes) || credential.scopes.some((scope) => typeof scope !== "string") || !credential.scopes.includes("chatgpt.tokens.use.direct"))) {
       throw new HarnessError("INVALID_PROVIDER_CREDENTIAL", "A valid ChatGPT plan credential is required.");
     }
     adapter.setOAuthCredential(credential);

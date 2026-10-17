@@ -441,7 +441,10 @@ try {
     if (request.url === "/inference/v1/models") response.end(JSON.stringify({ data: [
       { id: "big-pickle" }, { id: "deepseek-v4.1-flash-free" }, { id: "claude-fable-5" }, { id: "unverified-free-suffix-free" },
     ] }));
-    else if (request.url === "/inference/openai/v1/chat/completions") {
+    else if (request.url === "/pricing") {
+      response.setHeader("content-type", "text/html");
+      response.end(`<table>${[["Big Pickle", "big-pickle"], ["DeepSeek V4.1 Flash Free", "deepseek-v4.1-flash-free"]].map(([label, id]) => `<tr><td>${label}</td><td>${id}</td><td>https://opencode.ai/inference/openai/v1/chat/completions</td><td>@ai-sdk/openai-compatible</td></tr><tr><td>${label}</td><td>Free</td><td>Free</td><td>Free</td><td>-</td></tr>`).join("")}</table>`);
+    } else if (request.url === "/inference/openai/v1/chat/completions") {
       openCodeCompletionPath = request.url;
       response.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: "OpenCode free model verified." }, finish_reason: "stop" }], usage: { prompt_tokens: 3, completion_tokens: 5 } }));
     } else { response.statusCode = 404; response.end(JSON.stringify({ error: "not found" })); }
@@ -451,7 +454,7 @@ try {
   const openCodeAddress = openCodeServer.address();
   if (!openCodeAddress || typeof openCodeAddress === "string") throw new Error("The OpenCode fixture did not bind a local port.");
   const openCodeOrigin = `http://127.0.0.1:${openCodeAddress.port}`;
-  const openCodeFixture = new OpenAICompatibleProvider("opencode_zen", "OpenCode", `${openCodeOrigin}/inference/openai/v1`, "fixture-opencode-key", {}, false, `${openCodeOrigin}/inference/v1/models`);
+  const openCodeFixture = new OpenAICompatibleProvider("opencode_zen", "OpenCode", `${openCodeOrigin}/inference/openai/v1`, "fixture-opencode-key", {}, false, `${openCodeOrigin}/inference/v1/models`, `${openCodeOrigin}/pricing`);
   const openCodeModels = await openCodeFixture.listModels();
   const openCodeTurn = await openCodeFixture.complete({ model: "big-pickle", messages: [{ role: "user", content: "hello" }] });
   await new Promise<void>((resolveClose, rejectClose) => openCodeServer.close((error) => error ? rejectClose(error) : resolveClose()));

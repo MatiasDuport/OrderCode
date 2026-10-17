@@ -354,6 +354,14 @@ export interface ProviderToolCall {
   arguments: Record<string, unknown>;
 }
 
+/** Opaque, provider-issued context needed to continue a stateless tool turn. */
+export interface ProviderResponseState {
+  responses?: Array<Record<string, unknown>>;
+  geminiParts?: Array<Record<string, unknown>>;
+  anthropicBlocks?: Array<Record<string, unknown>>;
+  reasoningContent?: string;
+}
+
 export interface ProviderTurn {
   content: string;
   toolCalls: ProviderToolCall[];
@@ -364,12 +372,13 @@ export interface ProviderTurn {
   costUsd?: number;
   costKind?: "exact" | "estimated" | "unknown";
   raw?: unknown;
+  responseState?: ProviderResponseState;
 }
 
 export interface ProviderRequest {
   model: string;
   maxOutputTokens?: number;
-  messages: Array<{ role: "system" | "user" | "assistant" | "tool"; content: string; toolCallId?: string; toolName?: string; toolCalls?: ProviderToolCall[] }>;
+  messages: Array<{ role: "system" | "user" | "assistant" | "tool"; content: string; toolCallId?: string; toolName?: string; toolCalls?: ProviderToolCall[]; responseState?: ProviderResponseState }>;
   tools?: ToolDefinition[];
   signal?: AbortSignal;
   stream?: boolean;

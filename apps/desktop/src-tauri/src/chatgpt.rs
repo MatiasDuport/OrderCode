@@ -6,6 +6,7 @@ use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     process::Command,
+    sync::Mutex,
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -20,6 +21,7 @@ const AUTHORIZATION_ENDPOINT: &str = "https://auth.openai.com/api/accounts/autho
 const TOKEN_ENDPOINT: &str = "https://auth.openai.com/api/accounts/oauth/token";
 const JWKS_ENDPOINT: &str = "https://auth.openai.com/.well-known/jwks.json";
 const RESOURCE: &str = "https://api.openai.com/v1";
+static CREDENTIAL_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -93,6 +95,7 @@ struct JwtHeader {
 struct IdentityClaims {
     iss: String,
     aud: serde_json::Value,
+    azp: Option<String>,
     exp: u64,
     iat: u64,
     sub: String,
@@ -121,6 +124,24 @@ fn remove(account: &str) {
     }
 }
 
+fn delete(account: &str) -> Result<(), String> {
+    match entry(account)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(format!(
+            "No se pudo eliminar la cuenta ChatGPT del almacén seguro: {error}"
+        )),
+    }
+}
+
+fn http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| format!("No se pudo preparar la conexión segura de ChatGPT: {error}"))
+}
+
 fn secret_prefix(version: &str, field: &str) -> String {
     format!("openai_chatgpt_{version}_{field}")
 }
@@ -132,13 +153,24 @@ fn write_secret(version: &str, field: &str, secret: &str) -> Result<(), String> 
         .chunks(1_800)
         .map(|chunk| std::str::from_utf8(chunk).unwrap_or(""))
         .collect();
-    if chunks.is_empty() || chunks.iter().any(|chunk| chunk.is_empty()) {
+    if chunks.is_empty() || chunks.len() > 32 || chunks.iter().any(|chunk| chunk.is_empty()) {
         return Err("La credencial ChatGPT no tiene un formato válido.".into());
     }
     for (index, chunk) in chunks.iter().enumerate() {
-        set(&format!("{prefix}_{index}"), chunk)?;
+        if let Err(error) = set(&format!("{prefix}_{index}"), chunk) {
+            for written in 0..index {
+                remove(&format!("{prefix}_{written}"));
+            }
+            return Err(error);
+        }
     }
-    set(&format!("{prefix}_count"), &chunks.len().to_string())
+    if let Err(error) = set(&format!("{prefix}_count"), &chunks.len().to_string()) {
+        for index in 0..chunks.len() {
+            remove(&format!("{prefix}_{index}"));
+        }
+        return Err(error);
+    }
+    Ok(())
 }
 
 fn read_secret(version: &str, field: &str) -> Option<String> {
@@ -167,6 +199,11 @@ fn remove_secret(version: &str, field: &str) {
 }
 
 pub fn load_credential() -> Option<ChatGPTCredential> {
+    let _lock = CREDENTIAL_LOCK.lock().ok()?;
+    load_credential_unlocked()
+}
+
+fn load_credential_unlocked() -> Option<ChatGPTCredential> {
     let pointer: AccountPointer = serde_json::from_str(&get(ACTIVE_ACCOUNT)?).ok()?;
     Some(ChatGPTCredential {
         access_token: read_secret(&pointer.version, "access")?,
@@ -190,6 +227,33 @@ pub fn account_status() -> ChatGPTAccountStatus {
 }
 
 pub fn save_credential(credential: &ChatGPTCredential) -> Result<(), String> {
+    let _lock = CREDENTIAL_LOCK
+        .lock()
+        .map_err(|_| "No se pudo acceder a la cuenta ChatGPT".to_string())?;
+    save_credential_unlocked(credential)
+}
+
+pub fn save_rotated_credential(credential: &ChatGPTCredential) -> Result<(), String> {
+    let _lock = CREDENTIAL_LOCK
+        .lock()
+        .map_err(|_| "No se pudo acceder a la cuenta ChatGPT".to_string())?;
+    if load_credential_unlocked()
+        .as_ref()
+        .is_some_and(|active| same_connection(active, credential))
+    {
+        save_credential_unlocked(credential)?;
+    }
+    Ok(())
+}
+
+fn same_connection(active: &ChatGPTCredential, rotated: &ChatGPTCredential) -> bool {
+    active.subject == rotated.subject
+        && active.client_id == rotated.client_id
+        && active.host_id == rotated.host_id
+        && active.id_token == rotated.id_token
+}
+
+fn save_credential_unlocked(credential: &ChatGPTCredential) -> Result<(), String> {
     if !credential
         .scopes
         .iter()
@@ -244,15 +308,22 @@ pub fn save_credential(credential: &ChatGPTCredential) -> Result<(), String> {
     Ok(())
 }
 
-pub fn clear_credential() {
-    if let Some(pointer) =
-        get(ACTIVE_ACCOUNT).and_then(|value| serde_json::from_str::<AccountPointer>(&value).ok())
-    {
-        remove(ACTIVE_ACCOUNT);
+pub fn take_credential() -> Result<Option<ChatGPTCredential>, String> {
+    let _lock = CREDENTIAL_LOCK
+        .lock()
+        .map_err(|_| "No se pudo acceder a la cuenta ChatGPT".to_string())?;
+    let credential = load_credential_unlocked();
+    let pointer =
+        get(ACTIVE_ACCOUNT).and_then(|value| serde_json::from_str::<AccountPointer>(&value).ok());
+    // Invalidate the pointer before deleting its chunks, so a delayed refresh cannot restore it.
+    delete(REGISTRATION)?;
+    delete(ACTIVE_ACCOUNT)?;
+    if let Some(pointer) = pointer {
         for field in ["access", "refresh", "id"] {
             remove_secret(&pointer.version, field);
         }
     }
+    Ok(credential)
 }
 
 pub async fn revoke_credential(credential: &ChatGPTCredential) {
@@ -261,8 +332,12 @@ pub async fn revoke_credential(credential: &ChatGPTCredential) {
         ("token_type_hint", "refresh_token"),
         ("client_id", credential.client_id.as_str()),
     ]);
-    let _ = reqwest::Client::new()
+    let Ok(client) = http_client() else {
+        return;
+    };
+    let _ = client
         .post("https://auth.openai.com/api/accounts/oauth/revoke")
+        .timeout(Duration::from_secs(10))
         .header("content-type", "application/x-www-form-urlencoded")
         .body(form)
         .send()
@@ -391,7 +466,7 @@ pub async fn connect() -> Result<ChatGPTCredential, String> {
         ("code_verifier", &verifier),
         ("resource", RESOURCE),
     ]);
-    let response = reqwest::Client::new()
+    let response = http_client()?
         .post(TOKEN_ENDPOINT)
         .header("content-type", "application/x-www-form-urlencoded")
         .header("accept", "application/json")
@@ -446,7 +521,7 @@ pub async fn connect() -> Result<ChatGPTCredential, String> {
         subject: claims.sub,
         email: claims.email,
         host_id,
-        expires_at: (now + tokens.expires_in.max(60)) * 1000,
+        expires_at: now.saturating_add(tokens.expires_in).saturating_mul(1000),
         scopes,
     })
 }
@@ -474,25 +549,39 @@ fn open_system_browser(url: &str) -> Result<(), String> {
 }
 
 fn wait_for_callback(listener: TcpListener, expected_state: &str) -> Result<Url, String> {
+    wait_for_callback_until(
+        listener,
+        expected_state,
+        Instant::now() + Duration::from_secs(300),
+    )
+}
+
+fn wait_for_callback_until(
+    listener: TcpListener,
+    expected_state: &str,
+    deadline: Instant,
+) -> Result<Url, String> {
     listener
         .set_nonblocking(true)
         .map_err(|error| format!("No se pudo preparar el retorno de ChatGPT: {error}"))?;
-    let deadline = Instant::now() + Duration::from_secs(300);
     loop {
         if Instant::now() >= deadline {
             return Err("La conexión con ChatGPT venció. Vuelve a intentarlo.".into());
         }
         match listener.accept() {
             Ok((mut stream, _)) => {
-                if let Err(error) = stream.set_read_timeout(Some(Duration::from_secs(3))) {
-                    return Err(format!("No se pudo leer la respuesta de ChatGPT: {error}"));
-                }
+                let request_deadline = (Instant::now() + Duration::from_secs(3)).min(deadline);
+                let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
                 let mut buffer = [0_u8; 16_384];
                 let mut length = 0;
                 while length < buffer.len() {
-                    let read = stream.read(&mut buffer[length..]).map_err(|error| {
-                        format!("No se pudo leer la respuesta de ChatGPT: {error}")
-                    })?;
+                    let remaining = request_deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() || stream.set_read_timeout(Some(remaining)).is_err() {
+                        break;
+                    }
+                    let Ok(read) = stream.read(&mut buffer[length..]) else {
+                        break;
+                    };
                     if read == 0 {
                         break;
                     }
@@ -505,33 +594,26 @@ fn wait_for_callback(listener: TcpListener, expected_state: &str) -> Result<Url,
                     }
                 }
                 let request = String::from_utf8_lossy(&buffer[..length]);
-                let target = request
+                let line = request
                     .lines()
                     .next()
-                    .and_then(|line| line.split_whitespace().nth(1))
-                    .ok_or_else(|| {
-                        "ChatGPT devolvió una respuesta de navegador inválida.".to_string()
-                    })?;
-                let callback = Url::parse(&format!("http://127.0.0.1{target}")).map_err(|_| {
-                    "ChatGPT devolvió una dirección de retorno inválida.".to_string()
-                })?;
-                if callback.path() != "/auth/callback" {
+                    .unwrap_or("")
+                    .split_whitespace()
+                    .collect::<Vec<_>>();
+                if !request.contains("\r\n\r\n")
+                    || line.len() != 3
+                    || line[0] != "GET"
+                    || !matches!(line[2], "HTTP/1.1" | "HTTP/1.0")
+                {
                     write_browser_reply(&mut stream, false);
                     continue;
                 }
-                let callback_state = callback
-                    .query_pairs()
-                    .find(|(key, _)| key == "state")
-                    .map(|(_, value)| value.into_owned())
-                    .unwrap_or_default();
-                let valid_state = callback_state == expected_state;
+                let Ok(callback) = parse_callback_target(line[1], expected_state) else {
+                    write_browser_reply(&mut stream, false);
+                    continue;
+                };
                 let denied = callback.query_pairs().any(|(key, _)| key == "error");
-                write_browser_reply(&mut stream, valid_state && !denied);
-                if !valid_state {
-                    return Err(
-                        "La comprobación de seguridad del inicio de sesión no coincidió.".into(),
-                    );
-                }
+                write_browser_reply(&mut stream, !denied);
                 return Ok(callback);
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -546,12 +628,39 @@ fn wait_for_callback(listener: TcpListener, expected_state: &str) -> Result<Url,
     }
 }
 
+fn parse_callback_target(target: &str, expected_state: &str) -> Result<Url, String> {
+    if !target.starts_with("/auth/callback?") || target.contains('#') || expected_state.is_empty() {
+        return Err("ChatGPT devolvió una dirección de retorno inválida.".into());
+    }
+    let callback = Url::parse(&format!("http://127.0.0.1{target}"))
+        .map_err(|_| "ChatGPT devolvió una dirección de retorno inválida.".to_string())?;
+    let pairs = callback.query_pairs().collect::<Vec<_>>();
+    for field in ["state", "code", "error", "client_id", "scope"] {
+        if pairs.iter().filter(|(key, _)| key == field).count() > 1 {
+            return Err("ChatGPT devolvió parámetros de retorno duplicados.".into());
+        }
+    }
+    let state_matches = pairs
+        .iter()
+        .any(|(key, value)| key == "state" && value == expected_state);
+    let has_code = pairs
+        .iter()
+        .any(|(key, value)| key == "code" && !value.is_empty());
+    let has_error = pairs
+        .iter()
+        .any(|(key, value)| key == "error" && !value.is_empty());
+    if callback.path() != "/auth/callback" || !state_matches || has_code == has_error {
+        return Err("La comprobación de seguridad del inicio de sesión no coincidió.".into());
+    }
+    Ok(callback)
+}
+
 fn write_browser_reply(stream: &mut TcpStream, success: bool) {
     let (status, title, body) = if success {
         (
             "200 OK",
-            "Conexión terminada",
-            "Puedes cerrar esta pestaña y volver a OrderCode.",
+            "Autorización recibida",
+            "Vuelve a OrderCode para comprobar que la conexión se haya completado.",
         )
     } else {
         (
@@ -582,7 +691,7 @@ async fn verify_identity(
     if header.alg != "RS256" {
         return Err("ChatGPT utilizó un algoritmo de firma no admitido.".into());
     }
-    let jwks: Jwks = reqwest::Client::new()
+    let jwks: Jwks = http_client()?
         .get(JWKS_ENDPOINT)
         .send()
         .await
@@ -626,6 +735,16 @@ async fn verify_identity(
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
+    validate_identity_claims(&claims, nonce, client_id, now)?;
+    Ok(claims)
+}
+
+fn validate_identity_claims(
+    claims: &IdentityClaims,
+    nonce: &str,
+    client_id: &str,
+    now: u64,
+) -> Result<(), String> {
     let audience_matches = claims.aud.as_str() == Some(client_id)
         || claims
             .aud
@@ -633,6 +752,14 @@ async fn verify_identity(
             .is_some_and(|items| items.iter().any(|item| item.as_str() == Some(client_id)));
     if claims.iss != ISSUER
         || !audience_matches
+        || claims
+            .azp
+            .as_deref()
+            .is_some_and(|party| party != client_id)
+        || claims
+            .aud
+            .as_array()
+            .is_some_and(|items| items.len() > 1 && claims.azp.as_deref() != Some(client_id))
         || claims.exp <= now.saturating_sub(5)
         || claims.iat > now.saturating_add(5)
         || claims.nonce != nonce
@@ -642,5 +769,176 @@ async fn verify_identity(
             "La identidad ChatGPT no coincide con la solicitud de inicio de sesión.".into(),
         );
     }
-    Ok(claims)
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn credential() -> ChatGPTCredential {
+        ChatGPTCredential {
+            access_token: "access".into(),
+            refresh_token: "refresh".into(),
+            id_token: "login-a".into(),
+            client_id: "client".into(),
+            subject: "subject".into(),
+            email: None,
+            host_id: "host".into(),
+            expires_at: 1000,
+            scopes: vec!["chatgpt.tokens.use.direct".into()],
+        }
+    }
+
+    fn claims() -> IdentityClaims {
+        IdentityClaims {
+            iss: ISSUER.into(),
+            aud: serde_json::json!("client"),
+            azp: None,
+            exp: 2000,
+            iat: 900,
+            sub: "subject".into(),
+            nonce: "nonce".into(),
+            email: None,
+        }
+    }
+
+    #[test]
+    fn callback_accepts_encoded_authorization_and_denial() {
+        let callback = parse_callback_target(
+            "/auth/callback?state=expected&code=a%2Bb&client_id=issued",
+            "expected",
+        )
+        .unwrap();
+        assert!(callback
+            .query_pairs()
+            .any(|(key, value)| key == "code" && value == "a+b"));
+        assert!(parse_callback_target(
+            "/auth/callback?state=expected&error=access_denied",
+            "expected"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn callback_rejects_state_confusion_and_duplicate_parameters() {
+        for target in [
+            "/auth/callback?state=wrong&code=x",
+            "/auth/callback?state=expected&state=other&code=x",
+            "/auth/callback?state=expected&code=x&code=y",
+            "/auth/callback?state=expected&code=x&client_id=a&client_id=b",
+            "/auth/callback?state=expected&code=x&error=denied",
+        ] {
+            assert!(
+                parse_callback_target(target, "expected").is_err(),
+                "{target}"
+            );
+        }
+    }
+
+    #[test]
+    fn callback_rejects_wrong_path_origin_fragment_and_missing_code() {
+        for target in [
+            "https://evil.example/auth/callback?state=expected&code=x",
+            "//evil.example/auth/callback?state=expected&code=x",
+            "/auth/callback/other?state=expected&code=x",
+            "/auth/callback?state=expected&code=x#ignored",
+            "/auth/callback?state=expected",
+            "/auth/callback?state=expected&code=",
+        ] {
+            assert!(
+                parse_callback_target(target, "expected").is_err(),
+                "{target}"
+            );
+        }
+    }
+
+    #[test]
+    fn rotation_is_bound_to_login_and_not_just_account() {
+        let active = credential();
+        let mut rotated = active.clone();
+        rotated.access_token = "new-access".into();
+        rotated.refresh_token = "new-refresh".into();
+        assert!(same_connection(&active, &rotated));
+        rotated.id_token = "different-login".into();
+        assert!(!same_connection(&active, &rotated));
+        rotated = active.clone();
+        rotated.subject = "different-account".into();
+        assert!(!same_connection(&active, &rotated));
+        rotated = active.clone();
+        rotated.client_id = "different-client".into();
+        assert!(!same_connection(&active, &rotated));
+    }
+
+    #[test]
+    fn identity_checks_audience_nonce_issuer_and_validity() {
+        let valid = claims();
+        assert!(validate_identity_claims(&valid, "nonce", "client", 1000).is_ok());
+        assert!(validate_identity_claims(&valid, "wrong", "client", 1000).is_err());
+        assert!(validate_identity_claims(&valid, "nonce", "other", 1000).is_err());
+        assert!(validate_identity_claims(&valid, "nonce", "client", 2100).is_err());
+        let mut altered = claims();
+        altered.iss = "https://evil.example".into();
+        assert!(validate_identity_claims(&altered, "nonce", "client", 1000).is_err());
+        altered = claims();
+        altered.iat = 1100;
+        assert!(validate_identity_claims(&altered, "nonce", "client", 1000).is_err());
+        altered = claims();
+        altered.aud = serde_json::json!(["other", "client"]);
+        assert!(validate_identity_claims(&altered, "nonce", "client", 1000).is_err());
+        altered.azp = Some("client".into());
+        assert!(validate_identity_claims(&altered, "nonce", "client", 1000).is_ok());
+    }
+
+    #[test]
+    fn malformed_and_unsigned_identity_tokens_fail_before_network() {
+        for token in [
+            "",
+            "invalid",
+            "invalid.parts.count.here",
+            "!.e30.invalid",
+            "eyJhbGciOiJub25lIiwia2lkIjoidGVzdCJ9.e30.invalid",
+        ] {
+            assert!(
+                tauri::async_runtime::block_on(verify_identity(token, "nonce", "client")).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn loopback_login_survives_unrelated_or_mismatched_requests() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let worker = thread::spawn(move || {
+            wait_for_callback_until(
+                listener,
+                "expected",
+                Instant::now() + Duration::from_secs(5),
+            )
+        });
+        for (target, expected_status) in [
+            ("/auth/callback?state=other&code=bad", "400 Bad Request"),
+            (
+                "/auth/callback?state=expected&code=accepted&client_id=client",
+                "200 OK",
+            ),
+        ] {
+            let mut stream = TcpStream::connect(address).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            write!(
+                stream,
+                "GET {target} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).unwrap();
+            assert!(response.starts_with(&format!("HTTP/1.1 {expected_status}")));
+        }
+        let callback = worker.join().unwrap().unwrap();
+        assert!(callback
+            .query_pairs()
+            .any(|(key, value)| key == "code" && value == "accepted"));
+    }
 }

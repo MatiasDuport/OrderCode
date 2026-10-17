@@ -214,7 +214,7 @@ export async function loadSession(sessionId: string): Promise<{ session: Session
   const fallback: SessionRecord = { id: sessionId, projectPath: raw.projectPath, model: raw.modelId ?? '', providerId: raw.providerId ?? '', freeOnly: raw.freeOnly ?? false, budget: raw.budget, mode: 'Build', permission: 'Guiado', createdAt: raw.createdAt, state: 'CREATED', sequence: raw.sequence };
   const [messages, events, pendingRequests] = await Promise.all([
     rpc<Array<{ id: string; role: string; content: string; createdAt: string }>>('session.messages', { sessionId, limit: 200 }),
-    rpc<Array<Record<string, unknown>>>('session.events', { sessionId, afterSequence: 0 }),
+    rpc<Array<Record<string, unknown>>>('session.events', { sessionId, afterSequence: Math.max(0, raw.sequence - 500) }),
     pendingPermissions(sessionId),
   ]);
   return {
@@ -267,7 +267,7 @@ function toDesktopEvent(event: Record<string, unknown>): HarnessEvent {
 }
 
 export async function sendSessionMessage(sessionId: string, message: string, mode: WorkMode, model: string, permission: PermissionProfile, providerId?: string, agentId?: string, freeOnly = false): Promise<HarnessEvent> {
-  if (!isTauri()) return { id: crypto.randomUUID(), sessionId, sequence: Date.now(), state: 'WAITING_USER', summary: 'Disponible en la app de escritorio', detail: 'El navegador solo muestra la vista previa. Para ejecutar tareas, abre OrderCode Desktop.' };
+  if (!isTauri()) return { id: crypto.randomUUID(), sessionId, sequence: 0, state: 'WAITING_USER', summary: 'Disponible en la app de escritorio', detail: 'El navegador solo muestra la vista previa. Para ejecutar tareas, abre OrderCode Desktop.' };
   const selection = modelSelection(model, providerId);
   const value = await rpc<Record<string, unknown>>('run', { sessionId, goal: message, mode: mode.toLowerCase(), permissionProfile: profileId(permission), freeOnly, ...(agentId ? { agentId } : {}), ...selection });
   const state = typeof value.state === 'string' ? value.state as HarnessEvent['state'] : 'FAILED';
@@ -279,7 +279,7 @@ export async function sendSessionMessage(sessionId: string, message: string, mod
   const reason = typeof value.reason === 'string' ? value.reason : undefined;
   const detail = typeof assistant?.content === 'string' && assistant.content ? assistant.content : pending ? 'El Harness espera la decisión sobre la operación indicada.' : reason;
   return {
-    id: String(value.runId ?? crypto.randomUUID()), sessionId, sequence: Date.now(), state,
+    id: String(value.runId ?? crypto.randomUUID()), sessionId, sequence: 0, state,
     summary: state === 'COMPLETED' ? 'Ejecución completada' : state === 'WAITING_APPROVAL' ? 'Autorización necesaria' : state === 'WAITING_USER' ? 'Configuración necesaria' : state === 'FAILED' ? 'Ejecución fallida' : state.replaceAll('_', ' '),
     ...(detail ? { detail } : {}), ...(pending ? { requiresApproval: true, permissionRequest: pending } : {}),
     ...(typeof value.runId === 'string' ? { runId: value.runId } : {}), ...(changedFiles.length ? { changedFiles } : {}), ...(terminalOutput ? { terminalOutput } : {}),

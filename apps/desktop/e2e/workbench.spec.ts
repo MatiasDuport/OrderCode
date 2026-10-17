@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
+    if (localStorage.getItem('ordercode.desktop.preferences.v1')) return;
     localStorage.setItem('ordercode.desktop.preferences.v1', JSON.stringify({
       language: 'es', themePreference: 'dark', density: 'comfortable', reducedMotion: false,
       editorFontSize: 12, tabSize: 2, terminalFontSize: 11,
@@ -94,4 +95,26 @@ test('keeps product surfaces visible without inventing unavailable runtime state
   await page.getByRole('button', { name: 'Alternar terminal' }).click();
   await page.getByRole('button', { name: 'Processes' }).click();
   await expect(page.getByText('No hay procesos de terminal')).toBeVisible();
+});
+
+test('persists accessible language, theme and density preferences and traps command palette focus', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByLabel('Idioma', { exact: true }).selectOption('en');
+  await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+  await page.getByLabel('Theme', { exact: true }).selectOption('light');
+  await page.getByLabel('Interface density', { exact: true }).selectOption('compact');
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await expect(page.locator('html')).toHaveAttribute('data-density', 'compact');
+  await page.reload();
+  await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await page.keyboard.press('Control+p');
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  await page.getByRole('textbox', { name: 'Search commands' }).focus();
+  await page.keyboard.press('Shift+Tab');
+  await expect(dialog.getByRole('button').last()).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(page.getByRole('textbox', { name: 'Search commands' })).toBeFocused();
 });

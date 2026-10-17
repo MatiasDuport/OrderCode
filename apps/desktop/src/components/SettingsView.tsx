@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { cloneElement, isValidElement, useEffect, useState } from 'react';
 import { Activity, Accessibility, Cable, Code2, Database, Download, Moon, PlugZap, ShieldCheck, SlidersHorizontal, WalletCards } from 'lucide-react';
 import { useDesktopStore } from '../lib/store';
 import { chatgptAccountStatus, connectChatGPT, createCompatibleProvider, deleteCompatibleProvider, disconnectChatGPT, health, isDesktopApp, listProviders, providerKeysStatus, removeProviderCredential, setProviderCredential, updateSession } from '../lib/ipc';
@@ -27,7 +27,8 @@ function SectionHeading({ title, description }: { title: string; description: st
 }
 
 function PreferenceRow({ title, description, children }: { title: string; description: string; children: ReactNode }) {
-  return <div className="settings-preference-row"><div><strong>{title}</strong><small>{description}</small></div><div className="settings-preference-control">{children}</div></div>;
+  const control = isValidElement<{ 'aria-label'?: string }>(children) && (children.type === 'select' || children.type === 'input') ? cloneElement(children, { 'aria-label': title }) : children;
+  return <div className="settings-preference-row"><div><strong>{title}</strong><small>{description}</small></div><div className="settings-preference-control">{control}</div></div>;
 }
 
 export function SettingsView({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
@@ -201,5 +202,5 @@ export function SettingsView({ onOpenWorkspace }: { onOpenWorkspace: () => void 
     </>;
   };
 
-  return <Localized><div className="surface-page settings-page"><header className="settings-page-heading"><div><h1>Settings</h1><p>Preferencias, conexiones y controles del Harness local.</p></div></header><div className="settings-layout"><nav className="settings-nav" aria-label="Secciones de ajustes">{categories.map(({ id, label, description, icon: Icon }) => <button type="button" key={id} className={category === id ? 'is-active' : ''} aria-current={category === id ? 'page' : undefined} onClick={() => { setCategory(id); set('settingsSection', id); }}><Icon size={15} /><span><strong>{label}</strong><small>{description}</small></span></button>)}</nav><main className="settings-content" aria-live="polite"><div className="settings-section-content" key={category}>{renderContent()}</div></main></div></div></Localized>;
+  return <Localized><div className="surface-page settings-page"><header className="settings-page-heading"><div><h1>Ajustes</h1><p>Preferencias, conexiones y controles del Harness local.</p></div></header><div className="settings-layout"><nav className="settings-nav" aria-label="Secciones de ajustes">{categories.map(({ id, label, description, icon: Icon }) => <button type="button" key={id} className={category === id ? 'is-active' : ''} aria-current={category === id ? 'page' : undefined} onClick={() => { setCategory(id); set('settingsSection', id); }}><Icon size={15} /><span><strong>{label}</strong><small>{description}</small></span></button>)}</nav><main className="settings-content" aria-live="polite"><div className="settings-section-content" key={category}>{renderContent()}</div></main></div></div></Localized>;
 }
