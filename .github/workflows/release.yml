@@ -6,7 +6,7 @@ on:
       - 'v*'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   windows-x64:
@@ -36,10 +36,8 @@ jobs:
         shell: pwsh
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          ORDERCODE_RELEASES_TOKEN: ${{ secrets.ORDERCODE_RELEASES_TOKEN }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) { throw 'Set the TAURI_SIGNING_PRIVATE_KEY Actions secret before creating a release.' }
-          if ([string]::IsNullOrWhiteSpace($env:ORDERCODE_RELEASES_TOKEN)) { throw 'Set the ORDERCODE_RELEASES_TOKEN Actions secret with write access to MatiasDuport/OrderCode-Releases.' }
 
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
@@ -49,7 +47,7 @@ jobs:
 
       - uses: tauri-apps/tauri-action@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.ORDERCODE_RELEASES_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
@@ -57,7 +55,7 @@ jobs:
           tauriScript: pnpm exec tauri
           args: --bundles msi
           owner: MatiasDuport
-          repo: OrderCode-Releases
+          repo: OrderCode
           releaseCommitish: main
           tagName: ${{ github.ref_name }}
           releaseName: OrderCode ${{ github.ref_name }}

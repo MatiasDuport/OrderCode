@@ -38,7 +38,10 @@
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZBRTk0RjczQjE0MjU3QzEKUldUQlYwS3hjMC9wK245Ky92THE5bFdjS2o5SzhjbjJEQTRBa3Q1d05lcnZ5dk5YYURaOTZJQkUK",
-      "endpoints": ["https://github.com/MatiasDuport/OrderCode-Releases/releases/latest/download/latest.json"],
+      "endpoints": [
+        "https://github.com/MatiasDuport/OrderCode/releases/latest/download/latest.json",
+        "https://github.com/MatiasDuport/OrderCode-Releases/releases/latest/download/latest.json"
+      ],
       "windows": { "installMode": "passive" }
     }
   }
