@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "OrderCode",
+  "version": "0.3.0",
+  "identifier": "com.ordercode.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "OrderCode",
+        "width": 1600,
+        "height": 1000,
+        "minWidth": 920,
+        "minHeight": 640,
+        "resizable": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' http://localhost:5173; connect-src 'self' http://localhost:5173 ws://localhost:5173 https://api.openai.com https://api.anthropic.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi"],
+    "createUpdaterArtifacts": true,
+    "resources": {
+      "../../harness/dist/": "harness/",
+      "binaries/": "binaries/"
+    },
+    "icon": ["icons/icon.ico", "icons/32x32.png", "icons/128x128.png", "icons/icon.icns"]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZBRTk0RjczQjE0MjU3QzEKUldUQlYwS3hjMC9wK245Ky92THE5bFdjS2o5SzhjbjJEQTRBa3Q1d05lcnZ5dk5YYURaOTZJQkUK",
+      "endpoints": ["https://github.com/MatiasDuport/OrderCode-Releases/releases/latest/download/latest.json"],
+      "windows": { "installMode": "passive" }
+    }
+  }
+}

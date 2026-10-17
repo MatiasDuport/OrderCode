@@ -1,0 +1,14 @@
+{
+  "name": "ordercode",
+  "version": "0.3.0",
+  "private": true,
+  "packageManager": "pnpm@11.21.0",
+  "scripts": {
+    "dev": "pnpm --filter @ordercode/desktop dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm --filter @ordercode/harness test && pnpm --filter @ordercode/desktop test",
+    "lint": "pnpm -r lint",
+    "e2e": "pnpm --filter @ordercode/desktop e2e"
+  }
+}

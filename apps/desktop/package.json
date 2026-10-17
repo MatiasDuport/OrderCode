@@ -1,0 +1,44 @@
+{
+  "name": "@ordercode/desktop",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.21.0",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "pnpm --filter @ordercode/shared build && tsc --noEmit",
+    "test": "pnpm --filter @ordercode/shared build && pnpm typecheck && pnpm e2e",
+    "tauri:dev": "pnpm --dir ../harness build && tauri dev",
+    "tauri:build": "pnpm --dir ../.. build && tauri build",
+    "e2e": "playwright test"
+  },
+  "dependencies": {
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@fontsource-variable/nunito": "^5.3.0",
+    "@monaco-editor/react": "^4.7.0",
+    "@ordercode/shared": "workspace:*",
+    "@tailwindcss/vite": "^4.0.0",
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-dialog": "^2.8.3",
+    "@xterm/addon-fit": "latest",
+    "@xterm/xterm": "latest",
+    "lucide-react": "latest",
+    "monaco-editor": "^0.57.0",
+    "motion": "latest",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "zustand": "^5.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "latest",
+    "@tauri-apps/cli": "^2.0.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "tailwindcss": "^4.0.0",
+    "typescript": "~6.0.0",
+    "vite": "latest"
+  }
+}

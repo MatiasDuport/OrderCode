@@ -1,0 +1,7 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+allowBuilds:
+  node: set this to true or false
+nodeLinker: hoisted
+verifyDepsBeforeRun: false

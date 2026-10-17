@@ -1,0 +1,68 @@
+name: OrderCode desktop release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.21.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Check release version
+        shell: pwsh
+        run: |
+          $version = (Get-Content -LiteralPath 'apps/desktop/src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json).version
+          if ($env:GITHUB_REF_NAME -ne "v$version") { throw "Tag $env:GITHUB_REF_NAME must match the app version v$version." }
+
+      - name: Check release secrets
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          ORDERCODE_RELEASES_TOKEN: ${{ secrets.ORDERCODE_RELEASES_TOKEN }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) { throw 'Set the TAURI_SIGNING_PRIVATE_KEY Actions secret before creating a release.' }
+          if ([string]::IsNullOrWhiteSpace($env:ORDERCODE_RELEASES_TOKEN)) { throw 'Set the ORDERCODE_RELEASES_TOKEN Actions secret with write access to MatiasDuport/OrderCode-Releases.' }
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build shared contracts and Harness
+        run: pnpm build
+
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.ORDERCODE_RELEASES_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: apps/desktop
+          tauriScript: pnpm exec tauri
+          args: --bundles msi
+          owner: MatiasDuport
+          repo: OrderCode-Releases
+          releaseCommitish: main
+          tagName: ${{ github.ref_name }}
+          releaseName: OrderCode ${{ github.ref_name }}
+          releaseBody: Actualización oficial de OrderCode Desktop. Los instaladores se verifican con la firma de OrderCode.
+          releaseDraft: false
+          prerelease: false
+          uploadUpdaterJson: true
+          uploadUpdaterSignatures: true

@@ -1,0 +1,35 @@
+{
+  "name": "@ordercode/harness",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "ordercode-harness": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node build.mjs",
+    "typecheck": "pnpm --filter @ordercode/shared build && tsc -p tsconfig.json --noEmit",
+    "dev": "tsx src/index.ts",
+    "test": "pnpm --filter @ordercode/shared build && pnpm build && node dist/smoke.js",
+    "smoke": "node dist/smoke.js"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@2h2d/tree-sitter-wasms": "0.2.1",
+    "@modelcontextprotocol/client": "2.3.1",
+    "@ordercode/shared": "workspace:*",
+    "web-tree-sitter": "0.27.1"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/server": "2.3.1",
+    "@types/node": "^24.0.0",
+    "esbuild": "0.28.2",
+    "tsx": "latest",
+    "typescript": "~6.0.0",
+    "zod": "^4.6.7"
+  }
+}
