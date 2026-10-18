@@ -272,14 +272,14 @@ export class HarnessRuntime {
     return { cancelled: !!controller || tools.length > 0 };
   }
 
-  async invokeTool(sessionId: string, name: string, input: Record<string, unknown>, agentId: AgentRole | string = "general"): Promise<ToolResult> {
+  async invokeTool(sessionId: string, name: string, input: Record<string, unknown>, agentId: AgentRole | string = "general", trackActivity = true): Promise<ToolResult> {
     this.ensureOpen();
     const session = this.getSession(sessionId);
     const readOnly = this.tools.list(session.projectPath).find((definition) => definition.name === name)?.effects.every((effect) => effect === "READ") === true;
     if (this.activeRuns.has(sessionId) && !readOnly) throw new HarnessError("SESSION_BUSY", "Wait for the active agent before running a tool with side effects.");
     const controller = new AbortController();
     this.activeTools.set(controller, sessionId);
-    try { return await this.tools.invoke({ name, input, context: { sessionId, projectPath: session.projectPath, agentId, permissionProfile: session.permissionProfile, mode: session.mode, signal: controller.signal } }); }
+    try { return await this.tools.invoke({ name, input, context: { sessionId, projectPath: session.projectPath, agentId, permissionProfile: session.permissionProfile, mode: session.mode, trackActivity, signal: controller.signal } }); }
     finally { this.activeTools.delete(controller); this.notifyIdle(); }
   }
 

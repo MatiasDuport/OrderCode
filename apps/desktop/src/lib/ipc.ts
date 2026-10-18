@@ -331,8 +331,8 @@ export function pendingPermissions(sessionId?: string): Promise<Array<Record<str
   return rpc('permission.pending', sessionId ? { sessionId } : {});
 }
 
-export function invokeHarnessTool(sessionId: string, name: string, input: Record<string, unknown>): Promise<Record<string, unknown>> {
-  return rpc('tool.invoke', { sessionId, name, input });
+export function invokeHarnessTool(sessionId: string, name: string, input: Record<string, unknown>, options?: { trackActivity?: boolean }): Promise<Record<string, unknown>> {
+  return rpc('tool.invoke', { sessionId, name, input, ...(options?.trackActivity === false ? { trackActivity: false } : {}) });
 }
 
 export function cancelSession(sessionId: string): Promise<{ cancelled: boolean }> {

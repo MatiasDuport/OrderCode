@@ -86,11 +86,17 @@ button:disabled { cursor: not-allowed; }
 *::-webkit-scrollbar-button:increment { display: none !important; width: 0 !important; height: 0 !important; }
 *::-webkit-scrollbar-corner { background: transparent; }
 .app-shell { background: var(--obsidian); }
-.topbar { height: var(--chrome-height); min-height: var(--chrome-height); flex-basis: var(--chrome-height); gap: 4px; padding: 0 14px; background: var(--surface); border-top: 0; border-image: none; }
+.topbar { height: var(--chrome-height); min-height: var(--chrome-height); flex-basis: var(--chrome-height); gap: 4px; padding: 0 8px 0 10px; background: var(--surface); border-top: 0; border-image: none; user-select: none; }
+.topbar-brand-drag { display: flex; flex: 0 0 38px; height: 100%; align-items: center; justify-content: center; border-radius: 7px; }
 .topbar .brand-lockup { flex: 0 0 28px; min-width: 28px !important; width: 28px; height: 28px; padding: 0; background: transparent; box-shadow: none; }
 .topbar .brand-lockup-picture { width: 24px; height: 24px; }
 .topbar .icon-button { width: 28px; height: 28px; }
 .topbar .topbar-spacer { display: block; }
+.window-controls { display: flex; height: 28px; align-items: center; gap: 2px; margin-left: 5px; padding-left: 6px; border-left: 1px solid var(--border); }
+.window-control { display: grid; width: 32px; height: 27px; place-items: center; border-radius: 6px; color: var(--muted); background: transparent; transition: color var(--transition-fast), background var(--transition-fast), transform var(--transition-fast); }
+.window-control:hover { color: var(--frost); background: var(--surface-raised); }
+.window-control:active { transform: scale(.94); }
+.window-control--close:hover { color: #fff; background: #e5484d; }
 .brand-lockup { position: relative; min-width: 148px; padding: 0 4px; border-radius: 8px; }
 .brand-lockup--compact { flex-basis: 30px; min-width: 30px; width: 30px; padding: 0; }
 :root[data-theme='light'] .brand-lockup--full { background: #0b0f14; box-shadow: 0 1px 5px #0b0f141c; }

@@ -58,6 +58,7 @@ function taskActivity(events: HarnessEvent[], active: boolean): HarnessEvent[] {
     const type = event.type ?? event.summary;
     if (type === 'tool.started' || type === 'tool.completed') {
       const tool = event.toolName ?? event.summary.split(' · ')[0];
+      if (!event.runId && ['git.status', 'git.diff', 'git.branches', 'git.remotes', 'git.history', 'git.tags'].includes(tool)) continue;
       const group = `${event.runId ?? 'manual'}:${tool}`, identity = event.invocationId ? `${group}:${event.invocationId}` : undefined;
       const queue = pending.get(group) ?? [];
       if (type === 'tool.started') {

@@ -145,7 +145,7 @@ export class JsonRpcServer {
       }
       case "tool.invoke": {
         if (typeof object.name !== "string" || !object.input || typeof object.input !== "object" || Array.isArray(object.input)) throw new Error("A tool name and object input are required.");
-        return this.runtime.invokeTool(String(object.sessionId), object.name, object.input as Record<string, unknown>);
+        return this.runtime.invokeTool(String(object.sessionId), object.name, object.input as Record<string, unknown>, "general", object.trackActivity !== false);
       }
       case "terminal.consumeAuthorization": {
         const sessionId = String(object.sessionId ?? "");

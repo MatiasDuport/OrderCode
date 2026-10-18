@@ -21,6 +21,7 @@ interface ReleaseTools {
 export interface ToolInvocationContext {
   sessionId: string;
   runId?: string;
+  trackActivity?: boolean;
   projectPath: string;
   agentId: string;
   permissionProfile: PermissionProfile;
@@ -207,6 +208,7 @@ export class ToolRegistry {
   async invoke(invocation: ToolInvocation): Promise<ToolResult> {
     const tool = this.tools.get(invocation.name);
     if (!tool) throw new HarnessError("TOOL_NOT_FOUND", `Unknown tool: ${invocation.name}`);
+    const trackActivity = invocation.context.trackActivity !== false || !tool.definition.effects.every((effect) => effect === "READ");
     validateInput(tool.definition.inputSchema, invocation.input);
     const permission = tool.permission(invocation.input, invocation.context);
     const invocationId = randomUUID();
@@ -222,7 +224,7 @@ export class ToolRegistry {
     });
     if (check.kind === "reject") {
       const result: ToolResult = { ok: false, status: "rejected", toolName: invocation.name, summary: check.reason, durationMs: 0, data: { errorCode: "PERMISSION_DENIED" } };
-      this.onEvent?.("tool.completed", { sessionId: invocation.context.sessionId, runId: invocation.context.runId, invocationId, toolName: invocation.name, result });
+      if (trackActivity) this.onEvent?.("tool.completed", { sessionId: invocation.context.sessionId, runId: invocation.context.runId, invocationId, toolName: invocation.name, result });
       return result;
     }
     if (check.kind === "approval") {
@@ -231,7 +233,7 @@ export class ToolRegistry {
     }
     if (invocation.context.signal?.aborted) return { ok: false, status: "cancelled", toolName: invocation.name, summary: "Tool invocation cancelled before start.", durationMs: 0 };
     const startedAt = Date.now();
-    this.onEvent?.("tool.started", { sessionId: invocation.context.sessionId, runId: invocation.context.runId, invocationId, toolName: invocation.name, input: this.redactInput(invocation.name, invocation.input) });
+    if (trackActivity) this.onEvent?.("tool.started", { sessionId: invocation.context.sessionId, runId: invocation.context.runId, invocationId, toolName: invocation.name, input: this.redactInput(invocation.name, invocation.input) });
     let result: ToolResult;
     try {
       result = await tool.invoke(invocation.input, invocation.context);
@@ -240,7 +242,7 @@ export class ToolRegistry {
     }
     result.durationMs = Date.now() - startedAt;
     const visibleData = invocation.name === "fs.write" || invocation.name === "process.exec" ? result.data : undefined;
-    this.onEvent?.("tool.completed", { sessionId: invocation.context.sessionId, runId: invocation.context.runId, invocationId, toolName: invocation.name, result: { ...result, data: visibleData } });
+    if (trackActivity) this.onEvent?.("tool.completed", { sessionId: invocation.context.sessionId, runId: invocation.context.runId, invocationId, toolName: invocation.name, result: { ...result, data: visibleData } });
     return result;
   }
 

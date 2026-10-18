@@ -39,6 +39,7 @@ const agents = [
 ];
 
 function timeLabel(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? value : date.toLocaleString(); }
+function isExecutionActive(state: string): boolean { return ['PREPARING', 'RUNNING', 'WAITING_APPROVAL', 'PAUSING'].includes(state); }
 
 function CodeSurface() {
   const session = useDesktopStore((state) => state.session);
@@ -112,7 +113,7 @@ function parseGitChanges(output: string): Array<{ code: string; path: string }> 
 }
 
 function GitSurface() {
-  const { session, set } = useDesktopStore();
+  const { session, runtimeState, set } = useDesktopStore();
   const [status, setStatus] = useState('');
   const [changes, setChanges] = useState<Array<{ code: string; path: string }>>([]);
   const [unstagedDiff, setUnstagedDiff] = useState('');
@@ -126,21 +127,24 @@ function GitSurface() {
   const [commitMessage, setCommitMessage] = useState('');
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
+  const refreshInFlight = useRef(new Set<string>());
   const currentBranch = branches.find((branch) => branch.startsWith('* '))?.slice(2).trim() ?? '';
   const canWrite = !!session && session.mode !== 'Plan' && session.permission !== 'Lectura';
 
   const refresh = async () => {
-    if (!session) return;
+    if (!session || refreshInFlight.current.has(session.id)) return;
+    refreshInFlight.current.add(session.id);
     setError('');
     try {
       const [statusResult, unstagedResult, stagedResult, branchesResult, historyResult, remotesResult] = await Promise.all([
-        invokeHarnessTool(session.id, 'git.status', {}),
-        invokeHarnessTool(session.id, 'git.diff', { staged: false }),
-        invokeHarnessTool(session.id, 'git.diff', { staged: true }),
-        invokeHarnessTool(session.id, 'git.branches', {}),
-        invokeHarnessTool(session.id, 'git.history', { limit: 25 }),
-        invokeHarnessTool(session.id, 'git.remotes', {}),
+        invokeHarnessTool(session.id, 'git.status', {}, { trackActivity: false }),
+        invokeHarnessTool(session.id, 'git.diff', { staged: false }, { trackActivity: false }),
+        invokeHarnessTool(session.id, 'git.diff', { staged: true }, { trackActivity: false }),
+        invokeHarnessTool(session.id, 'git.branches', {}, { trackActivity: false }),
+        invokeHarnessTool(session.id, 'git.history', { limit: 25 }, { trackActivity: false }),
+        invokeHarnessTool(session.id, 'git.remotes', {}, { trackActivity: false }),
       ]);
+      if (useDesktopStore.getState().session?.id !== session.id) return;
       const failure = [statusResult, unstagedResult, stagedResult, branchesResult].find((item) => item.status !== 'completed');
       if (failure) throw new Error(String(failure.summary ?? 'No se pudo consultar el estado Git.'));
       const statusParts = toolText(statusResult).split('\0');
@@ -154,10 +158,19 @@ function GitSurface() {
       setRemotes(nextRemotes);
       if (!selectedRemote && nextRemotes.length) setSelectedRemote(nextRemotes.find((item) => item.name === 'origin')?.name ?? nextRemotes[0]!.name);
       if (!selectedBranch) setSelectedBranch(currentBranch || toolText(branchesResult).split(/\r?\n/).find((item) => item.startsWith('* '))?.slice(2).trim() || '');
-    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    } catch (cause) { if (useDesktopStore.getState().session?.id === session.id) setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { refreshInFlight.current.delete(session.id); }
   };
 
-  useEffect(() => { void refresh(); }, [session?.id, session?.updatedAt, session?.state]);
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  const previousRuntimeState = useRef(runtimeState);
+  useEffect(() => {
+    const previous = previousRuntimeState.current;
+    previousRuntimeState.current = runtimeState;
+    if (session?.id && isExecutionActive(previous) && !isExecutionActive(runtimeState)) void refreshRef.current();
+  }, [runtimeState, session?.id]);
+  useEffect(() => { if (session?.id) void refreshRef.current(); }, [session?.id]);
 
   const runGitAction = async (name: string, input: Record<string, unknown>) => {
     if (!session || busy) return;
@@ -198,7 +211,7 @@ function GitSurface() {
 }
 
 function ReleaseSurface() {
-  const { session, set, events } = useDesktopStore();
+  const { session, runtimeState, set, events } = useDesktopStore();
   const [branch, setBranch] = useState('');
   const [clean, setClean] = useState(false);
   const [remotes, setRemotes] = useState<Array<{ name: string; url: string }>>([]);
@@ -211,6 +224,7 @@ function ReleaseSurface() {
   const [output, setOutput] = useState('');
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
+  const refreshInFlight = useRef(new Set<string>());
   const [deployHookDraft, setDeployHookDraft] = useState('');
   const [deployHookConfigured, setDeployHookConfigured] = useState(false);
   const [deployHookBusy, setDeployHookBusy] = useState(false);
@@ -242,14 +256,16 @@ function ReleaseSurface() {
   };
 
   const refresh = async () => {
-    if (!session) return;
+    if (!session || refreshInFlight.current.has(session.id)) return;
+    refreshInFlight.current.add(session.id);
     setError('');
     try {
       const [statusResult, remotesResult, tagsResult] = await Promise.all([
-        invokeHarnessTool(session.id, 'git.status', {}),
-        invokeHarnessTool(session.id, 'git.remotes', {}),
-        invokeHarnessTool(session.id, 'git.tags', {}),
+        invokeHarnessTool(session.id, 'git.status', {}, { trackActivity: false }),
+        invokeHarnessTool(session.id, 'git.remotes', {}, { trackActivity: false }),
+        invokeHarnessTool(session.id, 'git.tags', {}, { trackActivity: false }),
       ]);
+      if (useDesktopStore.getState().session?.id !== session.id) return;
       if (statusResult.status !== 'completed') throw new Error(String(statusResult.summary ?? 'No se pudo consultar Git.'));
       const rawStatus = toolText(statusResult);
       const statusHeader = rawStatus.split('\0')[0] ?? '';
@@ -260,10 +276,19 @@ function ReleaseSurface() {
       setRemotes(nextRemotes);
       setTags(tagsResult.status === 'completed' ? toolText(tagsResult).split(/\r?\n/).filter(Boolean) : []);
       if (!remoteName && nextRemotes.length) setRemoteName(nextRemotes.find((item) => item.name === 'origin')?.name ?? nextRemotes[0]!.name);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    } catch (cause) { if (useDesktopStore.getState().session?.id === session.id) setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { refreshInFlight.current.delete(session.id); }
   };
 
-  useEffect(() => { void refresh(); }, [session?.id, session?.updatedAt, session?.state]);
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  const previousRuntimeState = useRef(runtimeState);
+  useEffect(() => {
+    const previous = previousRuntimeState.current;
+    previousRuntimeState.current = runtimeState;
+    if (session?.id && isExecutionActive(previous) && !isExecutionActive(runtimeState)) void refreshRef.current();
+  }, [runtimeState, session?.id]);
+  useEffect(() => { if (session?.id) void refreshRef.current(); }, [session?.id]);
 
   const runAction = async (name: string, input: Record<string, unknown>) => {
     if (!session || busy) return;

@@ -37,6 +37,12 @@ test("binary files cannot be decoded or overwritten as text and parallel tool ev
   assert.deepEqual(await readFile(join(env.project, 'photo.jpg')), bytes);
   const results = await Promise.all([env.runtime.invokeTool(session.id, 'fs.read', { path: 'source.txt' }), env.runtime.invokeTool(session.id, 'fs.read', { path: 'source.txt' })]);
   assert.ok(results.every((result) => result.status === 'completed'));
+  const eventCount = env.runtime.listEvents(session.id).length;
+  assert.equal((await env.runtime.invokeTool(session.id, 'fs.read', { path: 'source.txt' }, 'general', false)).status, 'completed');
+  assert.equal(env.runtime.listEvents(session.id).length, eventCount, 'background read-only refreshes should not appear as agent tasks');
+  const writeStartsBefore = env.runtime.listEvents(session.id).filter((event) => event.type === 'tool.started' && event.payload.toolName === 'fs.write').length;
+  await env.runtime.invokeTool(session.id, 'fs.write', { path: 'tracked.txt', content: 'tracked' }, 'general', false);
+  assert.equal(env.runtime.listEvents(session.id).filter((event) => event.type === 'tool.started' && event.payload.toolName === 'fs.write').length, writeStartsBefore + 1, 'write actions must remain visible in activity');
   const events = env.runtime.listEvents(session.id).filter((event) => event.type === 'tool.started' || event.type === 'tool.completed');
   const starts = events.filter((event) => event.type === 'tool.started');
   assert.equal(new Set(starts.map((event) => event.payload.invocationId)).size, starts.length);
