@@ -1,7 +1,8 @@
 import { cloneElement, isValidElement, useEffect, useState } from 'react';
 import { Activity, Accessibility, Cable, Code2, Database, Download, Moon, PlugZap, ShieldCheck, SlidersHorizontal, WalletCards } from 'lucide-react';
+import { listen } from '@tauri-apps/api/event';
 import { useDesktopStore } from '../lib/store';
-import { chatgptAccountStatus, connectChatGPT, createCompatibleProvider, deleteCompatibleProvider, disconnectChatGPT, health, isDesktopApp, listProviders, providerKeysStatus, removeProviderCredential, setProviderCredential, updateSession } from '../lib/ipc';
+import { chatgptAccountStatus, connectChatGPT, connectXai, createCompatibleProvider, deleteCompatibleProvider, disconnectChatGPT, disconnectXai, health, isDesktopApp, listProviders, providerKeysStatus, removeProviderCredential, setProviderCredential, updateSession, xaiAccountStatus, type XaiDeviceCode } from '../lib/ipc';
 import type { ExecutionBudget } from '../lib/contracts';
 import type { ReactNode } from 'react';
 import { Localized } from '../lib/localization';
@@ -32,7 +33,7 @@ function PreferenceRow({ title, description, children }: { title: string; descri
 }
 
 export function SettingsView({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
-  const { session, health: runtimeHealth, language, themePreference, density, reducedMotion, editorFontSize, tabSize, terminalFontSize, settingsSection, set } = useDesktopStore();
+  const { session, health: runtimeHealth, language, themePreference, density, reducedMotion, editorFontSize, tabSize, terminalFontSize, settingsSection, hiddenModelProviders, showAdvancedModels, recentModels, favoriteModels, set } = useDesktopStore();
   const [category, setCategory] = useState<CategoryId>('general');
   const [providers, setProviders] = useState<Provider[]>([]);
   const [storedKeys, setStoredKeys] = useState<Record<string, boolean>>({});
@@ -47,6 +48,9 @@ export function SettingsView({ onOpenWorkspace }: { onOpenWorkspace: () => void 
   const [runtimeStatus, setRuntimeStatus] = useState('');
   const [checkingRuntime, setCheckingRuntime] = useState(false);
   const [connectingChatGPT, setConnectingChatGPT] = useState(false);
+  const [connectingXai, setConnectingXai] = useState(false);
+  const [xai, setXai] = useState<{ connected: boolean }>({ connected: false });
+  const [xaiDeviceCode, setXaiDeviceCode] = useState<XaiDeviceCode | null>(null);
 
   useEffect(() => {
     if (categories.some((item) => item.id === settingsSection)) setCategory(settingsSection as CategoryId);
@@ -59,13 +63,20 @@ export function SettingsView({ onOpenWorkspace }: { onOpenWorkspace: () => void 
 
   const refreshProviders = async () => {
     const next = await listProviders();
-    const [credentials, account] = await Promise.all([providerKeysStatus(next.map((provider) => provider.id)), chatgptAccountStatus()]);
+    const [credentials, account, xaiAccount] = await Promise.all([providerKeysStatus(next.map((provider) => provider.id)), chatgptAccountStatus(), xaiAccountStatus()]);
     setProviders(next);
     setStoredKeys(credentials);
     setChatgpt(account);
+    setXai(xaiAccount);
     setProviderError('');
   };
   useEffect(() => { void refreshProviders().catch((cause) => setProviderError(cause instanceof Error ? cause.message : String(cause))); }, []);
+  useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void listen<XaiDeviceCode>('ordercode-xai-device-code', (event) => { if (active) setXaiDeviceCode(event.payload); }).then((stop) => { if (active) unlisten = stop; else stop(); }).catch(() => undefined);
+    return () => { active = false; unlisten?.(); };
+  }, []);
 
   const saveLimits = async () => {
     if (!session || savingLimits) return;
@@ -130,6 +141,20 @@ export function SettingsView({ onOpenWorkspace }: { onOpenWorkspace: () => void 
     finally { setConnectingChatGPT(false); }
   };
 
+  const updateXaiConnection = async (connect: boolean) => {
+    if (connectingXai) return;
+    setConnectingXai(true); setProviderError('');
+    try { setXai(connect ? await connectXai() : await disconnectXai()); await refreshProviders(); if (!connect) setXaiDeviceCode(null); }
+    catch (cause) { setProviderError(cause instanceof Error ? cause.message : String(cause)); setXaiDeviceCode(null); }
+    finally { setConnectingXai(false); }
+  };
+
+  const renderProviderError = () => {
+    if (!providerError) return null;
+    if (providerError.includes('3p_delegated_access_policy_denied')) return <div className="settings-error" role="alert"><strong>Acceso bloqueado por la política de tu organización</strong><p>Un administrador global de OpenAI debe permitir OrderCode en External access y autorizar el uso delegado del plan ChatGPT. Después, vuelve a conectar la cuenta.</p><a href="https://admin.openai.com/external-access" target="_blank" rel="noreferrer">Abrir External access ↗</a><span>·</span><a href="https://help.openai.com/en/articles/12289294-managing-your-tenant-in-admin-console" target="_blank" rel="noreferrer">Guía de administración ↗</a></div>;
+    return <div className="settings-error" role="alert">{providerError}</div>;
+  };
+
   const selectedProviderCount = providers.filter((item) => item.configured || item.id === 'ollama' || item.id === 'lmstudio' || (item.id === 'openai_chatgpt' && chatgpt.connected)).length;
   const permissionName = session?.permission ?? 'Guiado';
   const renderContent = () => {
@@ -145,22 +170,30 @@ export function SettingsView({ onOpenWorkspace }: { onOpenWorkspace: () => void 
     </>;
     if (category === 'models') return <>
       <SectionHeading title="Modelos y proveedores" description="Administra credenciales y endpoints. El modelo de cada conversación se selecciona en el Composer." />
+      <section className="settings-card settings-model-catalog"><div className="settings-card-heading"><strong>Catálogo del selector</strong><span>PERSONALIZABLE</span></div><p>Empieza con una lista breve: modelos gratuitos verificados, acceso de tu plan y opciones destacadas. Los catálogos completos se abren cuando los solicitas.</p><small className="settings-model-plan-note">Las conexiones de plan disponibles son ChatGPT y SuperGrok; otros proveedores requieren API key.</small>
+        <PreferenceRow title="Mostrar catálogos completos por defecto" description="Incluye los modelos avanzados de los proveedores visibles en el selector."><input className="settings-checkbox" type="checkbox" checked={showAdvancedModels} onChange={(event) => set('showAdvancedModels', event.target.checked)} /></PreferenceRow>
+        <div className="settings-model-provider-title"><strong>Proveedores visibles en el selector</strong><small>Oculta un proveedor si no quieres ver sus modelos.</small></div>
+        <div className="settings-model-provider-list">{providers.map((provider) => <label className="settings-model-provider" key={provider.id}><input type="checkbox" checked={!hiddenModelProviders.includes(provider.id)} onChange={(event) => { const next = event.target.checked ? hiddenModelProviders.filter((id) => id !== provider.id) : [...hiddenModelProviders, provider.id]; set('hiddenModelProviders', next); }} /><span><strong>{provider.id === 'openai_chatgpt' ? 'ChatGPT con tu cuenta' : provider.label}</strong><small>{provider.configured ? 'Conectado' : provider.id === 'opencode_zen' ? 'Gratis · no requiere clave' : provider.id === 'ollama' || provider.id === 'lmstudio' ? 'Modelo local' : 'Conecta su clave en esta sección'}</small></span></label>)}</div>
+        <div className="settings-model-actions"><button type="button" className="settings-secondary-action" disabled={!recentModels.length} onClick={() => set('recentModels', [])}>Borrar modelos recientes{recentModels.length ? ` · ${recentModels.length}` : ''}</button><button type="button" className="settings-secondary-action" disabled={!favoriteModels.length} onClick={() => set('favoriteModels', [])}>Borrar favoritos{favoriteModels.length ? ` · ${favoriteModels.length}` : ''}</button></div>
+      </section>
       <div className="settings-card settings-provider-summary"><span className="settings-status-dot" /><strong>{selectedProviderCount} proveedores disponibles</strong><small>Las claves se almacenan en el almacén seguro del sistema operativo. No se muestran después de guardarlas.</small></div>
       {providers.map((provider) => {
         const local = provider.id === 'ollama' || provider.id === 'lmstudio';
         const openCode = provider.id === 'opencode_zen';
         const openRouter = provider.id === 'openrouter';
         const openAi = provider.id === 'openai';
+        const xaiApi = provider.id === 'xai';
         const chatGPTPlan = provider.id === 'openai_chatgpt';
-        const providerNote = local ? 'El endpoint local se consulta al descubrir modelos.' : openCode ? <>Modelos gratuitos publicados por OpenCode. <a href="https://opencode.ai/console/" target="_blank" rel="noreferrer">Obtener clave</a> · <a href="https://opencode.ai/v2/docs/console/models/" target="_blank" rel="noreferrer">Modelos y precios</a></> : 'El coste aparece solo si hay precios verificables.';
+        const xaiPlan = provider.id === 'xai_plan';
+        const providerNote = local ? 'El endpoint local se consulta al descubrir modelos.' : openCode ? <>Modelos gratuitos verificados, disponibles sin clave. OpenCode puede cambiar su catálogo. <a href="https://opencode.ai/console/" target="_blank" rel="noreferrer">Obtener clave</a> · <a href="https://dev.opencode.ai/v2/docs/console/models/" target="_blank" rel="noreferrer">Modelos y precios</a></> : 'El coste aparece solo si hay precios verificables.';
         return <article className="settings-provider-card" key={provider.id}>
-          <div className="settings-provider-copy"><strong>{chatGPTPlan ? 'ChatGPT con tu cuenta' : provider.label}</strong><span>{chatGPTPlan ? chatgpt.connected ? `Conectado${chatgpt.email ? ` · ${chatgpt.email}` : ''}` : 'Sin conectar' : local ? 'Proveedor local' : storedKeys[provider.id] ? 'Clave guardada en el sistema' : provider.configured ? 'Clave disponible en el entorno' : 'Sin configurar'}</span><small>{provider.id} · {chatGPTPlan ? 'Usa los modelos que tu cuenta tenga habilitados mediante el acceso oficial al plan ChatGPT. Aplican sus límites de uso.' : providerNote}</small>{openRouter && <small>Catálogo actualizado de cientos de modelos de distintos proveedores, con precios gratuitos identificados cuando se verifican. Puedes descubrirlos sin clave; para enviar solicitudes debes conectar una clave de OpenRouter.</small>}{openAi && <small>La clave de API usa la facturación de la plataforma API de OpenAI; no consume la suscripción de ChatGPT.</small>}{chatGPTPlan && <small>La sesión se guarda cifrada por el almacén seguro del sistema. Las credenciales no se envían al frontend.</small>}</div>
-          {chatGPTPlan ? <div className="settings-provider-actions"><button type="button" disabled={!isDesktopApp() || connectingChatGPT} onClick={() => void updateChatGPTConnection(true)}>{connectingChatGPT ? 'Conectando…' : 'Continue with ChatGPT'}</button>{chatgpt.connected && <button type="button" disabled={connectingChatGPT} onClick={() => void updateChatGPTConnection(false)}>{connectingChatGPT ? 'Procesando…' : 'Desconectar cuenta'}</button>}</div> : !local && <div className="settings-provider-actions"><input type="password" autoComplete="new-password" value={keyDrafts[provider.id] ?? ''} onChange={(event) => setKeyDrafts({ ...keyDrafts, [provider.id]: event.target.value })} placeholder="Clave API" aria-label={`Clave API ${provider.label}`} /><button type="button" disabled={!keyDrafts[provider.id]?.trim() || busyProvider === provider.id} onClick={() => void updateCredential(provider.id, keyDrafts[provider.id]?.trim() ?? '')}>{busyProvider === provider.id ? 'Guardando…' : 'Guardar clave'}</button>{storedKeys[provider.id] && <button type="button" disabled={busyProvider === provider.id} onClick={() => void updateCredential(provider.id, null)}>{busyProvider === provider.id ? 'Procesando…' : 'Eliminar clave'}</button>}</div>}
+          <div className="settings-provider-copy"><strong>{chatGPTPlan ? 'ChatGPT con tu cuenta' : xaiPlan ? 'SuperGrok con tu cuenta' : xaiApi ? 'xAI API' : provider.label}</strong><span>{chatGPTPlan ? chatgpt.connected ? `Conectado${chatgpt.email ? ` · ${chatgpt.email}` : ''}` : 'Sin conectar' : xaiPlan ? xai.connected ? 'Conectado' : 'Sin conectar' : openCode ? storedKeys[provider.id] ? 'Clave guardada en el sistema' : 'Modelos gratuitos disponibles' : local ? 'Proveedor local' : storedKeys[provider.id] ? 'Clave guardada en el sistema' : provider.configured ? 'Clave disponible en el entorno' : 'Sin configurar'}</span><small>{provider.id} · {chatGPTPlan ? 'Usa los modelos que tu cuenta tenga habilitados mediante el acceso oficial al plan ChatGPT. Aplican sus límites de uso.' : xaiPlan ? 'Accede a los modelos incluidos en tu plan Grok mediante la conexión OAuth de xAI. Se aplican las cuotas y condiciones de tu cuenta.' : providerNote}</small>{xaiPlan && <><small>La autorización se guarda en el almacén seguro del sistema. La clave API de xAI se configura por separado en su proveedor.</small>{xaiDeviceCode && connectingXai && <div className="settings-device-code"><span>Código de acceso</span><strong>{xaiDeviceCode.userCode}</strong><a href={xaiDeviceCode.verificationUri} target="_blank" rel="noreferrer">Abrir verificación de xAI ↗</a><small>Escribe el código en la página de xAI para autorizar esta cuenta.</small></div>}</>}{xaiApi && <small>La clave API utiliza facturación de la plataforma xAI; no consume el uso de tu plan SuperGrok.</small>}{openRouter && <small>Catálogo actualizado de cientos de modelos de distintos proveedores, con precios gratuitos identificados cuando se verifican. Puedes descubrirlos sin clave; para enviar solicitudes debes conectar una clave de OpenRouter.</small>}{openAi && <small>La clave de API usa la facturación de la plataforma API de OpenAI; no consume la suscripción de ChatGPT.</small>}{chatGPTPlan && <><small>La sesión se guarda cifrada por el almacén seguro del sistema. Las credenciales no se envían al frontend.</small><small>Si aparece 3p_delegated_access_policy_denied, tu organización bloqueó este permiso. Un administrador global debe permitir OrderCode en External access y aprobar el uso delegado del plan; habilitar solo el inicio de sesión no basta.</small><a href="https://help.openai.com/en/articles/12289294-managing-your-tenant-in-admin-console" target="_blank" rel="noreferrer">Ver instrucciones para administradores ↗</a></>}</div>
+          {chatGPTPlan ? <div className="settings-provider-actions"><button type="button" disabled={!isDesktopApp() || connectingChatGPT} onClick={() => void updateChatGPTConnection(true)}>{connectingChatGPT ? 'Conectando…' : 'Continue with ChatGPT'}</button>{chatgpt.connected && <button type="button" disabled={connectingChatGPT} onClick={() => void updateChatGPTConnection(false)}>{connectingChatGPT ? 'Procesando…' : 'Desconectar cuenta'}</button>}</div> : xaiPlan ? <div className="settings-provider-actions"><button type="button" disabled={!isDesktopApp() || connectingXai} onClick={() => void updateXaiConnection(true)}>{connectingXai ? 'Esperando autorización…' : 'Conectar SuperGrok'}</button>{xai.connected && <button type="button" disabled={connectingXai} onClick={() => void updateXaiConnection(false)}>{connectingXai ? 'Procesando…' : 'Desconectar cuenta'}</button>}</div> : !local && <div className="settings-provider-actions"><input type="password" autoComplete="new-password" value={keyDrafts[provider.id] ?? ''} onChange={(event) => setKeyDrafts({ ...keyDrafts, [provider.id]: event.target.value })} placeholder="Clave API" aria-label={`Clave API ${provider.label}`} /><button type="button" disabled={!keyDrafts[provider.id]?.trim() || busyProvider === provider.id} onClick={() => void updateCredential(provider.id, keyDrafts[provider.id]?.trim() ?? '')}>{busyProvider === provider.id ? 'Guardando…' : 'Guardar clave'}</button>{storedKeys[provider.id] && <button type="button" disabled={busyProvider === provider.id} onClick={() => void updateCredential(provider.id, null)}>{busyProvider === provider.id ? 'Procesando…' : 'Eliminar clave'}</button>}</div>}
         </article>;
       })}
       <section className="settings-card"><div className="settings-card-heading"><strong>Endpoint compatible</strong><span>OPENAI API</span></div><p>Añade proveedores compatibles con Chat Completions. Usa HTTPS; HTTP solo se permite en servicios locales. El nombre y la URL se guardan localmente; la clave se guarda en el almacén seguro del sistema.</p><div className="settings-form-grid"><label>Nombre<input value={endpoint.label} maxLength={80} onChange={(event) => setEndpoint({ ...endpoint, label: event.target.value })} placeholder="Mi proveedor" /></label><label>URL base<input value={endpoint.baseUrl} maxLength={2000} onChange={(event) => setEndpoint({ ...endpoint, baseUrl: event.target.value })} placeholder="https://api.example.com/v1" /></label><label>Clave API<input type="password" autoComplete="new-password" value={endpoint.apiKey} maxLength={4096} onChange={(event) => setEndpoint({ ...endpoint, apiKey: event.target.value })} placeholder="Clave del proveedor" /></label></div><button type="button" className="settings-primary-action" onClick={() => void addEndpoint()} disabled={!endpoint.label.trim() || !endpoint.baseUrl.trim() || !endpoint.apiKey.trim() || savingEndpoint}>{savingEndpoint ? 'Guardando…' : 'Añadir proveedor'}</button>
         {providers.filter((provider) => provider.custom).map((provider) => <div className="settings-custom-provider" key={provider.id}><div><strong>{provider.label}</strong><small>{provider.baseUrl} · {provider.configured ? 'Listo' : 'Falta configurar la clave'}</small></div><button type="button" disabled={busyProvider === provider.id} onClick={() => { setBusyProvider(provider.id); void deleteCompatibleProvider(provider.id).then(refreshProviders).catch((cause) => setProviderError(cause instanceof Error ? cause.message : String(cause))).finally(() => setBusyProvider(null)); }}>{busyProvider === provider.id ? 'Eliminando…' : 'Eliminar endpoint'}</button></div>)}</section>
-      {providerError && <div className="settings-error" role="alert">{providerError}</div>}
+      {renderProviderError()}
     </>;
     if (category === 'usage') return <>
       <SectionHeading title="Uso y límites" description="Fija topes para la sesión activa. Los campos vacíos no limitan el uso." />
@@ -168,7 +201,7 @@ export function SettingsView({ onOpenWorkspace }: { onOpenWorkspace: () => void 
         {([['input', 'Tokens de entrada'], ['output', 'Tokens de salida'], ['cost', 'Coste máximo (USD)'], ['tools', 'Llamadas de herramientas'], ['minutes', 'Duración máxima (minutos)']] as const).map(([key, label]) => <label key={key}>{label}<input type="number" min="0" step={key === 'cost' ? '0.01' : '1'} max={key === 'cost' ? '1000000' : undefined} value={limits[key]} placeholder="Sin límite" disabled={!session} onChange={(event) => setLimits({ ...limits, [key]: event.target.value })} /></label>)}
       </div><button type="button" className="settings-primary-action" onClick={() => void saveLimits()} disabled={!session || savingLimits}>{savingLimits ? 'Guardando…' : 'Guardar límites'}</button><small className="settings-footnote">El límite de salida se envía al proveedor. El de entrada se comprueba al finalizar cada llamada. El límite económico usa precios actuales del modelo y una estimación preventiva.</small></section>
       {!session && <div className="settings-inline-note"><Activity size={14} /><span>Abre o conecta un workspace para configurar límites por sesión.</span><button type="button" onClick={onOpenWorkspace}>Ir al workspace</button></div>}
-      {providerError && <div className="settings-error" role="alert">{providerError}</div>}
+      {renderProviderError()}
     </>;
     if (category === 'permissions') return <>
       <SectionHeading title="Permisos y seguridad" description="Revisa el perfil de autorización activo y dónde se almacenan las credenciales." />

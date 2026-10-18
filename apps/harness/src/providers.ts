@@ -16,6 +16,7 @@ export interface ProviderAdapter {
 export interface ProviderRegistryOptions {
   adapters?: ProviderAdapter[];
   onOAuthTokensRotated?: (credential: ChatGPTOAuthCredential) => void;
+  onXaiOAuthTokensRotated?: (credential: XaiOAuthCredential) => void;
 }
 
 export interface ChatGPTOAuthCredential {
@@ -28,6 +29,13 @@ export interface ChatGPTOAuthCredential {
   hostId: string;
   expiresAt: number;
   scopes: string[];
+}
+
+export interface XaiOAuthCredential {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;
+  connectionId: string;
 }
 
 export interface CustomProviderInput { id?: string; label: string; baseUrl: string }
@@ -136,6 +144,8 @@ async function openCodeFreeModels(url: string, signal?: AbortSignal): Promise<Ma
   if (!rows.length || !rows.some((row) => row[2]?.startsWith("https://opencode.ai/inference/")) || !rows.some((row) => row.length >= 5)) throw new HarnessError("INVALID_PROVIDER_RESPONSE", "OpenCode's current endpoint and pricing tables could not be verified.");
   return models;
 }
+
+const OPENCODE_FREE_MODELS_CACHE_MS = 60_000;
 
 function mapToolNames(tools: ToolDefinition[]): { wire: ToolDefinition[]; decode: (value: string) => string } {
   const names = new Map(tools.map((tool) => [wireToolName(tool.name), tool.name]));
@@ -327,6 +337,7 @@ async function parseResponsesStream(body: ReadableStream<Uint8Array>, onChunk: (
 export class OpenAICompatibleProvider implements ProviderAdapter {
   configured: boolean;
   private apiKey?: string;
+  private verifiedOpenCodeFreeModels?: { ids: Set<string>; expiresAt: number };
 
   constructor(
     readonly id: string,
@@ -336,11 +347,11 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
     private readonly extraHeaders: Record<string, string> = {},
     private readonly allowUnauthenticated = false,
     private readonly modelsUrl?: string,
-    private readonly pricingUrl = "https://opencode.ai/v2/docs/console/models/",
+    private readonly pricingUrl = "https://dev.opencode.ai/v2/docs/console/models/",
   ) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
     this.apiKey = apiKey;
-    this.configured = Boolean(apiKey) || allowUnauthenticated || id === "ollama" || id === "lmstudio";
+    this.configured = Boolean(apiKey) || allowUnauthenticated || id === "ollama" || id === "lmstudio" || id === "opencode_zen";
   }
 
   readonly baseUrl: string;
@@ -355,8 +366,8 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
 
   async listModels(signal?: AbortSignal): Promise<ProviderModel[]> {
     const local = this.id === "ollama" || this.id === "lmstudio" || this.allowUnauthenticated;
-    // OpenRouter and OpenCode expose public model catalogs. Discovering them does not authorize inference;
-    // their models remain unavailable until the user connects that provider's own API key.
+    // OpenRouter's public catalog still requires its key for inference. OpenCode's models are exposed
+    // only after joining its live catalog with the current pricing table below.
     const publicCatalog = this.id === "openrouter" || this.id === "opencode_zen";
     if (!this.configured && !local && !publicCatalog) return [];
     const [response, openCodeModels] = await Promise.all([
@@ -367,7 +378,7 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
     type CatalogModel = { id?: string; name?: string; type?: string; capabilities?: { completion_chat?: boolean; function_calling?: boolean }; supported_parameters?: string[]; architecture?: { output_modalities?: string[] }; pricing?: { prompt?: string | number; completion?: string | number } };
     const payload = await response.json() as { data?: CatalogModel[] };
     if (!Array.isArray(payload.data)) throw new HarnessError("INVALID_PROVIDER_RESPONSE", "The model catalog did not contain a models list.");
-    return payload.data.filter((model): model is CatalogModel & { id: string } => typeof model.id === "string").flatMap((model) => {
+    const models: ProviderModel[] = payload.data.filter((model): model is CatalogModel & { id: string } => typeof model.id === "string").flatMap((model) => {
       if (model.capabilities?.completion_chat === false || (model.type && !["chat", "language", "model"].includes(model.type)) || (model.architecture?.output_modalities && !model.architecture.output_modalities.includes("text"))) return [];
       if (this.id === "openai" && (!/^(?:gpt-|chatgpt-|o\d|codex-)/.test(model.id) || /(?:audio|realtime|transcrib|tts|image|instruct|deep-research|search-preview)/i.test(model.id))) return [];
       if (/(?:^|[\/_-])(?:embed(?:ding)?s?|rerank|whisper|tts|moderation|dall-e)(?:[\/_-]|$)/i.test(model.id)) return [];
@@ -375,7 +386,7 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
         const label = openCodeModels?.get(model.id);
         if (!label) return [];
         return [{
-          id: model.id, providerId: this.id, label, capabilities: ["chat", "streaming", "tool-calling"], available: this.configured,
+          id: model.id, providerId: this.id, label, capabilities: ["chat", "streaming", "tool-calling"], available: true,
           priceKind: "free" as const,
           pricing: { inputPerMillionUsd: 0, outputPerMillionUsd: 0, updatedAt: new Date().toISOString() },
         }];
@@ -391,11 +402,21 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
         ...(verifiedPricing ? { pricing: { inputPerMillionUsd, outputPerMillionUsd, updatedAt: new Date().toISOString() } } : {}),
       }];
     });
+    if (this.id === "opencode_zen") this.verifiedOpenCodeFreeModels = { ids: new Set(models.map((model) => model.id)), expiresAt: Date.now() + OPENCODE_FREE_MODELS_CACHE_MS };
+    return models;
   }
 
   private async request(request: ProviderRequest, stream: boolean, onChunk: (chunk: string) => void): Promise<ProviderTurn> {
     const local = this.id === "ollama" || this.id === "lmstudio" || this.allowUnauthenticated;
-    if (!this.apiKey && !local) throw new HarnessError("PROVIDER_NOT_CONFIGURED", `Provider ${this.id} is not configured. Supply its API key in Settings or via its environment variable.`);
+    if (!this.apiKey && !local) {
+      if (this.id !== "opencode_zen") throw new HarnessError("PROVIDER_NOT_CONFIGURED", `Provider ${this.id} is not configured. Supply its API key in Settings or via its environment variable.`);
+      let verified = this.verifiedOpenCodeFreeModels;
+      if (!verified || verified.expiresAt <= Date.now()) {
+        await this.listModels(request.signal);
+        verified = this.verifiedOpenCodeFreeModels;
+      }
+      if (!verified?.ids.has(request.model)) throw new HarnessError("PROVIDER_NOT_CONFIGURED", "This OpenCode model is not currently verified as free. Select a listed free model or connect an OpenCode API key in Settings.", { providerId: this.id });
+    }
     const mappedTools = request.tools?.length ? mapToolNames(request.tools) : undefined;
     const useResponses = this.id === "openai" && !/^(?:gpt-3\.5|gpt-4(?:$|-)|chatgpt-4o)/.test(request.model);
     const payload: Record<string, unknown> = {
@@ -427,7 +448,101 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
     return { ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}), accept: "text/event-stream", ...this.extraHeaders };
   }
 
-  setCredential(key: string | undefined): void { this.apiKey = key; this.configured = Boolean(key) || this.allowUnauthenticated || this.id === "ollama" || this.id === "lmstudio"; }
+  setCredential(key: string | undefined): void { this.apiKey = key; this.configured = Boolean(key) || this.allowUnauthenticated || this.id === "ollama" || this.id === "lmstudio" || this.id === "opencode_zen"; }
+}
+
+/** SuperGrok plan access through xAI's OAuth device flow. API-key billing remains a separate provider. */
+export class XaiPlanProvider extends OpenAICompatibleProvider {
+  private credential?: XaiOAuthCredential;
+  private refreshing?: Promise<void>;
+  private credentialGeneration = 0;
+
+  constructor(private readonly onTokensRotated?: (credential: XaiOAuthCredential) => void) {
+    super("xai_plan", "SuperGrok", "https://api.x.ai/v1", "", { "User-Agent": "OrderCode" });
+  }
+
+  setCredential(key: string | undefined): void {
+    if (key) throw new HarnessError("PROVIDER_CREDENTIAL_UNSUPPORTED", "SuperGrok uses the account connection. Add API keys in the separate xAI provider settings.");
+    this.setOAuthCredential(null);
+  }
+
+  setOAuthCredential(credential: XaiOAuthCredential | null): void {
+    this.credentialGeneration += 1;
+    this.credential = credential ?? undefined;
+    this.refreshing = undefined;
+    super.setCredential(credential?.accessToken);
+  }
+
+  async listModels(signal?: AbortSignal): Promise<ProviderModel[]> {
+    if (!this.credential) return [];
+    await this.ensureAccessToken(false, signal);
+    try { return (await super.listModels(signal)).map((model) => ({ ...model, priceKind: "subscription", pricing: undefined })); }
+    catch (error) {
+      if (!this.isUnauthorized(error)) throw error;
+      await this.ensureAccessToken(true, signal);
+      return (await super.listModels(signal)).map((model) => ({ ...model, priceKind: "subscription", pricing: undefined }));
+    }
+  }
+
+  async complete(request: ProviderRequest): Promise<ProviderTurn> {
+    await this.ensureAccessToken(false, request.signal);
+    try { return await super.complete(request); }
+    catch (error) {
+      if (!this.isUnauthorized(error)) throw error;
+      await this.ensureAccessToken(true, request.signal);
+      return super.complete(request);
+    }
+  }
+
+  async stream(request: ProviderRequest, onChunk: (chunk: string) => void): Promise<ProviderTurn> {
+    await this.ensureAccessToken(false, request.signal);
+    try { return await super.stream(request, onChunk); }
+    catch (error) {
+      if (!this.isUnauthorized(error)) throw error;
+      await this.ensureAccessToken(true, request.signal);
+      return super.stream(request, onChunk);
+    }
+  }
+
+  private isUnauthorized(error: unknown): boolean {
+    return error instanceof HarnessError && error.details?.providerId === this.id && error.details.status === 401;
+  }
+
+  private async ensureAccessToken(force: boolean, signal?: AbortSignal): Promise<void> {
+    const current = this.credential;
+    if (!current) throw new HarnessError("PROVIDER_NOT_CONFIGURED", "Connect a SuperGrok account in Settings to use models from your xAI plan.");
+    if (!force && current.expiresAt > Date.now() + 60_000) return;
+    const generation = this.credentialGeneration;
+    if (!this.refreshing) {
+      const refresh = async () => {
+        const response = await fetch("https://auth.x.ai/oauth2/token", {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+          body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: current.refreshToken, client_id: "b1a00492-073a-47ea-816f-4c329264a828" }),
+          signal,
+          redirect: "error",
+        });
+        if (!response.ok) throw new HarnessError("PROVIDER_AUTH_EXPIRED", `xAI OAuth refresh failed (${response.status}). Reconnect your SuperGrok account in Settings.`, { providerId: this.id, status: response.status });
+        const result = await response.json() as { access_token?: unknown; refresh_token?: unknown; expires_in?: unknown };
+        if (this.credentialGeneration !== generation || this.credential?.connectionId !== current.connectionId) throw new HarnessError("PROVIDER_AUTH_CHANGED", "The connected SuperGrok account changed during token refresh.");
+        if (typeof result.access_token !== "string" || !result.access_token || typeof result.expires_in !== "number" || !Number.isFinite(result.expires_in) || result.expires_in <= 0) {
+          throw new HarnessError("INVALID_PROVIDER_RESPONSE", "xAI returned invalid OAuth credentials.", { providerId: this.id });
+        }
+        const next: XaiOAuthCredential = {
+          ...current,
+          accessToken: result.access_token,
+          refreshToken: typeof result.refresh_token === "string" && result.refresh_token ? result.refresh_token : current.refreshToken,
+          expiresAt: Date.now() + result.expires_in * 1_000,
+        };
+        this.credential = next;
+        super.setCredential(next.accessToken);
+        this.onTokensRotated?.(next);
+      };
+      const pending = refresh().finally(() => { if (this.refreshing === pending) this.refreshing = undefined; });
+      this.refreshing = pending;
+    }
+    await this.refreshing;
+  }
 }
 
 function toOpenAITool(definition: ToolDefinition): Record<string, unknown> {
@@ -702,7 +817,7 @@ export class ProviderRegistry {
   private readonly adapters = new Map<string, ProviderAdapter>();
 
   constructor(options: ProviderRegistryOptions = {}) {
-    const configured = options.adapters ?? defaultAdapters(options.onOAuthTokensRotated);
+    const configured = options.adapters ?? defaultAdapters(options.onOAuthTokensRotated, options.onXaiOAuthTokensRotated);
     for (const adapter of configured) this.adapters.set(adapter.id, adapter);
   }
 
@@ -730,14 +845,25 @@ export class ProviderRegistry {
     if (!adapter.setCredential) throw new HarnessError("PROVIDER_CREDENTIAL_UNSUPPORTED", `Provider ${id} does not support API keys.`);
     adapter.setCredential(key);
   }
-  setOAuthCredential(id: string, credential: ChatGPTOAuthCredential | null): void {
+  setOAuthCredential(id: string, credential: ChatGPTOAuthCredential | XaiOAuthCredential | null): void {
+    if (id === "xai_plan") {
+      const adapter = this.adapters.get(id);
+      if (!(adapter instanceof XaiPlanProvider)) throw new HarnessError("PROVIDER_NOT_FOUND", `Provider not found: ${id}`);
+      if (credential && (!("connectionId" in credential) || ![credential.accessToken, credential.refreshToken, credential.connectionId].every((value) => typeof value === "string" && value.length > 0) || !Number.isFinite(credential.expiresAt) || credential.expiresAt <= 0)) {
+        throw new HarnessError("INVALID_PROVIDER_CREDENTIAL", "A valid SuperGrok account credential is required.");
+      }
+      adapter.setOAuthCredential(credential as XaiOAuthCredential | null);
+      return;
+    }
     if (id !== "openai_chatgpt") throw new HarnessError("PROVIDER_AUTH_UNSUPPORTED", `Provider ${id} does not support account authorization.`);
     const adapter = this.adapters.get(id);
     if (!(adapter instanceof ChatGPTPlanProvider)) throw new HarnessError("PROVIDER_NOT_FOUND", `Provider not found: ${id}`);
-    if (credential && (![credential.accessToken, credential.refreshToken, credential.idToken, credential.clientId, credential.subject, credential.hostId].every((value) => typeof value === "string" && value.length > 0) || !Number.isFinite(credential.expiresAt) || credential.expiresAt <= 0 || !Array.isArray(credential.scopes) || credential.scopes.some((scope) => typeof scope !== "string") || !credential.scopes.includes("chatgpt.tokens.use.direct"))) {
+    if (credential && !("idToken" in credential)) throw new HarnessError("INVALID_PROVIDER_CREDENTIAL", "A valid ChatGPT plan credential is required.");
+    const chatGPTCredential = credential as ChatGPTOAuthCredential | null;
+    if (chatGPTCredential && (![chatGPTCredential.accessToken, chatGPTCredential.refreshToken, chatGPTCredential.idToken, chatGPTCredential.clientId, chatGPTCredential.subject, chatGPTCredential.hostId].every((value) => typeof value === "string" && value.length > 0) || !Number.isFinite(chatGPTCredential.expiresAt) || chatGPTCredential.expiresAt <= 0 || !Array.isArray(chatGPTCredential.scopes) || chatGPTCredential.scopes.some((scope) => typeof scope !== "string") || !chatGPTCredential.scopes.includes("chatgpt.tokens.use.direct"))) {
       throw new HarnessError("INVALID_PROVIDER_CREDENTIAL", "A valid ChatGPT plan credential is required.");
     }
-    adapter.setOAuthCredential(credential);
+    adapter.setOAuthCredential(chatGPTCredential);
   }
 }
 
@@ -761,10 +887,11 @@ function isLoopbackHostname(hostname: string): boolean {
   return normalized === "localhost" || normalized.endsWith(".localhost") || normalized === "127.0.0.1" || normalized === "::1";
 }
 
-function defaultAdapters(onOAuthTokensRotated?: (credential: ChatGPTOAuthCredential) => void): ProviderAdapter[] {
+function defaultAdapters(onOAuthTokensRotated?: (credential: ChatGPTOAuthCredential) => void, onXaiOAuthTokensRotated?: (credential: XaiOAuthCredential) => void): ProviderAdapter[] {
   return [
     new OpenAICompatibleProvider("openai", "OpenAI", process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1"),
     new ChatGPTPlanProvider(onOAuthTokensRotated),
+    new XaiPlanProvider(onXaiOAuthTokensRotated),
     new OpenAICompatibleProvider("openrouter", "OpenRouter", process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1", undefined, { "HTTP-Referer": "https://ordercode.local", "X-Title": "OrderCode" }),
     new OpenAICompatibleProvider("opencode_zen", "OpenCode", process.env.OPENCODE_ZEN_BASE_URL ?? "https://opencode.ai/inference/openai/v1", undefined, {}, false, process.env.OPENCODE_ZEN_MODELS_URL ?? "https://opencode.ai/inference/v1/models"),
     new OpenAICompatibleProvider("deepseek", "DeepSeek", process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com/v1"),
@@ -782,6 +909,6 @@ function defaultAdapters(onOAuthTokensRotated?: (credential: ChatGPTOAuthCredent
 }
 
 export function clearProviderSecretsFromEnvironment(): void {
-  for (const name of ["OPENAI_API_KEY", "OPENROUTER_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_API_KEY", "DEEPSEEK_API_KEY", "MISTRAL_API_KEY", "GROQ_API_KEY", "TOGETHER_API_KEY", "FIREWORKS_API_KEY", "CEREBRAS_API_KEY", "ANTHROPIC_API_KEY", "XAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OLLAMA_API_KEY", "LMSTUDIO_API_KEY"]) delete process.env[name];
+  for (const name of ["OPENAI_API_KEY", "OPENROUTER_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_API_KEY", "DEEPSEEK_API_KEY", "MISTRAL_API_KEY", "GROQ_API_KEY", "TOGETHER_API_KEY", "FIREWORKS_API_KEY", "CEREBRAS_API_KEY", "ANTHROPIC_API_KEY", "XAI_API_KEY", "XAI_PLAN_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OLLAMA_API_KEY", "LMSTUDIO_API_KEY"]) delete process.env[name];
 }
 

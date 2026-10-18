@@ -22,6 +22,7 @@ export interface HarnessRuntimeOptions {
   persistence?: Persistence;
   providers?: ProviderAdapter[];
   onOAuthTokensRotated?: (credential: import("./providers.js").ChatGPTOAuthCredential) => void;
+  onXaiOAuthTokensRotated?: (credential: import("./providers.js").XaiOAuthCredential) => void;
 }
 
 export interface CreateSessionInput {
@@ -162,7 +163,7 @@ export class HarnessRuntime {
     this.skills = new SkillRegistry(this.persistence);
     this.logs = new FileLogStore(options.dataDirectory ? `${options.dataDirectory}/logs` : `${defaultDataDirectory()}/logs`);
     this.permissions = new PermissionEngine(this.persistence);
-    this.providers = new ProviderRegistry({ adapters: options.providers, onOAuthTokensRotated: options.onOAuthTokensRotated });
+    this.providers = new ProviderRegistry({ adapters: options.providers, onOAuthTokensRotated: options.onOAuthTokensRotated, onXaiOAuthTokensRotated: options.onXaiOAuthTokensRotated });
     for (const provider of this.persistence.listCustomProviders()) this.providers.registerCustomEndpoint(provider);
     this.release = new ReleaseCenter();
     this.tools = new ToolRegistry(this.permissions, this.logs, (type, payload) => {

@@ -454,6 +454,9 @@ kbd { border: 1px solid var(--border); border-radius: 4px; background: rgba(150,
 .settings-shortcuts > span { display:flex; align-items:center; gap:9px; color:var(--muted); font-size:9px; }
 .settings-shortcuts kbd { min-width:92px; text-align:center; }
 .settings-error { padding:10px 12px; border:1px solid rgba(255,128,151,.3); border-radius:7px; color:var(--danger); background:rgba(255,128,151,.06); font-size:10px; }
+.settings-error p { margin:5px 0 7px; color:var(--muted); line-height:1.5; }
+.settings-error a { color:var(--blue); }
+.settings-error span { padding:0 6px; color:var(--muted); }
 :root[data-density='compact'] .surface-row { padding:9px 12px; }
 :root[data-density='compact'] .settings-preference-row { min-height:46px; padding-top:6px; padding-bottom:6px; }
 :root[data-density='compact'] .settings-nav button { min-height:42px; padding-top:6px; padding-bottom:6px; }

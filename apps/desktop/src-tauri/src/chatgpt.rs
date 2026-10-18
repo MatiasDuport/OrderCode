@@ -425,14 +425,7 @@ pub async fn connect() -> Result<ChatGPTCredential, String> {
             .find(|(key, _)| key == "error_description")
             .map(|(_, value)| value.into_owned())
             .unwrap_or_default();
-        return Err(if error == "access_denied" {
-            "Se canceló el acceso al plan de ChatGPT.".into()
-        } else {
-            format!(
-                "ChatGPT rechazó la conexión ({error}). {}",
-                description.chars().take(240).collect::<String>()
-            )
-        });
+        return Err(authorization_error_message(&error, &description));
     }
     let code = callback
         .query_pairs()
@@ -546,6 +539,27 @@ fn open_system_browser(url: &str) -> Result<(), String> {
     result.map(|_| ()).map_err(|error| {
         format!("No se pudo abrir el navegador del sistema para iniciar sesión: {error}")
     })
+}
+
+fn authorization_error_message(error: &str, description: &str) -> String {
+    const ORGANIZATION_POLICY_ERROR: &str = "3p_delegated_access_policy_denied";
+    if error.contains(ORGANIZATION_POLICY_ERROR) || description.contains(ORGANIZATION_POLICY_ERROR)
+    {
+        return format!(
+            "Acceso de ChatGPT bloqueado por la política de la organización ({ORGANIZATION_POLICY_ERROR}). Un administrador global de OpenAI debe autorizar OrderCode en External access."
+        );
+    }
+
+    if error == "access_denied" && description.trim().is_empty() {
+        return "Se canceló o rechazó el acceso al plan de ChatGPT.".into();
+    }
+
+    let detail = description.chars().take(240).collect::<String>();
+    if detail.is_empty() {
+        format!("ChatGPT rechazó la conexión ({error}).")
+    } else {
+        format!("ChatGPT rechazó la conexión ({error}). {detail}")
+    }
 }
 
 fn wait_for_callback(listener: TcpListener, expected_state: &str) -> Result<Url, String> {
@@ -788,6 +802,23 @@ mod tests {
             expires_at: 1000,
             scopes: vec!["chatgpt.tokens.use.direct".into()],
         }
+    }
+
+    #[test]
+    fn authorization_error_distinguishes_organization_policy_from_user_denial() {
+        let policy =
+            authorization_error_message("access_denied", "3p_delegated_access_policy_denied");
+        assert!(policy.contains("3p_delegated_access_policy_denied"));
+        assert!(policy.contains("administrador global"));
+
+        assert_eq!(
+            authorization_error_message("access_denied", ""),
+            "Se canceló o rechazó el acceso al plan de ChatGPT."
+        );
+        assert_eq!(
+            authorization_error_message("server_error", "intenta más tarde"),
+            "ChatGPT rechazó la conexión (server_error). intenta más tarde"
+        );
     }
 
     fn claims() -> IdentityClaims {

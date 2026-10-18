@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod chatgpt;
+mod xai;
 
 use serde::Serialize;
 use portable_pty::{native_pty_system, Child as PtyChild, CommandBuilder, MasterPty, PtySize};
@@ -173,8 +174,15 @@ async fn harness_start(app: tauri::AppHandle, state: State<'_, BrokerState>, wor
                 let current_process = notification_app.try_state::<BrokerState>().and_then(|state| state.harness.lock().ok().map(|process| process.as_ref().is_none_or(|process| process.instance_id == reader_instance_id))).unwrap_or(false);
                 if !current_process { continue; }
                 let credential = value.get("params").and_then(|params| params.get("credential")).cloned();
-                if let Some(credential) = credential.and_then(|value| serde_json::from_value::<chatgpt::ChatGPTCredential>(value).ok()) {
-                    if let Err(error) = chatgpt::save_rotated_credential(&credential) { let _ = notification_app.emit("ordercode-provider-auth-error", error); }
+                let provider_id = value.get("params").and_then(|params| params.get("providerId")).and_then(serde_json::Value::as_str);
+                match provider_id {
+                    Some("openai_chatgpt") => if let Some(credential) = credential.and_then(|value| serde_json::from_value::<chatgpt::ChatGPTCredential>(value).ok()) {
+                        if let Err(error) = chatgpt::save_rotated_credential(&credential) { let _ = notification_app.emit("ordercode-provider-auth-error", error); }
+                    },
+                    Some("xai_plan") => if let Some(credential) = credential.and_then(|value| serde_json::from_value::<xai::XaiCredential>(value).ok()) {
+                        if let Err(error) = xai::save_rotated_credential(&credential) { let _ = notification_app.emit("ordercode-provider-auth-error", error); }
+                    },
+                    _ => {}
                 }
                 continue;
             }
@@ -205,6 +213,10 @@ async fn harness_start(app: tauri::AppHandle, state: State<'_, BrokerState>, wor
     }
     if let Some(credential) = chatgpt::load_credential() {
         let request = serde_json::json!({ "jsonrpc": "2.0", "id": "credential-openai-chatgpt", "method": "provider.auth.configure", "params": { "providerId": "openai_chatgpt", "credential": credential } });
+        request_harness_async(Arc::clone(&process), request).await?;
+    }
+    if let Some(credential) = xai::load_credential() {
+        let request = serde_json::json!({ "jsonrpc": "2.0", "id": "credential-xai-plan", "method": "provider.auth.configure", "params": { "providerId": "xai_plan", "credential": credential } });
         request_harness_async(Arc::clone(&process), request).await?;
     }
     let provider_list = request_harness_async(Arc::clone(&process), serde_json::json!({ "jsonrpc": "2.0", "id": "provider-credential-list", "method": "providers.list", "params": {} })).await?;
@@ -410,11 +422,12 @@ fn provider_remove_key(provider_id: String) -> Result<(), String> {
 fn provider_keys_status(provider_ids: Option<Vec<String>>) -> Result<HashMap<String, bool>, String> {
     let mut result = HashMap::new();
     let mut providers = vec!["openai".to_string(), "openrouter".to_string(), "opencode_zen".to_string(), "deepseek".to_string(), "mistral".to_string(), "groq".to_string(), "together".to_string(), "fireworks".to_string(), "cerebras".to_string(), "anthropic".to_string(), "xai".to_string(), "gemini".to_string()];
-    if let Some(provider_ids) = provider_ids { providers.extend(provider_ids.into_iter().filter(|provider| supported_provider(provider) || provider == "openai_chatgpt")); }
+    if let Some(provider_ids) = provider_ids { providers.extend(provider_ids.into_iter().filter(|provider| supported_provider(provider) || provider == "openai_chatgpt" || provider == "xai_plan")); }
     providers.sort();
     providers.dedup();
     for provider in providers {
         if provider == "openai_chatgpt" { result.insert(provider, chatgpt::account_status().connected); continue; }
+        if provider == "xai_plan" { result.insert(provider, xai::account_status().connected); continue; }
         let entry = keyring::Entry::new("OrderCode", &provider).map_err(|error| format!("No se pudo abrir el almacén seguro del sistema: {error}"))?;
         result.insert(provider.clone(), entry.get_password().is_ok());
     }
@@ -423,6 +436,9 @@ fn provider_keys_status(provider_ids: Option<Vec<String>>) -> Result<HashMap<Str
 
 #[tauri::command]
 fn chatgpt_account_status() -> chatgpt::ChatGPTAccountStatus { chatgpt::account_status() }
+
+#[tauri::command]
+fn xai_account_status() -> xai::XaiAccountStatus { xai::account_status() }
 
 #[tauri::command]
 async fn chatgpt_connect(state: State<'_, BrokerState>) -> Result<chatgpt::ChatGPTAccountStatus, String> {
@@ -453,6 +469,37 @@ async fn chatgpt_disconnect(state: State<'_, BrokerState>) -> Result<chatgpt::Ch
     drop(lifecycle);
     if let Some(credential) = credential { chatgpt::revoke_credential(&credential).await; }
     Ok(chatgpt::account_status())
+}
+
+#[tauri::command]
+async fn xai_connect(app: tauri::AppHandle, state: State<'_, BrokerState>) -> Result<xai::XaiAccountStatus, String> {
+    let _active_request = begin_harness_request(&state)?;
+    let _account_operation = state.account_operation.lock().await;
+    let credential = xai::connect(&app).await?;
+    let _lifecycle = state.harness_lifecycle.lock().await;
+    xai::save_credential(&credential)?;
+    let process = state.harness.lock().map_err(|_| "No se pudo acceder al proceso Harness".to_string())?.as_ref().cloned();
+    if let Some(process) = process.filter(is_harness_alive) {
+        let request = serde_json::json!({ "jsonrpc": "2.0", "id": "credential-xai-plan", "method": "provider.auth.configure", "params": { "providerId": "xai_plan", "credential": credential } });
+        request_harness_async(process, request).await?;
+    }
+    Ok(xai::account_status())
+}
+
+#[tauri::command]
+async fn xai_disconnect(state: State<'_, BrokerState>) -> Result<xai::XaiAccountStatus, String> {
+    let _active_request = begin_harness_request(&state)?;
+    let _account_operation = state.account_operation.lock().await;
+    let lifecycle = state.harness_lifecycle.lock().await;
+    let process = state.harness.lock().map_err(|_| "No se pudo acceder al proceso Harness".to_string())?.as_ref().cloned();
+    if let Some(process) = process.filter(is_harness_alive) {
+        let request = serde_json::json!({ "jsonrpc": "2.0", "id": "credential-xai-plan-disconnect", "method": "provider.auth.configure", "params": { "providerId": "xai_plan", "credential": null } });
+        request_harness_async(process, request).await?;
+    }
+    let credential = xai::take_credential()?;
+    drop(lifecycle);
+    if let Some(credential) = credential { xai::revoke_credential(&credential).await; }
+    Ok(xai::account_status())
 }
 
 #[tauri::command]
@@ -957,7 +1004,7 @@ pub fn run() {
                 });
             }
         })
-        .invoke_handler(tauri::generate_handler![health, harness_start, harness_request, harness_stop, updater_check, updater_download, updater_install, workspace_open, activate_session, terminal_open, terminal_write, terminal_resize, terminal_close, workspace_tree, git_status, provider_keys_status, provider_set_key, provider_remove_key, chatgpt_account_status, chatgpt_connect, chatgpt_disconnect, mcp_server_secret_set, mcp_server_secret_remove, mcp_server_secret_status, release_hook_set, release_hook_remove, release_hook_status])
+        .invoke_handler(tauri::generate_handler![health, harness_start, harness_request, harness_stop, updater_check, updater_download, updater_install, workspace_open, activate_session, terminal_open, terminal_write, terminal_resize, terminal_close, workspace_tree, git_status, provider_keys_status, provider_set_key, provider_remove_key, chatgpt_account_status, chatgpt_connect, chatgpt_disconnect, xai_account_status, xai_connect, xai_disconnect, mcp_server_secret_set, mcp_server_secret_remove, mcp_server_secret_status, release_hook_set, release_hook_remove, release_hook_status])
         .setup(|app| { if let Some(window) = app.get_webview_window("main") { let _ = window.set_title("OrderCode"); } Ok(()) })
         .run(tauri::generate_context!())
         .expect("error while running OrderCode");

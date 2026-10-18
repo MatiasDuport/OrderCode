@@ -22,10 +22,14 @@ interface UserPreferences {
   editorFontSize: number;
   tabSize: 2 | 4 | 8;
   terminalFontSize: number;
+  hiddenModelProviders: string[];
+  showAdvancedModels: boolean;
+  recentModels: string[];
+  favoriteModels: string[];
 }
 
 const PREFERENCES_KEY = 'ordercode.desktop.preferences.v1';
-const preferenceDefaults: UserPreferences = { language: 'system', themePreference: 'dark', density: 'comfortable', reducedMotion: false, autoCheckUpdates: true, editorFontSize: 12, tabSize: 2, terminalFontSize: 11 };
+const preferenceDefaults: UserPreferences = { language: 'system', themePreference: 'dark', density: 'comfortable', reducedMotion: false, autoCheckUpdates: true, editorFontSize: 12, tabSize: 2, terminalFontSize: 11, hiddenModelProviders: [], showAdvancedModels: false, recentModels: [], favoriteModels: [] };
 
 function loadPreferences(): UserPreferences {
   try {
@@ -41,6 +45,10 @@ function loadPreferences(): UserPreferences {
       editorFontSize: Number.isInteger(saved.editorFontSize) && saved.editorFontSize! >= 10 && saved.editorFontSize! <= 18 ? saved.editorFontSize! : preferenceDefaults.editorFontSize,
       tabSize: saved.tabSize === 2 || saved.tabSize === 4 || saved.tabSize === 8 ? saved.tabSize : preferenceDefaults.tabSize,
       terminalFontSize: Number.isInteger(saved.terminalFontSize) && saved.terminalFontSize! >= 9 && saved.terminalFontSize! <= 16 ? saved.terminalFontSize! : preferenceDefaults.terminalFontSize,
+      hiddenModelProviders: Array.isArray(saved.hiddenModelProviders) ? [...new Set(saved.hiddenModelProviders.filter((item): item is string => typeof item === 'string' && item.length <= 100))].slice(0, 100) : preferenceDefaults.hiddenModelProviders,
+      showAdvancedModels: typeof saved.showAdvancedModels === 'boolean' ? saved.showAdvancedModels : preferenceDefaults.showAdvancedModels,
+      recentModels: Array.isArray(saved.recentModels) ? [...new Set(saved.recentModels.filter((item): item is string => typeof item === 'string' && item.length <= 400))].slice(0, 5) : preferenceDefaults.recentModels,
+      favoriteModels: Array.isArray(saved.favoriteModels) ? [...new Set(saved.favoriteModels.filter((item): item is string => typeof item === 'string' && item.length <= 400))].slice(0, 100) : preferenceDefaults.favoriteModels,
     };
   } catch { return preferenceDefaults; }
 }
@@ -77,6 +85,10 @@ interface DesktopState {
   editorFontSize: number;
   tabSize: 2 | 4 | 8;
   terminalFontSize: number;
+  hiddenModelProviders: string[];
+  showAdvancedModels: boolean;
+  recentModels: string[];
+  favoriteModels: string[];
   currentView: string;
   settingsSection: string;
   sidebarOpen: boolean;
@@ -144,12 +156,13 @@ export const useDesktopStore = create<DesktopState>((set) => ({
     if (key === 'theme') next.themePreference = value as ThemePreference;
     if (key === 'themePreference') next.theme = resolveTheme(value as ThemePreference);
     const updated = { ...state, ...next };
-    if (['theme', 'themePreference', 'language', 'density', 'reducedMotion', 'autoCheckUpdates', 'editorFontSize', 'tabSize', 'terminalFontSize'].includes(key)) {
+    if (['theme', 'themePreference', 'language', 'density', 'reducedMotion', 'autoCheckUpdates', 'editorFontSize', 'tabSize', 'terminalFontSize', 'hiddenModelProviders', 'showAdvancedModels', 'recentModels', 'favoriteModels'].includes(key)) {
       try {
         localStorage.setItem(PREFERENCES_KEY, JSON.stringify({
           language: updated.language, themePreference: updated.themePreference, density: updated.density,
           reducedMotion: updated.reducedMotion, autoCheckUpdates: updated.autoCheckUpdates, editorFontSize: updated.editorFontSize, tabSize: updated.tabSize,
-          terminalFontSize: updated.terminalFontSize,
+          terminalFontSize: updated.terminalFontSize, hiddenModelProviders: updated.hiddenModelProviders,
+          showAdvancedModels: updated.showAdvancedModels, recentModels: updated.recentModels, favoriteModels: updated.favoriteModels,
         } satisfies UserPreferences));
       } catch { /* The interface remains usable when local persistence is unavailable. */ }
     }

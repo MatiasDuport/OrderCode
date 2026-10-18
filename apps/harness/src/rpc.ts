@@ -188,9 +188,9 @@ export class JsonRpcServer {
         return this.runtime.providers.list().find((item) => item.id === object.providerId);
       }
       case "provider.auth.configure": {
-        if (object.providerId !== "openai_chatgpt") throw new Error("Unsupported account provider.");
-        if (object.credential !== null && (!object.credential || typeof object.credential !== "object" || Array.isArray(object.credential))) throw new Error("A ChatGPT account credential or null is required.");
-        this.runtime.providers.setOAuthCredential(object.providerId, object.credential as import("./providers.js").ChatGPTOAuthCredential | null);
+        if (object.providerId !== "openai_chatgpt" && object.providerId !== "xai_plan") throw new Error("Unsupported account provider.");
+        if (object.credential !== null && (!object.credential || typeof object.credential !== "object" || Array.isArray(object.credential))) throw new Error("An account credential or null is required.");
+        this.runtime.providers.setOAuthCredential(object.providerId, object.credential as import("./providers.js").ChatGPTOAuthCredential | import("./providers.js").XaiOAuthCredential | null);
         return this.runtime.providers.list().find((item) => item.id === object.providerId);
       }
       case "provider.custom.create": {

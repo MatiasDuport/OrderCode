@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Check, ChevronDown, CircleDashed, FileCode2, MoreHorizontal, Search, Send, ShieldCheck, Square, FolderOpen, Settings, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Check, ChevronDown, CircleDashed, FileCode2, MoreHorizontal, Search, Send, ShieldCheck, Square, FolderOpen, Settings, Star, X } from 'lucide-react';
 import { cancelSession, createSession, health, listProviders, listProviderModels, pickWorkspaceFolder, sendSessionMessage, updateSession } from '../lib/ipc';
 import { followSessionOperation } from '../lib/sessionExecution';
 import { useDesktopStore, type ChatMessage } from '../lib/store';
 import type { PermissionProfile, SessionRecord, WorkMode } from '../lib/contracts';
-import type { ProviderModel } from '../lib/ipc';
+import type { ProviderInfo, ProviderModel } from '../lib/ipc';
 import { Dropdown, DropdownOption, IconButton, Kbd, StatusDot } from './ui';
 import { Localized } from '../lib/localization';
 import orderCodeMark from '../../../../brand/LogoSinFondo.png';
@@ -20,6 +20,25 @@ const permissions: Array<{ name: PermissionProfile; description: string }> = [
   { name: 'Auto', description: 'Permitir acciones seguras; pedir autorización para acciones sensibles' },
   { name: 'Avanzado', description: 'Permisos amplios dentro del workspace' },
 ];
+
+function modelProviderLabel(providerId: string): string {
+  return providerId === 'opencode_zen' ? 'OpenCode' : providerId === 'openai_chatgpt' ? 'ChatGPT' : providerId === 'xai_plan' ? 'SuperGrok' : providerId === 'openrouter' ? 'OpenRouter' : providerId === 'ollama' ? 'Ollama' : providerId === 'lmstudio' ? 'LM Studio' : providerId;
+}
+
+function modelRank(item: ProviderModel, recentModels: string[], favoriteModels: string[]): number[] {
+  const tier = item.priceKind === 'free' ? 0 : item.priceKind === 'subscription' ? 1 : item.priceKind === 'local' ? 2 : item.priceKind === 'paid' ? 3 : 4;
+  const key = `${item.providerId}::${item.id}`;
+  const favorite = favoriteModels.includes(key);
+  const recent = recentModels.indexOf(key);
+  const popular = /(?:gpt-4\.1|claude.*sonnet|gemini.*(?:flash|pro)|deepseek.*(?:v3|chat)|qwen.*coder|grok.*code|llama.*3\.3)/i.test(item.id) ? 0 : 1;
+  return [tier, favorite ? 0 : 1, recent < 0 ? 1 : 0, recent < 0 ? 99 : recent, item.available ? 0 : 1, popular];
+}
+
+function compareModelRank(left: ProviderModel, right: ProviderModel, recentModels: string[], favoriteModels: string[]): number {
+  const a = modelRank(left, recentModels, favoriteModels); const b = modelRank(right, recentModels, favoriteModels);
+  for (let index = 0; index < a.length; index += 1) if (a[index] !== b[index]) return a[index] - b[index];
+  return left.label.localeCompare(right.label);
+}
 
 function Message({ message }: { message: ChatMessage }) {
   return <Localized><article className={`message message--${message.role}`}>
@@ -48,34 +67,32 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings }: { onSub
   const [open, setOpen] = useState<'model' | 'mode' | 'permission' | null>(null);
   const [modelQuery, setModelQuery] = useState('');
   const [models, setModels] = useState<ProviderModel[]>([]);
+  const [providers, setProviders] = useState<ProviderInfo[]>([]);
+  const [catalogBusy, setCatalogBusy] = useState(false);
+  const [catalogError, setCatalogError] = useState(false);
+  const [catalogRetry, setCatalogRetry] = useState(0);
+  const [showAllNow, setShowAllNow] = useState<boolean | null>(null);
   const [discovery, setDiscovery] = useState('Buscando proveedores…');
-  const { model, mode, permission, freeOnly, runtimeState, session, health: brokerHealth, set } = useDesktopStore();
+  const catalogCache = useRef(new Map<string, ProviderModel[]>());
+  const loadingCatalogs = useRef(new Set<string>());
+  const failedCatalogs = useRef(new Set<string>());
+  const catalogRevision = useRef(0);
+  const { model, mode, permission, freeOnly, runtimeState, session, health: brokerHealth, hiddenModelProviders, showAdvancedModels, recentModels, favoriteModels, set } = useDesktopStore();
   useEffect(() => {
     let current = true;
-    let refreshId = 0;
     const refresh = async () => {
-      const id = ++refreshId;
       setDiscovery('Buscando proveedores…');
       try {
-        const providers = await listProviders();
-        if (!current || id !== refreshId) return;
-        const enabled = providers.filter((provider) => provider.configured || provider.id === 'ollama' || provider.id === 'lmstudio' || provider.id === 'openrouter' || provider.id === 'opencode_zen');
-        const catalogs = new Map<string, ProviderModel[]>();
-        let remaining = enabled.length;
-        setModels([]);
-        const publish = () => {
-          if (!current || id !== refreshId) return;
-          // Preserve provider order and the model preference order returned by each account.
-          const found = enabled.flatMap((provider) => catalogs.get(provider.id) ?? []);
-          setModels(found);
-          setDiscovery(found.length ? '' : remaining ? 'Buscando proveedores…' : enabled.length ? 'No se encontraron modelos en los proveedores configurados.' : 'Configura un proveedor en Ajustes para descubrir modelos.');
-        };
-        publish();
-        for (const provider of enabled) {
-          void listProviderModels(provider.id).then((found) => { catalogs.set(provider.id, found); }).catch(() => undefined).finally(() => { remaining -= 1; publish(); });
-        }
+        const found = await listProviders();
+        if (!current) return;
+        catalogRevision.current += 1;
+        catalogCache.current.clear();
+        loadingCatalogs.current.clear();
+        failedCatalogs.current.clear();
+        setCatalogError(false);
+        setProviders(found);
       } catch {
-        if (current && id === refreshId) setDiscovery('La búsqueda de modelos requiere la app de escritorio.');
+        if (current) setDiscovery('La búsqueda de modelos requiere la app de escritorio.');
       }
     };
     const onProvidersUpdated = () => { void refresh(); };
@@ -84,10 +101,71 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings }: { onSub
     return () => { current = false; window.removeEventListener('ordercode:providers-updated', onProvidersUpdated); };
   }, [brokerHealth?.harnessConnected]);
 
+  const advancedCatalog = Boolean(modelQuery.trim()) || (showAllNow ?? showAdvancedModels);
+  useEffect(() => { setShowAllNow(null); }, [showAdvancedModels]);
+  useEffect(() => {
+    const revision = catalogRevision.current;
+    const included = providers.filter((provider) => !hiddenModelProviders.includes(provider.id));
+    const eager = included.filter((provider) => provider.id !== 'openrouter' && (provider.configured || ['ollama', 'lmstudio', 'opencode_zen'].includes(provider.id)));
+    const targets = advancedCatalog ? included.filter((provider) => provider.configured || ['ollama', 'lmstudio', 'opencode_zen', 'openrouter'].includes(provider.id)) : eager;
+    const pending = targets.filter((provider) => !catalogCache.current.has(provider.id) && !loadingCatalogs.current.has(provider.id) && !failedCatalogs.current.has(provider.id));
+    if (!pending.length) {
+      if (targets.some((provider) => loadingCatalogs.current.has(provider.id))) { setCatalogBusy(true); return; }
+      const found = included.flatMap((provider) => catalogCache.current.get(provider.id) ?? []);
+      setModels(found);
+      setCatalogBusy(false);
+      setCatalogError(targets.some((provider) => failedCatalogs.current.has(provider.id)));
+      setDiscovery(found.length ? '' : included.length ? 'No se encontraron modelos en los proveedores seleccionados.' : 'Activa un proveedor en Ajustes para descubrir modelos.');
+      return;
+    }
+    setCatalogBusy(true);
+    setDiscovery('Cargando modelos destacados…');
+    for (const provider of pending) loadingCatalogs.current.add(provider.id);
+    void Promise.allSettled(pending.map(async (provider) => ({ providerId: provider.id, models: await listProviderModels(provider.id) }))).then((results) => {
+      if (catalogRevision.current !== revision) return;
+      let failed = false;
+      for (const [index, result] of results.entries()) {
+        const providerId = pending[index].id;
+        loadingCatalogs.current.delete(providerId);
+        if (result.status === 'fulfilled') { catalogCache.current.set(result.value.providerId, result.value.models); failedCatalogs.current.delete(providerId); }
+        else { failedCatalogs.current.add(providerId); failed = true; }
+      }
+      const found = included.flatMap((provider) => catalogCache.current.get(provider.id) ?? []);
+      setModels(found);
+      setCatalogBusy(false);
+      setCatalogError(failed || targets.some((provider) => failedCatalogs.current.has(provider.id)));
+      setDiscovery(failed ? 'No se pudo cargar un catálogo. Revisa la conexión e inténtalo de nuevo.' : found.length ? '' : included.length ? 'No se encontraron modelos en los proveedores seleccionados.' : 'Activa un proveedor en Ajustes para descubrir modelos.');
+    });
+  }, [providers, hiddenModelProviders, advancedCatalog, catalogRetry, catalogRevision.current]);
+
   const selectedModel = models.find((item) => model === `${item.providerId}::${item.id}`);
   const modelNeedsCredentials = Boolean(selectedModel && !selectedModel.available);
   const freeOnlyBlocked = freeOnly && (!selectedModel || (selectedModel.priceKind !== 'free' && selectedModel.priceKind !== 'local'));
-  const filteredModels = useMemo(() => models.filter((item) => (!freeOnly || item.priceKind === 'free' || item.priceKind === 'local') && `${item.label} ${item.providerId}`.toLowerCase().includes(modelQuery.trim().toLowerCase())), [models, modelQuery, freeOnly]);
+  const filteredModels = useMemo(() => {
+    const query = modelQuery.trim().toLowerCase();
+    const matching = models.filter((item) => !hiddenModelProviders.includes(item.providerId) && (!freeOnly || item.priceKind === 'free' || item.priceKind === 'local') && `${item.label} ${item.providerId}`.toLowerCase().includes(query)).sort((left, right) => compareModelRank(left, right, recentModels, favoriteModels));
+    if (advancedCatalog) return matching;
+    const pinned = matching.filter((item) => favoriteModels.includes(`${item.providerId}::${item.id}`) || recentModels.includes(`${item.providerId}::${item.id}`));
+    const pinnedKeys = new Set(pinned.map((item) => `${item.providerId}::${item.id}`));
+    const perProvider = new Map<string, number>();
+    const recommended = matching.filter((item) => {
+      if (pinnedKeys.has(`${item.providerId}::${item.id}`)) return false;
+      const count = perProvider.get(item.providerId) ?? 0;
+      const cap = item.providerId === 'opencode_zen' ? 6 : item.providerId === 'openai_chatgpt' ? 5 : 3;
+      if (count >= cap) return false;
+      perProvider.set(item.providerId, count + 1);
+      return true;
+    }).slice(0, 20);
+    return [...pinned, ...recommended].sort((left, right) => compareModelRank(left, right, recentModels, favoriteModels));
+  }, [models, modelQuery, freeOnly, hiddenModelProviders, advancedCatalog, recentModels, favoriteModels]);
+  const modelGroups = useMemo(() => {
+    const groups = new Map<string, ProviderModel[]>();
+    for (const item of filteredModels) groups.set(item.providerId, [...(groups.get(item.providerId) ?? []), item]);
+    return [...groups.entries()].sort((left, right) => compareModelRank(left[1][0], right[1][0], recentModels, favoriteModels));
+  }, [filteredModels, recentModels, favoriteModels]);
+  const hasMoreModels = models.some((item) => !hiddenModelProviders.includes(item.providerId) && (!freeOnly || item.priceKind === 'free' || item.priceKind === 'local')) && models.filter((item) => !hiddenModelProviders.includes(item.providerId) && (!freeOnly || item.priceKind === 'free' || item.priceKind === 'local')).length > filteredModels.length;
+  const hasDeferredCatalog = providers.some((provider) => provider.id === 'openrouter' && !hiddenModelProviders.includes(provider.id) && !catalogCache.current.has(provider.id));
+  const retryCatalogs = () => { for (const provider of providers) if (failedCatalogs.current.has(provider.id) && !hiddenModelProviders.includes(provider.id)) failedCatalogs.current.delete(provider.id); setCatalogRetry((value) => value + 1); };
   const submit = async () => { const trimmed = value.trim(); if (!trimmed || ['RUNNING', 'PREPARING', 'WAITING_APPROVAL'].includes(useDesktopStore.getState().runtimeState)) return; if (modelNeedsCredentials) { onConfigError(selectedModel?.providerId === 'openai_chatgpt' ? 'Conecta tu cuenta ChatGPT en Ajustes antes de usar el modelo.' : 'Conecta la clave API de este proveedor en Ajustes antes de usar el modelo.'); return; } if (freeOnlyBlocked) { onConfigError('Free Only necesita un modelo con precio gratuito verificado o inferencia local. No se enviará la solicitud con el modelo actual.'); return; } setValue(''); await onSubmit(trimmed); };
   const changeSetting = async (patch: Partial<Pick<SessionRecord, 'mode' | 'permission' | 'model' | 'providerId' | 'freeOnly'>>): Promise<void> => {
     const active = useDesktopStore.getState().session;
@@ -100,13 +178,27 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings }: { onSub
     }
   };
 
+  const renderModelOption = (item: ProviderModel) => {
+    const key = `${item.providerId}::${item.id}`;
+    const favorite = favoriteModels.includes(key);
+    const price = item.priceKind === 'free' ? item.providerId === 'opencode_zen' ? 'Gratis verificado · sin clave' : 'Gratis verificado' : item.priceKind === 'local' ? 'Inferencia local · sin tarifa API' : item.priceKind === 'subscription' ? 'Uso de tu plan · sujeto a límites' : item.pricing ? `$${item.pricing.inputPerMillionUsd.toFixed(6)} / $${item.pricing.outputPerMillionUsd.toFixed(6)} por 1M tokens` : 'Precio no verificado';
+    const needsConnection = item.providerId === 'openai_chatgpt' ? 'Conecta tu cuenta en Ajustes' : item.providerId === 'xai_plan' ? 'Conecta tu cuenta SuperGrok en Ajustes' : 'Conecta la clave API en Ajustes';
+    const description = `${price}${item.available ? '' : ` · ${needsConnection}`}`;
+    return <div className="model-option-row" key={key}>
+      <DropdownOption active={model === key} description={description} onClick={() => { if (!item.available) { setOpen(null); onOpenSettings(); return; } set('model', key); set('recentModels', [key, ...recentModels.filter((value) => value !== key)].slice(0, 5)); setOpen(null); if (session) void changeSetting({ model: item.id, providerId: item.providerId }); }}>{item.label}</DropdownOption>
+      <button type="button" className={`model-favorite-button ${favorite ? 'is-active' : ''}`} aria-label={`${favorite ? 'Quitar de favoritos' : 'Añadir a favoritos'}: ${item.label}`} aria-pressed={favorite} title={favorite ? 'Quitar de favoritos' : 'Añadir a favoritos'} onClick={(event) => { event.stopPropagation(); set('favoriteModels', favorite ? favoriteModels.filter((value) => value !== key) : [...favoriteModels, key].slice(-100)); }}><Star size={13} /></button>
+    </div>;
+  };
+
   return <Localized><form className="composer" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
     <textarea value={value} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void submit(); } if (event.key === 'Escape' && runtimeState === 'RUNNING') onCancel(); }} placeholder="Mensaje para OrderCode" aria-label="Mensaje para OrderCode" rows={2} />
     <div className="composer-controls">
       <Dropdown label="Modelo" value={selectedModel?.label ?? (model ? model.split('::').at(-1) ?? model : 'Selecciona un modelo')} open={open === 'model'} onOpenChange={(value) => setOpen((current) => value ? 'model' : current === 'model' ? null : current)} className="composer-dropdown composer-dropdown--model">
         <label className="dropdown-search"><Search size={13} /><input value={modelQuery} onChange={(event) => setModelQuery(event.target.value)} placeholder="Buscar modelos" aria-label="Buscar modelos" /></label>
         <button type="button" className={`free-only-toggle ${freeOnly ? 'is-active' : ''}`} aria-pressed={freeOnly} onClick={() => { const enabled = !freeOnly; set('freeOnly', enabled); void changeSetting({ freeOnly: enabled }); }}><span className="free-only-check">{freeOnly ? '✓' : ''}</span><span><strong>Free Only</strong><small>Solo precio verificado gratuito o local</small></span></button>
-        {filteredModels.map((item) => { const price = item.priceKind === 'free' ? 'Gratis verificado' : item.priceKind === 'local' ? 'Inferencia local · sin tarifa API' : item.priceKind === 'subscription' ? 'Plan ChatGPT · sujeto a límites' : item.pricing ? `$${item.pricing.inputPerMillionUsd.toFixed(6)} / $${item.pricing.outputPerMillionUsd.toFixed(6)} por 1M tokens` : 'Precio no verificado'; const providerLabel = item.providerId === 'opencode_zen' ? 'OpenCode' : item.providerId === 'openrouter' ? 'OpenRouter' : item.providerId === 'openai_chatgpt' ? 'ChatGPT' : item.providerId; const needsConnection = item.providerId === 'openai_chatgpt' ? 'Conecta tu cuenta en Ajustes' : 'Conecta la clave API en Ajustes'; const description = item.available ? `${providerLabel} · ${price}` : `${providerLabel} · ${price} · ${needsConnection}`; return <DropdownOption key={`${item.providerId}::${item.id}`} active={model === `${item.providerId}::${item.id}`} description={description} onClick={() => { if (!item.available) { setOpen(null); onOpenSettings(); return; } const next = `${item.providerId}::${item.id}`; set('model', next); setOpen(null); if (session) void changeSetting({ model: item.id, providerId: item.providerId }); }}>{item.label}</DropdownOption>; })}
+        {modelGroups.map(([providerId, items]) => <section className="model-provider-group" key={providerId} role="group" aria-label={modelProviderLabel(providerId)}><div className="model-provider-heading" aria-hidden="true"><span>{modelProviderLabel(providerId)}</span><small>{items.some((item) => item.priceKind === 'free') ? 'GRATUITOS PRIMERO' : items[0]?.priceKind === 'subscription' ? 'PLAN INCLUIDO' : `${items.length} MODELO${items.length === 1 ? '' : 'S'}`}</small></div>{items.map(renderModelOption)}</section>)}
+        {(catalogBusy || catalogError || (!advancedCatalog && (hasMoreModels || hasDeferredCatalog))) && <button type="button" className="model-catalog-toggle" disabled={catalogBusy} onClick={() => { if (catalogError) retryCatalogs(); else setShowAllNow(true); }}>{catalogBusy ? 'Cargando catálogo…' : catalogError ? 'Reintentar catálogo' : 'Ver más modelos'}<small>{catalogBusy ? 'Consultando proveedores seleccionados' : catalogError ? 'No se pudo completar la búsqueda' : 'Catálogo completo agrupado por proveedor'}</small></button>}
+        {advancedCatalog && (hasMoreModels || showAllNow === true) && <button type="button" className="model-catalog-toggle" onClick={() => { setModelQuery(''); setShowAllNow(false); }}><span>Volver a recomendados</span><small>Lista breve con gratuitos, favoritos y recientes primero</small></button>}
         {!filteredModels.length && <div className="dropdown-empty">{freeOnly ? 'No hay modelos locales o gratuitos con precio verificado. Los modelos con precio desconocido quedan bloqueados.' : discovery || 'No hay resultados.'}<button type="button" onClick={() => { setOpen(null); onOpenSettings(); }}>Abrir Ajustes</button></div>}
       </Dropdown>
       <Dropdown label="Modo" value={mode} open={open === 'mode'} onOpenChange={(value) => setOpen((current) => value ? 'mode' : current === 'mode' ? null : current)} className="composer-dropdown"><div className="dropdown-search"><ShieldCheck size={13} /> Modo de trabajo</div>{modes.map((item) => <DropdownOption key={item.name} active={mode === item.name} description={item.description} onClick={() => { set('mode', item.name); setOpen(null); void changeSetting({ mode: item.name }); }}>{item.name}</DropdownOption>)}</Dropdown>
