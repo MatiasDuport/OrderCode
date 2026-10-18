@@ -21,6 +21,7 @@ import type {
   TerminalSessionInfo,
   UsageAnalytics,
   WorkspaceEntry,
+  WorkspaceFileContent,
   WorkMode,
 } from './contracts';
 
@@ -249,7 +250,9 @@ export async function loadSessionEvents(sessionId: string, afterSequence: number
 
 function toDesktopEvent(event: Record<string, unknown>): HarnessEvent {
   const payload = event.payload && typeof event.payload === 'object' ? event.payload as Record<string, unknown> : {};
-  const rawState = typeof payload.state === 'string' ? payload.state : event.type === 'run.completed' ? 'COMPLETED' : event.type === 'run.failed' ? 'FAILED' : event.type === 'permission.requested' ? 'WAITING_APPROVAL' : 'RUNNING';
+  const rawResult = payload.result && typeof payload.result === 'object' ? payload.result as Record<string, unknown> : undefined;
+  const toolState = event.type === 'tool.completed' ? ({ completed: 'COMPLETED', failed: 'FAILED', cancelled: 'CANCELLED', rejected: 'FAILED' }[String(rawResult?.status)] ?? 'RECOVERY_REQUIRED') : undefined;
+  const rawState = typeof payload.state === 'string' ? payload.state : toolState ?? (event.type === 'run.completed' ? 'COMPLETED' : event.type === 'run.failed' ? 'FAILED' : event.type === 'run.cancelled' ? 'CANCELLED' : event.type === 'permission.requested' ? 'WAITING_APPROVAL' : 'RUNNING');
   const request = payload.request && typeof payload.request === 'object' ? payload.request as Record<string, unknown> : undefined;
   const input = payload.input && typeof payload.input === 'object' ? payload.input as Record<string, unknown> : undefined;
   const toolName = typeof payload.toolName === 'string' ? payload.toolName : undefined;
@@ -267,12 +270,15 @@ function toDesktopEvent(event: Record<string, unknown>): HarnessEvent {
   const actionDetail = resultSummary ? `${delegatedRole ? `${delegatedRole} · ` : ''}${resultSummary}` : undefined;
   return {
     id: String(event.id ?? crypto.randomUUID()), sessionId: String(event.sessionId ?? ''), sequence: Number(event.sequence ?? 0), state: rawState as HarnessEvent['state'],
+    type: String(event.type ?? ''),
+    ...(toolName ? { toolName } : {}),
+    ...(typeof payload.invocationId === 'string' ? { invocationId: payload.invocationId } : {}),
     summary: event.type === 'permission.requested' ? `Autorización: ${toolName ?? String(request?.toolName ?? 'acción')}` : toolName ? `${toolName}${result ? ` · ${String(result.status ?? '')}` : ''}` : String(event.type ?? 'Actividad'),
     ...(usageDetail ? { detail: usageDetail } : {}),
     ...(actionDetail ? { detail: actionDetail } : {}),
     ...(event.type === 'tool.started' && toolName === 'agents.delegate' && input ? { detail: `${String(input.role ?? 'specialist')} · ${String(input.task ?? '')}` } : {}),
     ...(request ? { detail: typeof request.reason === 'string' ? request.reason : `${String(request.action ?? '')} · ${String(request.resource ?? '')}`, permissionRequest: request } : {}),
-    ...(resultData.path && typeof resultData.path === 'string' ? { changedFiles: [resultData.path] } : {}),
+    ...(toolName === 'fs.write' && result?.status === 'completed' && typeof resultData.path === 'string' ? { changedFiles: [resultData.path] } : {}),
     ...(typeof resultData.diff === 'string' ? { diff: resultData.diff } : {}),
     ...(typeof resultData.stdout === 'string' || typeof resultData.stderr === 'string' ? { terminalOutput: [resultData.stdout, resultData.stderr].filter((part): part is string => typeof part === 'string' && !!part).join('\n') } : {}),
     ...(result?.toolName === 'release.deploy' && deployment ? { detail: `Trabajo ${deployment.jobId} · ${String(deployment.state ?? 'pendiente')} · build remoto aún en curso.` } : {}),
@@ -346,6 +352,10 @@ export function readFile(path: string): Promise<string> {
 
 export function workspaceTree(directory?: string, showAuxiliary = false): Promise<WorkspaceEntry[]> {
   return call('workspace_tree', { ...(directory !== undefined ? { directory } : {}), showAuxiliary }, []);
+}
+export async function readWorkspaceFile(path: string): Promise<WorkspaceFileContent> {
+  if (!isTauri()) throw new Error('La lectura de archivos está disponible en la app de escritorio.');
+  return invoke<WorkspaceFileContent>('workspace_read_file', { path });
 }
 export function gitStatus(): Promise<string> { return call('git_status', {}, ''); }
 

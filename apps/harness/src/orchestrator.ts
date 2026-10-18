@@ -810,7 +810,7 @@ export class HarnessRuntime {
     }
     if (signal.aborted) return { ok: false, status: "cancelled", toolName: call.name, summary: "Specialist task cancelled before starting.", durationMs: 0 };
     const startedAt = Date.now();
-    this.emit(checkpoint.sessionId, "tool.started", { runId: checkpoint.runId, toolName: call.name, input: { role, task } }, checkpoint.runId);
+    this.emit(checkpoint.sessionId, "tool.started", { runId: checkpoint.runId, invocationId: call.id, toolName: call.name, input: { role, task } }, checkpoint.runId);
     this.emit(checkpoint.sessionId, "session.state", { runId: checkpoint.runId, delegatedRole: role, delegatedTask: task, state: "RUNNING" }, checkpoint.runId);
     try {
       const session = this.getSession(checkpoint.sessionId);
@@ -861,7 +861,7 @@ export class HarnessRuntime {
         durationMs: Date.now() - startedAt,
         data: { role, content, ...(turn.toolCalls.length ? { toolCallsIgnored: turn.toolCalls.length } : {}) },
       };
-      this.emit(checkpoint.sessionId, "tool.completed", { runId: checkpoint.runId, toolName: call.name, result }, checkpoint.runId);
+      this.emit(checkpoint.sessionId, "tool.completed", { runId: checkpoint.runId, invocationId: call.id, toolName: call.name, result }, checkpoint.runId);
       return result;
     } catch (error) {
       const result: ToolResult = {
@@ -873,7 +873,7 @@ export class HarnessRuntime {
         durationMs: Date.now() - startedAt,
         data: { role, errorCode: "DELEGATE_FAILED" },
       };
-      this.emit(checkpoint.sessionId, "tool.completed", { runId: checkpoint.runId, toolName: call.name, result }, checkpoint.runId);
+      this.emit(checkpoint.sessionId, "tool.completed", { runId: checkpoint.runId, invocationId: call.id, toolName: call.name, result }, checkpoint.runId);
       return result;
     }
   }

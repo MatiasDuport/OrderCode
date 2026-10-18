@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { BrokerHealth, HarnessEvent, PermissionProfile, RuntimeState, SessionRecord, TerminalSessionInfo, WorkMode } from './contracts';
+import type { BrokerHealth, HarnessEvent, PermissionProfile, RuntimeState, SessionRecord, TerminalSessionInfo, WorkMode, WorkspaceFileContent } from './contracts';
 
 export interface ChatMessage {
   id: string;
@@ -114,6 +114,7 @@ interface DesktopState {
   streamingText: string;
   events: HarnessEvent[];
   openFile: string | null;
+  filePreview: WorkspaceFileContent | null;
   editorContent: string;
   editorOriginal: string;
   set: <K extends keyof DesktopState>(key: K, value: DesktopState[K]) => void;
@@ -150,10 +151,13 @@ export const useDesktopStore = create<DesktopState>((set) => ({
   streamingText: '',
   events: [],
   openFile: null,
+  filePreview: null,
   editorContent: '',
   editorOriginal: '',
   set: (key, value) => set((state) => {
     const next = { [key]: value } as Partial<DesktopState>;
+    if (key === 'openFile' && value !== state.openFile) next.filePreview = null;
+    if (key === 'session' && (value as SessionRecord | null)?.id !== state.session?.id) next.filePreview = null;
     if (key === 'session') next.reasoningEffort = (value as SessionRecord | null)?.reasoningEffort;
     if (key === 'session' && (value as SessionRecord | null)?.id !== state.session?.id) next.sessionRevision = state.sessionRevision + 1;
     if (key === 'theme') next.themePreference = value as ThemePreference;
@@ -176,7 +180,9 @@ export const useDesktopStore = create<DesktopState>((set) => ({
     if (!state.session || event.sessionId !== state.session.id) return {};
     if (state.events.some((item) => item.id === event.id)) return {};
     const events = [...state.events.filter((item) => item.id !== event.id), event].sort((left, right) => left.sequence - right.sequence);
-    return { events, ...(event.runId ? { runtimeState: event.state } : {}), ...(event.permissionRequest ? { pendingPermission: event.permissionRequest } : {}), ...(event.summary === 'provider.chunk' ? { streamingText: state.streamingText + (event.detail ?? '') } : {}) };
+    const isLifecycle = /^(run\.(started|completed|failed|cancelled)|session\.state|permission\.requested)$/.test(event.type ?? event.summary);
+    const lifecycle = isLifecycle ? events.filter((item) => item.runId && /^(run\.(started|completed|failed|cancelled)|session\.state|permission\.requested)$/.test(item.type ?? item.summary)).at(-1) : undefined;
+    return { events, ...(lifecycle ? { runtimeState: lifecycle.state } : {}), ...(event.permissionRequest ? { pendingPermission: event.permissionRequest } : {}), ...(event.summary === 'provider.chunk' ? { streamingText: state.streamingText + (event.detail ?? '') } : {}) };
   }),
-  resetSession: () => set((state) => ({ session: null, reasoningEffort: undefined, sessionRevision: state.sessionRevision + 1, messages: [], streamingText: '', events: [], runtimeState: 'CREATED', pendingPermission: null, openFile: null, editorContent: '', editorOriginal: '' })),
+  resetSession: () => set((state) => ({ session: null, reasoningEffort: undefined, sessionRevision: state.sessionRevision + 1, messages: [], streamingText: '', events: [], runtimeState: 'CREATED', pendingPermission: null, openFile: null, filePreview: null, editorContent: '', editorOriginal: '' })),
 }));

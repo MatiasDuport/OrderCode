@@ -3,7 +3,7 @@ import { Check, ChevronDown, CircleDashed, FileCode2, MoreHorizontal, Search, Se
 import { cancelSession, createSession, health, listProviders, listProviderModels, pickWorkspaceFolder, sendSessionMessage, updateSession } from '../lib/ipc';
 import { followSessionOperation } from '../lib/sessionExecution';
 import { useDesktopStore, type ChatMessage } from '../lib/store';
-import type { PermissionProfile, SessionRecord, WorkMode } from '../lib/contracts';
+import type { HarnessEvent, PermissionProfile, RuntimeState, SessionRecord, WorkMode } from '../lib/contracts';
 import type { ProviderInfo, ProviderModel } from '../lib/ipc';
 import { Dropdown, DropdownOption, IconButton, Kbd, StatusDot } from './ui';
 import { Localized } from '../lib/localization';
@@ -49,12 +49,45 @@ function Message({ message }: { message: ChatMessage }) {
   </article></Localized>;
 }
 
+const stateLabels: Record<RuntimeState, string> = { CREATED: 'Listo', PREPARING: 'Preparando', RUNNING: 'En curso', WAITING_APPROVAL: 'Pendiente de autorización', WAITING_USER: 'Esperando respuesta', PAUSING: 'Pausando', PAUSED: 'En pausa', COMPLETED: 'Completado', FAILED: 'Falló', CANCELLED: 'Cancelado', RECOVERY_REQUIRED: 'Sin resultado registrado' };
+
+function taskActivity(events: HarnessEvent[], active: boolean): HarnessEvent[] {
+  const rows: HarnessEvent[] = [], identities = new Map<string, number>(), pending = new Map<string, number[]>();
+  const terminalRuns = new Set(events.filter((event) => /^run\.(completed|failed|cancelled)$/.test(event.type ?? event.summary)).map((event) => event.runId));
+  for (const event of events) {
+    const type = event.type ?? event.summary;
+    if (type === 'tool.started' || type === 'tool.completed') {
+      const tool = event.toolName ?? event.summary.split(' · ')[0];
+      const group = `${event.runId ?? 'manual'}:${tool}`, identity = event.invocationId ? `${group}:${event.invocationId}` : undefined;
+      const queue = pending.get(group) ?? [];
+      if (type === 'tool.started') {
+        if (identity) identities.set(identity, rows.length);
+        queue.push(rows.length); pending.set(group, queue);
+        rows.push({ ...event, summary: tool });
+      } else {
+        while (queue.length && rows[queue[0]].state !== 'RUNNING') queue.shift();
+        const index = identity ? identities.get(identity) : queue.shift();
+        if (index !== undefined) rows[index] = { ...event, id: rows[index].id, summary: tool };
+        else rows.push({ ...event, summary: tool });
+      }
+    } else if (['permission.requested', 'run.failed', 'context.compacted', 'recovery.required'].includes(type)) rows.push(event);
+  }
+  return rows.map((event) => event.state === 'RUNNING' && (!active || terminalRuns.has(event.runId)) ? { ...event, state: 'RECOVERY_REQUIRED', detail: event.detail ?? 'Sin resultado registrado' } : event);
+}
+
 function ActivityGroup() {
   const events = useDesktopStore((state) => state.events);
-  const useful = events.filter((event) => event.summary !== 'message.created' && event.summary !== 'session.created' && event.summary !== 'provider.chunk');
+  const runtimeState = useDesktopStore((state) => state.runtimeState);
+  const [expanded, setExpanded] = useState<boolean | null>(null);
+  const active = ['RUNNING', 'PREPARING', 'WAITING_APPROVAL'].includes(runtimeState);
+  const useful = useMemo(() => taskActivity(events, active), [events, active]);
+  const latestRun = events.at(-1)?.runId;
+  useEffect(() => { setExpanded(null); }, [latestRun]);
   if (!useful.length) return null;
-  return <Localized><section className="activity-group" aria-label="Ejecución de tareas"><div className="activity-heading"><ChevronDown size={13} /><CircleDashed className="activity-ring" size={16} /><strong>Actividad de tareas</strong><span className="panel-title-spacer" /><span className="muted">{useful.at(-1)?.state ?? 'CREATED'}</span></div>
-    <div className="activity-items">{useful.slice(-30).map((event) => <div className="activity-item" key={event.id}><div className={`activity-status activity-status--${event.state.toLowerCase()}`}>{event.state === 'COMPLETED' ? <Check size={11} /> : <span />}</div><div className="activity-copy"><strong>{event.summary}</strong><small>{event.detail ?? event.state}</small></div><span className="activity-result">{event.state.replaceAll('_', ' ')}</span></div>)}</div>
+  const open = expanded ?? active;
+  const failed = runtimeState === 'FAILED' || runtimeState === 'CANCELLED';
+  return <Localized><section className="activity-group" aria-label="Ejecución de tareas"><button type="button" className={`activity-heading ${open ? 'is-open' : ''}`} aria-label="Mostrar actividad de tareas" aria-expanded={open} onClick={() => setExpanded(!open)}><ChevronDown size={13} />{active ? <CircleDashed className="activity-ring is-running" size={16} /> : failed ? <X className="activity-ring is-failed" size={15} /> : <Check className="activity-ring" size={15} />}<strong>Actividad de tareas</strong><span className="activity-task-count">{useful.length}</span><span className="panel-title-spacer" /><span className="muted">{stateLabels[runtimeState]}</span></button>
+    {open && <div className="activity-items">{useful.slice(-30).map((event) => <div className="activity-item" key={event.id}><div className={`activity-status activity-status--${event.state.toLowerCase()}`}>{event.state === 'COMPLETED' ? <Check size={11} /> : event.state === 'FAILED' || event.state === 'CANCELLED' ? <X size={11} /> : <span />}</div><div className="activity-copy"><strong>{event.summary}</strong><small>{event.detail ?? stateLabels[event.state]}</small></div><span className="activity-result">{stateLabels[event.state]}</span></div>)}</div>}
   </section></Localized>;
 }
 
@@ -282,6 +315,6 @@ export function ChatPanel({ onOpenReview, onOpenSettings }: { onOpenReview: () =
     finally { setOpeningWorkspace(false); }
   };
   const empty = !messages.length && !streamingText;
-  const stateLabel = runtimeState === 'CREATED' ? 'Listo' : runtimeState.replaceAll('_', ' ').toLowerCase();
+  const stateLabel = stateLabels[runtimeState];
   return <Localized><main className={`chat-panel ${empty ? 'is-empty' : ''}`}><div className="conversation-header"><div><h1>{session ? session.projectPath.split(/[\\/]/).filter(Boolean).at(-1) ?? 'Sesión activa' : 'Nueva sesión'}</h1><p><StatusDot color={runtimeState === 'FAILED' ? 'red' : session ? 'green' : 'muted'} /> {mode} <span>·</span> {error ? 'Error' : stateLabel}</p></div><IconButton icon={MoreHorizontal} label="Más acciones" onClick={onOpenSettings} /></div><div className="conversation-stage"><div className="conversation-scroll">{messages.length ? messages.map((message) => <Message message={message} key={message.id} />) : <div className="conversation-empty"><strong>¿Qué quieres construir?</strong><p>Conecta un workspace, configura un proveedor y elige Plan, Build o Auto.</p></div>}{streamingText && <Message message={{ id: 'assistant-stream', role: 'assistant', content: streamingText, timestamp: 'Ahora' }} />}<ActivityGroup /><ChangedFiles onOpenReview={onOpenReview} />{error && <div className="inline-error" role="alert"><X size={14} /><span>{error}</span></div>}</div><Composer onSubmit={handleSubmit} onCancel={() => { if (session) { const revision = useDesktopStore.getState().sessionRevision; void cancelSession(session.id).then(() => { if (useDesktopStore.getState().sessionRevision === revision) set('runtimeState', 'CANCELLED'); }).catch((cause) => setError(String(cause))); } }} onConfigError={setError} onOpenSettings={onOpenSettings} />{empty && <div className="workspace-start-actions"><button type="button" disabled={openingWorkspace} onClick={() => void openWorkspace()}><FolderOpen size={15} />Abrir workspace</button><button type="button" onClick={onOpenSettings}><Settings size={15} />Abrir Ajustes</button></div>}</div><div className="chat-footer">{session && <button type="button" onClick={onOpenReview}>Abrir revisión de cambios</button>}<span className="panel-title-spacer" /><span>{session ? 'Runtime local · sesión persistente' : 'Sin sesión activa'}</span></div></main></Localized>;
 }

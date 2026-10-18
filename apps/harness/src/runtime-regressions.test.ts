@@ -27,6 +27,22 @@ async function fixture(t: TestContext, adapter: ProviderAdapter) {
 const config = (projectPath: string) => ({ projectPath, mode: "build" as const, permissionProfile: "guided" as const, providerId: "fixture", modelId: "fixture-model" });
 const limits = (patch: Partial<ExecutionBudget>): ExecutionBudget => ({ maxInputTokens: null, maxOutputTokens: null, maxCostUsd: null, maxDurationMs: null, maxToolCalls: null, ...patch });
 
+test("binary files cannot be decoded or overwritten as text and parallel tool events keep identities", async (t) => {
+  const env = await fixture(t, provider(async () => done()));
+  const session = env.runtime.createSession({ ...config(env.project), permissionProfile: "advanced" });
+  const bytes = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x80]);
+  await writeFile(join(env.project, 'photo.jpg'), bytes);
+  assert.equal((await env.runtime.invokeTool(session.id, 'fs.read', { path: 'photo.jpg' })).status, 'failed');
+  assert.equal((await env.runtime.invokeTool(session.id, 'fs.write', { path: 'photo.jpg', content: 'replacement' })).status, 'failed');
+  assert.deepEqual(await readFile(join(env.project, 'photo.jpg')), bytes);
+  const results = await Promise.all([env.runtime.invokeTool(session.id, 'fs.read', { path: 'source.txt' }), env.runtime.invokeTool(session.id, 'fs.read', { path: 'source.txt' })]);
+  assert.ok(results.every((result) => result.status === 'completed'));
+  const events = env.runtime.listEvents(session.id).filter((event) => event.type === 'tool.started' || event.type === 'tool.completed');
+  const starts = events.filter((event) => event.type === 'tool.started');
+  assert.equal(new Set(starts.map((event) => event.payload.invocationId)).size, starts.length);
+  for (const start of starts) assert.equal(events.filter((event) => event.type === 'tool.completed' && event.payload.invocationId === start.payload.invocationId).length, 1);
+});
+
 test("multiple approved tools survive restart and finish their batch before the next model call", async (t) => {
   let calls = 0;
   const responseState = { responses: [{ type: "reasoning", encrypted_content: "fixture-signed-state" }] };

@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
 
 // Controlled native transport: regression checks, without paid calls or a user account.
 test.beforeEach(async ({ page }) => {
@@ -13,6 +14,12 @@ test.beforeEach(async ({ page }) => {
       invoke: async (command: string, args: Record<string, unknown>) => {
         if (command === 'harness_start') { await pause(150); fixture.ready = true; return { ok: true, harnessConnected: true, version: 'fixture', platform: 'windows' }; }
         if (command === 'workspace_open') return args.projectPath;
+        if (command === 'workspace_read_file') {
+          Object.assign(fixture, { lastFileRead: args.path });
+          if (args.path === 'img/campo.jpg') return { kind: 'image', mimeType: 'image/png', dataUrl: (fixture as unknown as { imageData: string }).imageData, size: 2048 };
+          if (args.path === 'archive.bin') return { kind: 'binary', size: 256 };
+          return { kind: 'text', size: 44, content: 'export function main() { return helper(); }' };
+        }
         if (command === 'plugin:dialog|open') return fixture.folderResult;
         if (command === 'plugin:event|listen') return 1;
         if (command === 'plugin:event|unlisten') return null;
@@ -21,6 +28,9 @@ test.beforeEach(async ({ page }) => {
             { path: '.playwright-mcp', kind: 'directory', size: 0 },
             { path: '.playwright-mcp/console-2026-10-18.log', kind: 'file', size: 2048 },
             { path: 'src', kind: 'directory', size: 0 },
+            { path: 'img', kind: 'directory', size: 0 },
+            { path: 'img/campo.jpg', kind: 'file', size: 2048 },
+            { path: 'archive.bin', kind: 'file', size: 256 },
             { path: 'src/components', kind: 'directory', size: 0 },
             { path: 'src/components/Button.tsx', kind: 'file', size: 128 },
             { path: 'src/App.tsx', kind: 'file', size: 256 },
@@ -61,11 +71,13 @@ test.beforeEach(async ({ page }) => {
           const input = params.input as Record<string, unknown>;
           result = { status: 'completed', summary: 'File opened', data: { path: input.path, content: 'export function main() { return helper(); }' } };
         } else if (method === 'session.events') {
+          const custom = (fixture as unknown as { customEvents?: unknown[] }).customEvents;
+          if (custom) return { result: (custom as Array<{ sequence: number }>).filter((event) => event.sequence > Number(params.afterSequence ?? 0)) };
           fixture.cursors.push(Number(params.afterSequence)); fixture.polls += 1; fixture.maxPolls = Math.max(fixture.maxPolls, fixture.polls);
           await pause(350); fixture.polls -= 1;
           result = fixture.completeEvents ? [{ id: 'complete', sessionId: params.sessionId, runId: 'run', sequence: 1502, type: 'run.completed', payload: {} }] : Number(params.afterSequence) < 1501 ? [{ id: 'chunk', sessionId: params.sessionId, runId: 'run', sequence: 1501, type: 'provider.chunk', payload: { chunk: 'A streamed chunk' } }] : [];
         } else if (method === 'permission.pending') result = [];
-        else if (method === 'run') { fixture.runRequests += 1; await pause(900); result = { runId: 'run', state: 'COMPLETED', assistantMessage: { content: 'Persisted final answer' } }; }
+        else if (method === 'run') { fixture.runRequests += 1; while ((fixture as unknown as { holdRun?: boolean }).holdRun) await pause(25); await pause(900); result = { runId: 'run', state: 'COMPLETED', assistantMessage: { content: 'Persisted final answer' } }; }
         else result = [];
         return { result };
       },
@@ -169,6 +181,79 @@ test('explores a clean folder tree, searches nested files and opens them in both
   await expect(panel).toBeHidden();
 });
 
+test('previews images safely, protects binary files and keeps the full text editor', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/');
+  const dataUrl = `data:image/png;base64,${(await readFile(new URL('../../../brand/LogoSinFondo.png', import.meta.url))).toString('base64')}`;
+  await page.evaluate((imageData) => Object.assign((window as unknown as { auditFixture: object }).auditFixture, { imageData }), dataUrl);
+  await page.getByRole('button', { name: 'Workspace', exact: true }).click();
+  await page.getByRole('button', { name: 'Añadir workspace' }).click();
+  const panel = page.getByRole('complementary', { name: 'Workspace' });
+  await panel.getByRole('treeitem', { name: 'img', exact: true }).click();
+  await panel.getByRole('treeitem', { name: 'campo.jpg', exact: true }).click();
+  const preview = page.getByRole('region', { name: 'Vista previa: img/campo.jpg', exact: true });
+  await expect(preview).toBeVisible();
+  await expect.poll(() => preview.locator('img').evaluate((image) => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+  await expect(page.locator('.diff-empty')).toHaveCount(0);
+  await expect(preview.getByRole('button', { name: 'Guardar', exact: true })).toHaveCount(0);
+  await expect(page.locator('.monaco-editor-shell')).toHaveCount(0);
+  await preview.getByRole('button', { name: 'Ampliar imagen' }).click();
+  await expect(preview.locator('.image-preview-scale')).toHaveText('125%');
+  await preview.getByRole('button', { name: 'Ajustar imagen' }).click();
+  await expect(preview.locator('.image-preview-scale')).toHaveText('Ajustar');
+  if (process.env.TEMP) await page.screenshot({ path: `${process.env.TEMP}/ordercode-preview-fix.png`, animations: 'disabled' });
+  await panel.getByRole('treeitem', { name: 'archive.bin', exact: true }).click();
+  await expect(page.getByText('Archivo binario', { exact: true })).toBeVisible();
+  await expect(page.locator('.monaco-editor-shell')).toHaveCount(0);
+  await page.evaluate(() => Object.assign((window as unknown as { auditFixture: object }).auditFixture, { imageData: 'data:image/png;base64,bm90LWFuLWltYWdl' }));
+  await panel.getByRole('treeitem', { name: 'campo.jpg', exact: true }).click();
+  await expect(page.getByText('No se pudo mostrar la imagen', { exact: true })).toBeVisible();
+  await panel.getByRole('treeitem', { name: 'src', exact: true }).click();
+  await panel.getByRole('treeitem', { name: 'App.tsx', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Editor de código: src/App.tsx' })).toBeVisible();
+  expect(await page.evaluate(() => (window as unknown as { auditFixture: { requests: Array<{ method: string }> } }).auditFixture.requests.some((item) => item.method === 'tool.invoke'))).toBe(false);
+  await expect(page.getByRole('region', { name: 'Ejecución de tareas' })).toHaveCount(0);
+});
+
+test('pairs parallel and legacy tool events without changing the run state', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('.composer-dropdown--model .dropdown-trigger').click();
+  await page.getByRole('option', { name: /Fast local code/ }).click();
+  await page.evaluate(() => {
+    const base = { sessionId: 'new-project', runId: 'activity-run' };
+    const customEvents = [
+      { ...base, id: 'run-start', sequence: 1501, type: 'run.started', payload: { state: 'RUNNING' } },
+      { ...base, id: 'start-a', sequence: 1502, type: 'tool.started', payload: { toolName: 'git.diff', invocationId: 'a' } },
+      { ...base, id: 'start-b', sequence: 1503, type: 'tool.started', payload: { toolName: 'git.diff', invocationId: 'b' } },
+      { ...base, id: 'end-b', sequence: 1504, type: 'tool.completed', payload: { toolName: 'git.diff', invocationId: 'b', result: { status: 'failed', summary: 'Second request failed.' } } },
+      { ...base, id: 'end-a', sequence: 1505, type: 'tool.completed', payload: { toolName: 'git.diff', invocationId: 'a', result: { status: 'completed', summary: 'First request completed.' } } },
+      { ...base, id: 'legacy-start', sequence: 1506, type: 'tool.started', payload: { toolName: 'git.status' } },
+      { ...base, id: 'legacy-end', sequence: 1507, type: 'tool.completed', payload: { toolName: 'git.status', result: { status: 'completed', summary: 'Legacy task completed.' } } },
+    ];
+    Object.assign((window as unknown as { auditFixture: object }).auditFixture, { customEvents, holdRun: true });
+  });
+  await page.getByRole('textbox', { name: 'Mensaje para OrderCode' }).fill('Comprueba el proyecto');
+  await page.getByRole('button', { name: 'Enviar mensaje' }).click();
+  const activity = page.getByRole('region', { name: 'Ejecución de tareas' });
+  const toggle = activity.getByRole('button', { name: 'Mostrar actividad de tareas' });
+  await expect(activity.locator('.activity-item')).toHaveCount(3);
+  await expect(page.getByRole('button', { name: 'Detener ejecución' })).toBeVisible();
+  await expect(toggle).toContainText('En curso');
+  await expect(activity.locator('.activity-item').nth(0)).toContainText('First request completed.');
+  await expect(activity.locator('.activity-item').nth(1)).toContainText('Second request failed.');
+  await expect(activity.locator('.activity-item').nth(1)).toContainText('Falló');
+  await page.evaluate(() => {
+    const fixture = (window as unknown as { auditFixture: { customEvents: unknown[]; holdRun: boolean } }).auditFixture;
+    fixture.customEvents.push({ id: 'run-end', sequence: 1508, sessionId: 'new-project', runId: 'activity-run', type: 'run.completed', payload: {} });
+    fixture.holdRun = false;
+  });
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(toggle).toContainText('Completado');
+  await toggle.click();
+  await expect(activity.locator('.activity-item')).toHaveCount(3);
+  await expect(activity.locator('.activity-item').getByText('En curso', { exact: true })).toHaveCount(0);
+});
+
 test('selects model-specific effort and chats with a project through the composer', async ({ page }) => {
   await page.goto('/');
   await page.locator('.composer-dropdown--model .dropdown-trigger').click();
@@ -214,8 +299,7 @@ test('recovers from a code graph error, inspects relationships and opens the rea
   await expect(page.getByRole('complementary', { name: 'Detalles del nodo' })).toContainText('src/main.ts');
   await page.getByRole('button', { name: 'Abrir en el editor' }).click();
   await expect(page.locator('.editor-toolbar code')).toHaveText('src/main.ts');
-  const readRequest = await page.evaluate(() => (window as unknown as { auditFixture: { requests: Array<{ method: string; params: Record<string, unknown> }> } }).auditFixture.requests.find((request) => request.method === 'tool.invoke'));
-  expect(readRequest?.params).toMatchObject({ name: 'fs.read', input: { path: 'src/main.ts' } });
+  expect(await page.evaluate(() => (window as unknown as { auditFixture: { lastFileRead: string } }).auditFixture.lastFileRead)).toBe('src/main.ts');
 });
 
 test('cancelling folder selection preserves the draft without a failed conversation', async ({ page }) => {

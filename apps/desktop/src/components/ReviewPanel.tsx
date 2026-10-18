@@ -1,13 +1,14 @@
-import { Cpu, FileCode2, Save, TerminalSquare, Trash2, X } from 'lucide-react';
+import { Cpu, FileCode2, Image as ImageIcon, Save, TerminalSquare, Trash2, X, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import type { Terminal } from '@xterm/xterm';
 import type { FitAddon } from '@xterm/addon-fit';
 import type { BeforeMount } from '@monaco-editor/react';
+import type { WorkspaceFileContent } from '../lib/contracts';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { IconButton, StatusDot } from './ui';
 import { useDesktopStore } from '../lib/store';
 import { Localized } from '../lib/localization';
-import { closeNativeTerminal, invokeHarnessTool, loadSession, openNativeTerminal, resizeNativeTerminal, writeNativeTerminal } from '../lib/ipc';
+import { closeNativeTerminal, invokeHarnessTool, loadSession, openNativeTerminal, readWorkspaceFile, resizeNativeTerminal, writeNativeTerminal } from '../lib/ipc';
 
 const MonacoEditor = lazy(async () => {
   const [reactMonaco, monaco, languageContributions, editorWorker, jsonWorker, cssWorker, htmlWorker, tsWorker] = await Promise.all([
@@ -108,13 +109,26 @@ function lineDiff(before: string, after: string): string[] {
   return [...oldLines.slice(0, prefix).map((line) => `  ${line}`), ...removed.map((line) => `- ${line}`), ...added.map((line) => `+ ${line}`), ...(suffix ? oldLines.slice(-suffix).map((line) => `  ${line}`) : [])];
 }
 
+function FilePreview({ path, file }: { path: string; file: WorkspaceFileContent }) {
+  const [zoom, setZoom] = useState<number | null>(null);
+  const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+  const [failed, setFailed] = useState(false);
+  const image = file.kind === 'image' && !!file.dataUrl;
+  const changeZoom = (delta: number) => setZoom((current) => Math.max(.25, Math.min(4, (current ?? 1) + delta)));
+  return <Localized><section className="editor-panel file-preview" aria-label={`Vista previa: ${path}`}>
+    <div className="editor-toolbar">{image ? <ImageIcon size={14} /> : <FileCode2 size={14} />}<code title={path}>{path}</code><span className="panel-title-spacer" />{image && <><IconButton icon={ZoomOut} label="Reducir imagen" disabled={zoom === .25} onClick={() => changeZoom(-.25)} /><span className="image-preview-scale">{zoom === null ? 'Ajustar' : `${Math.round(zoom * 100)}%`}</span><IconButton icon={ZoomIn} label="Ampliar imagen" disabled={zoom === 4} onClick={() => changeZoom(.25)} /><IconButton icon={Maximize2} label="Ajustar imagen" onClick={() => setZoom(null)} /></>}</div>
+    {image && !failed ? <div className="image-preview-canvas"><div className={`image-preview-stage ${zoom === null ? 'is-fit' : ''}`} style={zoom !== null ? { width: dimensions.width * zoom + 48, height: dimensions.height * zoom + 48 } : undefined}><img src={file.dataUrl} alt={`Vista previa: ${path}`} draggable={false} style={zoom !== null ? { width: dimensions.width * zoom, height: dimensions.height * zoom } : undefined} onLoad={(event) => setDimensions({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })} onError={() => setFailed(true)} /></div></div> : <div className="file-preview-unavailable"><FileCode2 size={30} strokeWidth={1.4} /><strong>{failed ? 'No se pudo mostrar la imagen' : file.kind === 'too-large' ? 'Archivo demasiado grande' : 'Archivo binario'}</strong><p>{failed ? 'El archivo no es una imagen válida o usa un formato no compatible.' : file.kind === 'too-large' ? 'Este archivo supera el límite de vista previa.' : 'Este tipo de archivo no se puede editar como texto.'}</p></div>}
+    <div className="file-preview-metadata"><span>{image ? file.mimeType : 'Solo lectura'}</span>{dimensions.width > 0 && <span>{dimensions.width} × {dimensions.height} px</span>}<span>{file.size < 1024 ? `${file.size} B` : file.size < 1024 * 1024 ? `${(file.size / 1024).toFixed(1)} KB` : `${(file.size / 1024 / 1024).toFixed(1)} MB`}</span></div>
+  </section></Localized>;
+}
+
 function Editor() {
-  const { session, openFile, editorContent, editorOriginal, editorFontSize, tabSize, theme, set } = useDesktopStore();
+  const { session, openFile, filePreview, editorContent, editorOriginal, editorFontSize, tabSize, theme, set } = useDesktopStore();
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const dirty = editorContent !== editorOriginal;
   const save = async () => {
-    if (!session || !openFile || !dirty || saving) return;
+    if (!session || !openFile || filePreview || !dirty || saving) return;
     const revision = useDesktopStore.getState().sessionRevision;
     const isCurrent = () => useDesktopStore.getState().sessionRevision === revision && useDesktopStore.getState().openFile === openFile;
     setSaving(true); setError('');
@@ -138,16 +152,17 @@ function Editor() {
     finally { setSaving(false); }
   };
   if (!openFile) return <Localized><div className="editor-empty"><FileCode2 size={20} /><span>Selecciona un archivo del workspace para revisarlo o editarlo.</span></div></Localized>;
+  if (filePreview) return <FilePreview key={openFile} path={openFile} file={filePreview} />;
   return <Localized><section className="editor-panel"><div className="editor-toolbar"><FileCode2 size={13} /><code title={openFile}>{openFile}</code><span className="panel-title-spacer" />{dirty && <span className="editor-dirty">Sin guardar</span>}<button type="button" disabled={!dirty || saving} onClick={() => void save()}><Save size={12} />{saving ? 'Guardando…' : 'Guardar'}</button><button type="button" disabled={!dirty} onClick={() => set('editorContent', editorOriginal)} aria-label="Descartar cambios"><Trash2 size={12} /></button></div><div className="monaco-editor-shell" role="region" aria-label={`Editor de código: ${openFile}`}><Suspense fallback={<div className="editor-loading">Cargando editor…</div>}><MonacoEditor key={openFile} language={editorLanguage(openFile)} theme={theme === 'light' ? 'ordercode-light' : 'ordercode-dark'} value={editorContent} beforeMount={configureMonaco} onChange={(value) => set('editorContent', value ?? '')} options={{ automaticLayout: true, minimap: { enabled: false }, fontFamily: 'JetBrains Mono Variable, Consolas, monospace', fontSize: editorFontSize, lineNumbers: 'on', renderLineHighlight: 'gutter', scrollBeyondLastLine: false, wordWrap: 'off', tabSize, insertSpaces: true, padding: { top: 8, bottom: 8 } }} /></Suspense></div>{error && <div className="editor-error" role="alert">{error}</div>}</section></Localized>;
 }
 
 export function ReviewPanel({ onClose }: { onClose: () => void }) {
-  const { events, openFile, editorOriginal, editorContent, session, set } = useDesktopStore();
+  const { events, openFile, filePreview, editorOriginal, editorContent, session, set } = useDesktopStore();
   const [selectionError, setSelectionError] = useState('');
   const selectionRequest = useRef(0);
   const files = [...new Set(events.flatMap((event) => event.changedFiles ?? []))];
   const latestDiff = useMemo(() => [...events].reverse().find((event) => event.diff && (!openFile || event.changedFiles?.includes(openFile)))?.diff, [events, openFile]);
-  const diff = dirtyText(editorOriginal, editorContent) ? lineDiff(editorOriginal, editorContent).join('\n') : latestDiff;
+  const diff = filePreview ? undefined : dirtyText(editorOriginal, editorContent) ? lineDiff(editorOriginal, editorContent).join('\n') : latestDiff;
   const selectFile = async (file: string) => {
     if (!session) return;
     const active = useDesktopStore.getState();
@@ -159,17 +174,14 @@ export function ReviewPanel({ onClose }: { onClose: () => void }) {
     const request = ++selectionRequest.current;
     const revision = active.sessionRevision;
     try {
-      const result = await invokeHarnessTool(session.id, 'fs.read', { path: file });
+      const data = await readWorkspaceFile(file);
       if (request !== selectionRequest.current || useDesktopStore.getState().sessionRevision !== revision) return;
-      if (result.status !== 'completed' || !result.data || typeof result.data !== 'object') throw new Error(String(result.summary ?? 'No se pudo abrir el archivo.'));
-      const data = result.data as Record<string, unknown>;
-      if (typeof data.content !== 'string') throw new Error('El resultado de lectura no contiene el texto del archivo.');
-      set('openFile', file); set('editorContent', data.content); set('editorOriginal', data.content);
+      set('openFile', file); set('filePreview', data.kind === 'text' ? null : data); set('editorContent', data.content ?? ''); set('editorOriginal', data.content ?? '');
     } catch (cause) { if (request === selectionRequest.current && useDesktopStore.getState().sessionRevision === revision) setSelectionError(cause instanceof Error ? cause.message : String(cause)); }
   };
   return <Localized><aside className="review-panel" aria-label="Revisión de cambios">
-    <div className="review-header"><strong>Revisión</strong><span className="change-count">{files.length}</span><span className="panel-title-spacer" /><IconButton icon={X} label="Cerrar revisión" onClick={onClose} /></div>
-    {files.length ? <div className="diff-files">{files.map((file) => <button className={`diff-file ${openFile === file ? 'is-active' : ''}`} type="button" key={file} onClick={() => void selectFile(file)}><FileCode2 size={14} /><span>{file}</span></button>)}</div> : <div className="diff-empty"><FileCode2 size={22} /><strong>{openFile ? 'Archivo abierto' : 'No hay cambios de agente'}</strong><p>Los cambios escritos por el runtime se mostrarán aquí con su diff guardado.</p></div>}
+    <div className="review-header"><strong>{filePreview?.kind === 'image' ? 'Vista previa' : !files.length && openFile ? 'Archivo' : 'Revisión'}</strong>{files.length > 0 && <span className="change-count">{files.length}</span>}<span className="panel-title-spacer" /><IconButton icon={X} label="Cerrar revisión" onClick={onClose} /></div>
+    {files.length ? <div className="diff-files">{files.map((file) => <button className={`diff-file ${openFile === file ? 'is-active' : ''}`} type="button" key={file} onClick={() => void selectFile(file)}><FileCode2 size={14} /><span>{file}</span></button>)}</div> : !openFile && <div className="diff-empty"><FileCode2 size={22} /><strong>No hay cambios de agente</strong><p>Los cambios escritos por el runtime se mostrarán aquí con su diff guardado.</p></div>}
     {selectionError && <div className="editor-error" role="alert">{selectionError}</div>}
     {diff && <pre className="diff-preview" aria-label="Diff de cambios">{diff.split('\n').map((line, index) => <span className={line.startsWith('+') ? 'diff-added' : line.startsWith('-') ? 'diff-removed' : ''} key={`${index}:${line}`}>{line || ' '}</span>)}</pre>}
     <Editor />

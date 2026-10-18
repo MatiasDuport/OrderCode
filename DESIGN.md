@@ -207,6 +207,8 @@ El explorador Workspace usa un panel de 248 px, cabecera compacta, proyecto en d
 
 Editor real con pestañas, explorador opcional, navegación de símbolos y diagnósticos. Abrir archivos citados desde el chat. Vista de diff clara con archivos y líneas afectadas, agrupada por ejecución. No mostrar controles para revertir cuando la reversión no sea segura o esté disponible.
 
+Las imágenes raster se muestran como vista previa con ajuste, zoom, dimensiones y tamaño, sin controles de edición de texto. Los archivos binarios y los que superan el límite de vista previa muestran un estado explícito de solo lectura. La lectura manual del explorador permanece en la interfaz nativa y no se incorpora al contexto del modelo. Al abrir un archivo, el editor o visor ocupa el panel completo sin un bloque vacío de cambios encima. En la conversación, cada invocación de herramienta tiene una sola fila que combina inicio y resultado; su estado es independiente del estado de la ejecución y la actividad terminada comienza contraída.
+
 ### 7.3. Terminal, Process Explorer y logs
 
 Pestañas compactas, selección de proceso y búsqueda. El chat recibe resúmenes con enlace al registro original. La actividad larga se virtualiza y no bloquea el renderizado.

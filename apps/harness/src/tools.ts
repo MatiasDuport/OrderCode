@@ -41,6 +41,13 @@ interface RegisteredTool {
   permission(input: Record<string, unknown>, context?: ToolInvocationContext): Omit<PermissionCheckInput, "sessionId" | "projectPath" | "agentId" | "toolName">;
 }
 
+function decodeProjectText(bytes: Buffer): string {
+  if (!bytes.includes(0)) {
+    try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); } catch { /* Report binary data without decoding replacement characters. */ }
+  }
+  throw new HarnessError('BINARY_FILE', 'This file is binary or is not valid UTF-8. It cannot be read or overwritten as text.');
+}
+
 const definitions: ToolDefinition[] = [
   { name: "code.search", description: "Search indexed code symbols and source with ripgrep or FTS5. Returns a compact set of matches; read a specific file range for full context.", effects: ["READ"], cancellable: false, inputSchema: { type: "object", required: ["query"], properties: { query: { type: "string" } } } },
   { name: "code.graph", description: "Inspect relevant confirmed imports and inferred references/calls around a specific symbol or path. Results are capped to keep model context small; narrow the query when truncated.", effects: ["READ"], cancellable: false, inputSchema: { type: "object", properties: { query: { type: "string" } } } },
@@ -202,6 +209,7 @@ export class ToolRegistry {
     if (!tool) throw new HarnessError("TOOL_NOT_FOUND", `Unknown tool: ${invocation.name}`);
     validateInput(tool.definition.inputSchema, invocation.input);
     const permission = tool.permission(invocation.input, invocation.context);
+    const invocationId = randomUUID();
     const check = this.permissions.check(invocation.context.permissionProfile, {
       ...permission,
       toolName: invocation.name,
@@ -214,7 +222,7 @@ export class ToolRegistry {
     });
     if (check.kind === "reject") {
       const result: ToolResult = { ok: false, status: "rejected", toolName: invocation.name, summary: check.reason, durationMs: 0, data: { errorCode: "PERMISSION_DENIED" } };
-      this.onEvent?.("tool.completed", { sessionId: invocation.context.sessionId, runId: invocation.context.runId, toolName: invocation.name, result });
+      this.onEvent?.("tool.completed", { sessionId: invocation.context.sessionId, runId: invocation.context.runId, invocationId, toolName: invocation.name, result });
       return result;
     }
     if (check.kind === "approval") {
@@ -223,7 +231,7 @@ export class ToolRegistry {
     }
     if (invocation.context.signal?.aborted) return { ok: false, status: "cancelled", toolName: invocation.name, summary: "Tool invocation cancelled before start.", durationMs: 0 };
     const startedAt = Date.now();
-    this.onEvent?.("tool.started", { sessionId: invocation.context.sessionId, runId: invocation.context.runId, toolName: invocation.name, input: this.redactInput(invocation.name, invocation.input) });
+    this.onEvent?.("tool.started", { sessionId: invocation.context.sessionId, runId: invocation.context.runId, invocationId, toolName: invocation.name, input: this.redactInput(invocation.name, invocation.input) });
     let result: ToolResult;
     try {
       result = await tool.invoke(invocation.input, invocation.context);
@@ -232,7 +240,7 @@ export class ToolRegistry {
     }
     result.durationMs = Date.now() - startedAt;
     const visibleData = invocation.name === "fs.write" || invocation.name === "process.exec" ? result.data : undefined;
-    this.onEvent?.("tool.completed", { sessionId: invocation.context.sessionId, runId: invocation.context.runId, toolName: invocation.name, result: { ...result, data: visibleData } });
+    this.onEvent?.("tool.completed", { sessionId: invocation.context.sessionId, runId: invocation.context.runId, invocationId, toolName: invocation.name, result: { ...result, data: visibleData } });
     return result;
   }
 
@@ -277,7 +285,7 @@ export class ToolRegistry {
       permission: (input) => ({ action: "read", effect: "READ", path: stringInput(input, "path"), resource: stringInput(input, "path") }),
       invoke: async (input, context) => {
         const path = resolve(context.projectPath, stringInput(input, "path"));
-        const content = await readFile(path, "utf8");
+        const content = decodeProjectText(await readFile(path));
         const start = intInput(input, "start", 0, 0, Number.MAX_SAFE_INTEGER);
         const end = input.end === undefined ? content.length : intInput(input, "end", content.length, start, Number.MAX_SAFE_INTEGER);
         const selected = content.slice(start, end);
@@ -291,7 +299,7 @@ export class ToolRegistry {
         const path = resolve(context.projectPath, stringInput(input, "path"));
         const content = textInput(input, "content");
         const expected = typeof input.expectedSha256 === "string" ? input.expectedSha256 : undefined;
-        const before = await readFile(path, "utf8").catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return ""; throw error; });
+        const before = await readFile(path).then(decodeProjectText).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return ""; throw error; });
         if (expected) {
           const actual = createHash("sha256").update(before).digest("hex");
           if (actual !== expected) throw new HarnessError("WRITE_CONFLICT", "The file changed since it was read.", { path, expectedSha256: expected, actualSha256: actual });

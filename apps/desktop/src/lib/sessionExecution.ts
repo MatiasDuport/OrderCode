@@ -16,9 +16,9 @@ export function watchSessionExecution(sessionId: string, revision: number): () =
     try {
       const events = await loadSessionEvents(sessionId, cursor);
       if (!isCurrent()) return;
-      if (events.some((event) => ['COMPLETED', 'FAILED', 'CANCELLED', 'WAITING_APPROVAL', 'WAITING_USER', 'PAUSED', 'RECOVERY_REQUIRED'].includes(event.state))) {
+      if (events.some((event) => /^(run\.(completed|failed|cancelled)|session\.state|permission\.requested)$/.test(event.type ?? event.summary) && ['COMPLETED', 'FAILED', 'CANCELLED', 'WAITING_APPROVAL', 'WAITING_USER', 'PAUSED', 'RECOVERY_REQUIRED'].includes(event.state))) {
         const saved = await loadSession(sessionId);
-        if (isCurrent()) applySessionSnapshot(saved);
+        if (isCurrent()) { applySessionSnapshot(saved); cursor = Math.max(cursor, saved.session.sequence, ...saved.events.map((event) => event.sequence)); }
       } else for (const event of events) { useDesktopStore.getState().addEvent(event); cursor = Math.max(cursor, event.sequence); }
     } catch { /* A temporary transport interruption is retried on the next tick. */ }
     finally { inFlight = false; }

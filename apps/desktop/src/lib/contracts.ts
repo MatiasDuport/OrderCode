@@ -73,6 +73,9 @@ export interface UsageAnalytics {
 
 export interface HarnessEvent {
   id: string;
+  type?: string;
+  toolName?: string;
+  invocationId?: string;
   sessionId: string;
   sequence: number;
   state: RuntimeState;
@@ -106,6 +109,14 @@ export interface WorkspaceEntry {
   path: string;
   kind: 'file' | 'directory';
   size: number;
+}
+
+export interface WorkspaceFileContent {
+  kind: 'text' | 'image' | 'binary' | 'too-large';
+  size: number;
+  content?: string;
+  dataUrl?: string;
+  mimeType?: string;
 }
 
 export interface CodeSymbol {

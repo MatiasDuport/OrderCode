@@ -1,10 +1,10 @@
-import { ArrowRight, Braces, ChevronDown, ChevronRight, ChevronsDownUp, Code2, FileCode2, FileJson2, FileText, Folder, FolderOpen, GitBranch, ListFilter, LoaderCircle, Plus, RefreshCw, Search, X } from 'lucide-react';
+import { ArrowRight, Braces, ChevronDown, ChevronRight, ChevronsDownUp, Code2, FileCode2, FileJson2, FileText, Folder, FolderOpen, GitBranch, Image as ImageIcon, ListFilter, LoaderCircle, Plus, RefreshCw, Search, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { IconButton } from './ui';
 import { useDesktopStore } from '../lib/store';
-import { createSession, gitStatus, health, invokeHarnessTool, pickWorkspaceFolder, workspaceTree } from '../lib/ipc';
+import { createSession, gitStatus, health, pickWorkspaceFolder, readWorkspaceFile, workspaceTree } from '../lib/ipc';
 import type { WorkspaceEntry } from '../lib/contracts';
 import { Localized } from '../lib/localization';
 
@@ -37,6 +37,7 @@ function makeTree(entries: WorkspaceEntry[], showAuxiliary: boolean, query: stri
 
 function FileGlyph({ name }: { name: string }) {
   const extension = name.split('.').at(-1)?.toLowerCase();
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif', 'svg'].includes(extension ?? '')) return <ImageIcon className="workspace-file-icon is-style" size={14} />;
   if (extension === 'json') return <FileJson2 className="workspace-file-icon is-json" size={14} />;
   if (['css', 'scss'].includes(extension ?? '')) return <Braces className="workspace-file-icon is-style" size={14} />;
   if (['md', 'txt'].includes(extension ?? '')) return <FileText className="workspace-file-icon" size={14} />;
@@ -163,12 +164,10 @@ export function WorkspaceSidebar({ onClose }: { onClose: () => void }) {
     setError('');
     const request = ++openingFile.current, revision = active.sessionRevision;
     try {
-      const result = await invokeHarnessTool(session.id, 'fs.read', { path });
+      const data = await readWorkspaceFile(path);
       if (request !== openingFile.current || useDesktopStore.getState().sessionRevision !== revision) return;
-      if (result.status !== 'completed' || !result.data || typeof result.data !== 'object') throw new Error(String(result.summary ?? 'No se pudo leer el archivo.'));
-      const data = result.data as Record<string, unknown>;
-      if (typeof data.content !== 'string') throw new Error('El contenido no está disponible en el resultado compacto.');
-      set('openFile', path); set('editorContent', data.content); set('editorOriginal', data.content); set('reviewOpen', true);
+      set('openFile', path); set('filePreview', data.kind === 'text' ? null : data);
+      set('editorContent', data.content ?? ''); set('editorOriginal', data.content ?? ''); set('reviewOpen', true);
     } catch (cause) { if (request === openingFile.current && useDesktopStore.getState().sessionRevision === revision) setError(cause instanceof Error ? cause.message : String(cause)); }
   };
 

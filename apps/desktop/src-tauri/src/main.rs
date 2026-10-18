@@ -4,6 +4,7 @@ mod chatgpt;
 mod xai;
 
 use serde::Serialize;
+use base64::Engine as _;
 use portable_pty::{native_pty_system, Child as PtyChild, CommandBuilder, MasterPty, PtySize};
 use std::{collections::{hash_map::DefaultHasher, HashMap}, env, fs, hash::{Hash, Hasher}, io::{BufRead, BufReader, Read, Write}, path::{Path, PathBuf}, process::{Child, ChildStdin, Command, Stdio}, sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, mpsc, Arc, Mutex}, thread, time::Duration};
 #[cfg(windows)]
@@ -669,6 +670,46 @@ fn git_status(state: State<'_, BrokerState>) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+// Explicit file browsing stays in the native UI and never enters model context or tool logs.
+#[tauri::command]
+async fn workspace_read_file(state: State<'_, BrokerState>, path: String) -> Result<serde_json::Value, String> {
+    let root = state.workspace_root.lock().map_err(|_| "No se pudo leer el workspace activo".to_string())?.clone().ok_or_else(|| "Abre un workspace antes de leer archivos".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || read_workspace_file_content(&root, &path)).await.map_err(|error| format!("No se pudo abrir el archivo: {error}"))?
+}
+
+fn read_workspace_file_content(root: &Path, relative: &str) -> Result<serde_json::Value, String> {
+    let requested = Path::new(relative);
+    if !requested.is_absolute() && requested.components().any(|part| !matches!(part, std::path::Component::Normal(_) | std::path::Component::CurDir)) {
+        return Err("El archivo debe pertenecer al workspace activo".into());
+    }
+    let resolved = root.join(requested).canonicalize().map_err(|error| format!("No se pudo abrir el archivo: {error}"))?;
+    if !resolved.starts_with(root) || !resolved.is_file() { return Err("El archivo debe pertenecer al workspace activo".into()); }
+    let file = fs::File::open(&resolved).map_err(|error| format!("No se pudo leer el archivo: {error}"))?;
+    let size = file.metadata().map_err(|error| error.to_string())?.len();
+    const LIMIT: u64 = 12 * 1024 * 1024;
+    if size > LIMIT { return Ok(serde_json::json!({ "kind": "too-large", "size": size })); }
+    let mut bytes = Vec::new();
+    file.take(LIMIT + 1).read_to_end(&mut bytes).map_err(|error| format!("No se pudo leer el archivo: {error}"))?;
+    if bytes.len() as u64 > LIMIT { return Ok(serde_json::json!({ "kind": "too-large", "size": bytes.len() })); }
+    let mime = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") { Some("image/png") }
+        else if bytes.starts_with(&[0xff, 0xd8, 0xff]) { Some("image/jpeg") }
+        else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") { Some("image/gif") }
+        else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") { Some("image/webp") }
+        else if bytes.starts_with(b"BM") { Some("image/bmp") }
+        else if bytes.starts_with(&[0, 0, 1, 0]) { Some("image/x-icon") }
+        else if bytes.get(4..8) == Some(b"ftyp") && matches!(bytes.get(8..12), Some(b"avif") | Some(b"avis")) { Some("image/avif") }
+        else { None };
+    if let Some(mime) = mime {
+        return Ok(serde_json::json!({ "kind": "image", "size": bytes.len(), "mimeType": mime, "dataUrl": format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(&bytes)) }));
+    }
+    if bytes.len() > 2 * 1024 * 1024 { return Ok(serde_json::json!({ "kind": "too-large", "size": bytes.len() })); }
+    if bytes.contains(&0) { return Ok(serde_json::json!({ "kind": "binary", "size": bytes.len() })); }
+    match String::from_utf8(bytes) {
+        Ok(content) => Ok(serde_json::json!({ "kind": "text", "size": content.len(), "content": content })),
+        Err(error) => Ok(serde_json::json!({ "kind": "binary", "size": error.as_bytes().len() })),
+    }
+}
+
 #[tauri::command]
 fn workspace_open(state: State<'_, BrokerState>, project_path: String) -> Result<String, String> {
     let root = normalize_root(&project_path)?;
@@ -1019,7 +1060,7 @@ pub fn run() {
                 });
             }
         })
-        .invoke_handler(tauri::generate_handler![health, harness_start, harness_request, harness_stop, updater_check, updater_download, updater_install, workspace_open, activate_session, terminal_open, terminal_write, terminal_resize, terminal_close, workspace_tree, git_status, provider_keys_status, provider_set_key, provider_remove_key, chatgpt_account_status, chatgpt_connect, chatgpt_disconnect, xai_account_status, xai_connect, xai_disconnect, mcp_server_secret_set, mcp_server_secret_remove, mcp_server_secret_status, release_hook_set, release_hook_remove, release_hook_status])
+        .invoke_handler(tauri::generate_handler![health, harness_start, harness_request, harness_stop, updater_check, updater_download, updater_install, workspace_open, activate_session, terminal_open, terminal_write, terminal_resize, terminal_close, workspace_tree, workspace_read_file, git_status, provider_keys_status, provider_set_key, provider_remove_key, chatgpt_account_status, chatgpt_connect, chatgpt_disconnect, xai_account_status, xai_connect, xai_disconnect, mcp_server_secret_set, mcp_server_secret_remove, mcp_server_secret_status, release_hook_set, release_hook_remove, release_hook_status])
         .setup(|app| { if let Some(window) = app.get_webview_window("main") { let _ = window.set_title("OrderCode"); } Ok(()) })
         .run(tauri::generate_context!())
         .expect("error while running OrderCode");
@@ -1030,6 +1071,36 @@ fn main() { run(); }
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_preview_preserves_text_detects_images_and_blocks_outside_paths() {
+        let temporary = std::env::temp_dir();
+        let directory = temporary.join(format!("ordercode-preview-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&directory).unwrap();
+        let result = (|| -> Result<(), String> {
+            let root = normalize_root(directory.to_str().unwrap())?;
+            let text = format!("código\n{}", "text ".repeat(6_000));
+            fs::write(root.join("large.ts"), &text).map_err(|error| error.to_string())?;
+            let value = read_workspace_file_content(&root, "large.ts")?;
+            assert_eq!(value["kind"], "text"); assert_eq!(value["content"], text);
+            fs::write(root.join("photo.jpg"), [0xff, 0xd8, 0xff, 0xe0, 0, 0]).map_err(|error| error.to_string())?;
+            let image = read_workspace_file_content(&root, "photo.jpg")?;
+            assert_eq!(image["kind"], "image"); assert_eq!(image["mimeType"], "image/jpeg");
+            assert!(image["dataUrl"].as_str().unwrap().starts_with("data:image/jpeg;base64,"));
+            fs::write(root.join("binary.dat"), [0, 0xff, 0x80]).map_err(|error| error.to_string())?;
+            assert_eq!(read_workspace_file_content(&root, "binary.dat")?["kind"], "binary");
+            fs::write(root.join("fake.png"), "<html>Untrusted content</html>").map_err(|error| error.to_string())?;
+            assert_eq!(read_workspace_file_content(&root, "fake.png")?["kind"], "text");
+            assert!(read_workspace_file_content(&root, "../outside.txt").is_err());
+            assert_eq!(read_workspace_file_content(&root, root.join("large.ts").to_str().unwrap())?["kind"], "text");
+            assert!(read_workspace_file_content(&root, std::env::current_exe().unwrap().to_str().unwrap()).is_err());
+            let oversized = fs::File::create(root.join("huge.bin")).map_err(|error| error.to_string())?;
+            oversized.set_len(13 * 1024 * 1024).map_err(|error| error.to_string())?;
+            assert_eq!(read_workspace_file_content(&root, "huge.bin")?["kind"], "too-large");
+            Ok(())
+        })();
+        assert_eq!(directory.parent(), Some(temporary.as_path())); fs::remove_dir_all(&directory).unwrap(); result.unwrap();
+    }
 
     #[test]
     fn terminal_preserves_unicode_across_pty_chunks() {

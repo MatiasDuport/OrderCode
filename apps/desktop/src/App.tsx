@@ -15,7 +15,7 @@ const ReviewPanel = lazy(() => import('./components/ReviewPanel').then((module) 
 const TerminalPanel = lazy(() => import('./components/ReviewPanel').then((module) => ({ default: module.TerminalPanel })));
 import { TopBar } from './components/TopBar';
 import { WorkspaceSidebar } from './components/WorkspaceSidebar';
-import { activateSession, cancelSession, configureVercelDeployHook, invokeHarnessTool, isDesktopApp, listSessions, loadSession, openNativeTerminal, removeVercelDeployHook, resolvePermission, searchCode, searchCodeGraph, startHarness, vercelDeployHookStatus } from './lib/ipc';
+import { activateSession, cancelSession, configureVercelDeployHook, invokeHarnessTool, isDesktopApp, listSessions, loadSession, openNativeTerminal, readWorkspaceFile, removeVercelDeployHook, resolvePermission, searchCode, searchCodeGraph, startHarness, vercelDeployHookStatus } from './lib/ipc';
 import { useDesktopStore } from './lib/store';
 import { followSessionOperation, watchSessionExecution } from './lib/sessionExecution';
 import { checkForUpdates, downloadUpdate, initializeUpdater, installUpdate, reportUpdateProgress } from './lib/updater';
@@ -72,13 +72,12 @@ function CodeSurface() {
     }
     setError('');
     try {
-      const result = await invokeHarnessTool(session.id, 'fs.read', { path });
-      if (result.status !== 'completed' || !result.data || typeof result.data !== 'object') throw new Error(String(result.summary ?? 'No se pudo abrir el archivo.'));
-      const data = result.data as Record<string, unknown>;
-      if (typeof data.content !== 'string') throw new Error('El resultado de lectura no contiene el texto del archivo.');
+      const data = await readWorkspaceFile(path);
+      if (useDesktopStore.getState().sessionRevision !== current.sessionRevision) return;
       set('openFile', path);
-      set('editorContent', data.content);
-      set('editorOriginal', data.content);
+      set('filePreview', data.kind === 'text' ? null : data);
+      set('editorContent', data.content ?? '');
+      set('editorOriginal', data.content ?? '');
       set('reviewOpen', true);
       set('currentView', 'Workspace');
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
