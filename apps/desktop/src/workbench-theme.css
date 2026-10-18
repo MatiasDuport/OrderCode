@@ -655,3 +655,21 @@ kbd { background: var(--surface-raised); border-color: var(--border); box-shadow
   .updater-status-footer { align-items: flex-start; flex-direction: column; }
   .updater-status-actions { flex-wrap: wrap; justify-content: flex-start; }
 }
+
+/* Provider connections: compact grouping and inline diagnostics. */
+.settings-provider-tabs { display:flex; gap:4px; width:fit-content; max-width:100%; padding:4px; border:1px solid var(--border); border-radius:10px; background:var(--surface); }
+.settings-provider-tabs button { min-height:34px; padding:0 16px; border:0; border-radius:7px; background:transparent; color:var(--muted); font:600 12px 'Nunito Variable',sans-serif; cursor:pointer; }
+.settings-provider-tabs button[aria-selected='true'] { color:var(--frost); background:var(--surface-raised); box-shadow:inset 0 -2px var(--ion); }
+.settings-provider-tabs button:focus-visible, .settings-plan-help summary:focus-visible, .settings-model-catalog summary:focus-visible { outline:2px solid var(--ion); outline-offset:3px; }
+.settings-provider-intro { margin:0; max-width:75ch; color:var(--muted); font-size:12px; line-height:1.7; }
+.settings-model-catalog > summary, .settings-plan-help > summary { cursor:pointer; color:var(--frost); font-size:12px; padding:10px 0; }
+.settings-model-catalog[open] > summary { margin-bottom:14px; }
+.settings-plan-help p, .settings-plan-help small { display:block; margin:8px 0; color:var(--muted); line-height:1.7; }
+.settings-plan-help a { color:var(--blue); font-size:11px; }
+.settings-provider-check, .settings-provider-card > .settings-error { grid-column:1/-1; margin:0; font-size:12px; overflow-wrap:anywhere; }
+.settings-provider-check { color:var(--muted); }
+.settings-check-provider { justify-self:start; border:1px solid var(--border); border-radius:7px; padding:7px 10px; color:var(--frost); background:var(--surface-raised); font:600 11px 'Nunito Variable',sans-serif; cursor:pointer; }
+.settings-check-provider:disabled { opacity:.5; cursor:wait; }
+@media (max-width: 950px) { .settings-provider-card { grid-template-columns:minmax(0,1fr); } .settings-provider-actions { justify-content:flex-start; } }
+
+.settings-provider-connections { display:grid; gap:14px; min-width:0; }

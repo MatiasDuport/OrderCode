@@ -411,6 +411,7 @@ export async function disconnectChatGPT(): Promise<ChatGPTAccountStatus> {
 export type XaiAccountStatus = { connected: boolean };
 export type XaiDeviceCode = { userCode: string; verificationUri: string; expiresIn: number };
 export function xaiAccountStatus(): Promise<XaiAccountStatus> { return call('xai_account_status', {}, { connected: false }); }
+export async function cancelXaiLogin(): Promise<void> { if (isTauri()) await invoke('xai_cancel_login'); }
 export async function connectXai(): Promise<XaiAccountStatus> {
   if (!isTauri()) throw new Error('La conexión con SuperGrok está disponible en la aplicación de escritorio.');
   const status = await invoke<XaiAccountStatus>('xai_connect');

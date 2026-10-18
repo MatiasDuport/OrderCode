@@ -210,7 +210,7 @@ async fn harness_start(app: tauri::AppHandle, state: State<'_, BrokerState>, wor
         Err(error) => { let _ = stop_harness_unlocked(&state).await; return Err(error); }
     };
     let initialization: Result<(), String> = async {
-    for provider in ["openai", "openrouter", "opencode_zen", "deepseek", "mistral", "groq", "together", "fireworks", "cerebras", "anthropic", "xai", "gemini"] {
+    for provider in ["openai", "openrouter", "opencode_zen", "deepseek", "mistral", "groq", "together", "fireworks", "cerebras", "anthropic", "xai", "gemini", "minimax_plan"] {
         if let Ok(key) = keyring::Entry::new("OrderCode", provider).and_then(|entry| entry.get_password()) {
             let request = serde_json::json!({ "jsonrpc": "2.0", "id": format!("credential-{provider}"), "method": "provider.configure", "params": { "providerId": provider, "apiKey": key } });
             request_harness_async(Arc::clone(&process), request).await?;
@@ -408,6 +408,7 @@ fn ensure_update_not_installing(state: &BrokerState) -> Result<(), String> {
 fn provider_set_key(provider_id: String, api_key: String) -> Result<(), String> {
     if !supported_provider(&provider_id) { return Err("Proveedor desconocido".into()); }
     let key = api_key.trim();
+    if provider_id == "minimax_plan" && !key.starts_with("sk-cp-") { return Err("Introduce una clave de suscripción MiniMax M Plan (sk-cp-), no una clave API de pago por uso.".into()); }
     if key.is_empty() || key.len() > 4096 || key.contains('\0') { return Err("La clave debe contener entre 1 y 4096 caracteres válidos".into()); }
     keyring::Entry::new("OrderCode", &provider_id).map_err(|error| format!("No se pudo abrir el almacén seguro del sistema: {error}"))?
         .set_password(key).map_err(|error| format!("No se pudo guardar la credencial en el almacén seguro: {error}"))
@@ -426,7 +427,7 @@ fn provider_remove_key(provider_id: String) -> Result<(), String> {
 #[tauri::command]
 fn provider_keys_status(provider_ids: Option<Vec<String>>) -> Result<HashMap<String, bool>, String> {
     let mut result = HashMap::new();
-    let mut providers = vec!["openai".to_string(), "openrouter".to_string(), "opencode_zen".to_string(), "deepseek".to_string(), "mistral".to_string(), "groq".to_string(), "together".to_string(), "fireworks".to_string(), "cerebras".to_string(), "anthropic".to_string(), "xai".to_string(), "gemini".to_string()];
+    let mut providers = vec!["openai".to_string(), "openrouter".to_string(), "opencode_zen".to_string(), "deepseek".to_string(), "mistral".to_string(), "groq".to_string(), "together".to_string(), "fireworks".to_string(), "cerebras".to_string(), "anthropic".to_string(), "xai".to_string(), "gemini".to_string(), "minimax_plan".to_string()];
     if let Some(provider_ids) = provider_ids { providers.extend(provider_ids.into_iter().filter(|provider| supported_provider(provider) || provider == "openai_chatgpt" || provider == "xai_plan")); }
     providers.sort();
     providers.dedup();
@@ -448,7 +449,7 @@ fn xai_account_status() -> xai::XaiAccountStatus { xai::account_status() }
 #[tauri::command]
 async fn chatgpt_connect(state: State<'_, BrokerState>) -> Result<chatgpt::ChatGPTAccountStatus, String> {
     let _active_request = begin_harness_request(&state)?;
-    let _account_operation = state.account_operation.lock().await;
+    let _account_operation = state.account_operation.try_lock().map_err(|_| "Hay una conexión de cuenta en curso. Complétala o cancélala antes de iniciar otra.".to_string())?;
     let credential = chatgpt::connect().await?;
     let _lifecycle = state.harness_lifecycle.lock().await;
     chatgpt::save_credential(&credential)?;
@@ -479,7 +480,7 @@ async fn chatgpt_disconnect(state: State<'_, BrokerState>) -> Result<chatgpt::Ch
 #[tauri::command]
 async fn xai_connect(app: tauri::AppHandle, state: State<'_, BrokerState>) -> Result<xai::XaiAccountStatus, String> {
     let _active_request = begin_harness_request(&state)?;
-    let _account_operation = state.account_operation.lock().await;
+    let _account_operation = state.account_operation.try_lock().map_err(|_| "Hay una conexión de cuenta en curso. Complétala o cancélala antes de iniciar otra.".to_string())?;
     let credential = xai::connect(&app).await?;
     let _lifecycle = state.harness_lifecycle.lock().await;
     xai::save_credential(&credential)?;
@@ -490,6 +491,9 @@ async fn xai_connect(app: tauri::AppHandle, state: State<'_, BrokerState>) -> Re
     }
     Ok(xai::account_status())
 }
+
+#[tauri::command]
+fn xai_cancel_login() { xai::cancel_login(); }
 
 #[tauri::command]
 async fn xai_disconnect(state: State<'_, BrokerState>) -> Result<xai::XaiAccountStatus, String> {
@@ -597,7 +601,7 @@ async fn configure_project_deploy_hook(process: Arc<HarnessProcess>, project_pat
 }
 
 fn supported_provider(provider: &str) -> bool {
-    matches!(provider, "openai" | "openrouter" | "opencode_zen" | "deepseek" | "mistral" | "groq" | "together" | "fireworks" | "cerebras" | "anthropic" | "xai" | "gemini")
+    matches!(provider, "openai" | "openrouter" | "opencode_zen" | "deepseek" | "mistral" | "groq" | "together" | "fireworks" | "cerebras" | "anthropic" | "xai" | "gemini" | "minimax_plan")
         || provider.strip_prefix("custom_").is_some_and(|suffix| (8..=80).contains(&suffix.len()) && suffix.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'))
 }
 
@@ -1060,7 +1064,7 @@ pub fn run() {
                 });
             }
         })
-        .invoke_handler(tauri::generate_handler![health, harness_start, harness_request, harness_stop, updater_check, updater_download, updater_install, workspace_open, activate_session, terminal_open, terminal_write, terminal_resize, terminal_close, workspace_tree, workspace_read_file, git_status, provider_keys_status, provider_set_key, provider_remove_key, chatgpt_account_status, chatgpt_connect, chatgpt_disconnect, xai_account_status, xai_connect, xai_disconnect, mcp_server_secret_set, mcp_server_secret_remove, mcp_server_secret_status, release_hook_set, release_hook_remove, release_hook_status])
+        .invoke_handler(tauri::generate_handler![health, harness_start, harness_request, harness_stop, updater_check, updater_download, updater_install, workspace_open, activate_session, terminal_open, terminal_write, terminal_resize, terminal_close, workspace_tree, workspace_read_file, git_status, provider_keys_status, provider_set_key, provider_remove_key, chatgpt_account_status, chatgpt_connect, chatgpt_disconnect, xai_account_status, xai_connect, xai_cancel_login, xai_disconnect, mcp_server_secret_set, mcp_server_secret_remove, mcp_server_secret_status, release_hook_set, release_hook_remove, release_hook_status])
         .setup(|app| { if let Some(window) = app.get_webview_window("main") { let _ = window.set_title("OrderCode"); } Ok(()) })
         .run(tauri::generate_context!())
         .expect("error while running OrderCode");

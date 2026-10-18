@@ -2,6 +2,26 @@ import { Children, cloneElement, isValidElement, type ReactNode } from 'react';
 import { useDesktopStore, type AppLanguage } from './store';
 
 const english: Record<string, string> = Object.fromEntries([
+  ['ChatGPT con tu cuenta', 'ChatGPT with your account'],
+  ['Usa la conexión de cuenta con el proxy oficial de Grok Build; se aplican los modelos y límites de Grok Build habilitados para tu cuenta. La clave xAI API se factura por separado.', 'Connects your account to the official Grok Build proxy; models and limits depend on the Grok Build access enabled for your account. The xAI API key is billed separately.'],
+  ['Personalizar el selector de modelos', 'Customize model picker'],
+  ['Suscripciones', 'Subscriptions'], ['Claves API', 'API keys'], ['Locales', 'Local'],
+  ['Tipo de conexión', 'Connection type'], ['conexiones configuradas', 'configured connections'],
+  ['Grok con tu cuenta', 'Grok with your account'], ['Conectar Grok', 'Connect Grok'],
+  ['Cancelar conexión', 'Cancel connection'], ['Comprobar modelos', 'Check models'], ['Comprobando…', 'Checking…'],
+  ['Requisitos de cuenta y organización', 'Account and organization requirements'],
+  ['Otras suscripciones y compatibilidad', 'Other subscriptions and compatibility'],
+  ['Obtener clave del plan ↗', 'Get a plan key ↗'], ['Clave del plan sk-cp-…', 'Plan key sk-cp-…'],
+  ['Conecta las cuentas y claves desde la aplicación de escritorio.', 'Connect accounts and keys from the desktop application.'],
+  ['No hay modelos disponibles. Revisa tu acceso, la clave o el servicio local.', 'No models available. Check your access, key, or local service.'],
+  ['Conecta una cuenta compatible o usa la clave de tu suscripción MiniMax. Los modelos y límites dependen del acceso habilitado en tu plan.', 'Connect a supported account or use your MiniMax subscription key. Models and limits depend on the access enabled for your plan.'],
+  ['Las claves API tienen facturación o cuotas propias. No consumen automáticamente la suscripción de la aplicación de chat.', 'API keys have their own billing or quotas. They do not automatically use a chat application subscription.'],
+  ['Inicia el servicio local y carga un modelo antes de comprobar su disponibilidad.', 'Start the local service and load a model before checking availability.'],
+  ['Usa tu clave de suscripción M Plan (sk-cp-), no una clave API de pago por uso. ', 'Use your M Plan subscription key (sk-cp-), not a pay-as-you-go API key. '],
+  ['Claude mediante API. Claude Pro y Max no permiten conectar su suscripción a OrderCode.', 'Claude via API. Claude Pro and Max do not allow connecting their subscription to OrderCode.'],
+  ['Usa una clave de Google AI Studio. Sus cuotas son independientes de la suscripción de la aplicación Gemini.', 'Use a Google AI Studio key. Its quotas are separate from the Gemini application subscription.'],
+  ['Acceso autorizado de Anthropic ↗', 'Authorized Anthropic access ↗'], ['Herramientas autorizadas por Z.AI ↗', 'Tools authorized by Z.AI ↗'],
+  ['Una suscripción de chat no equivale a una clave API. Claude Pro/Max no permite conectar su cuenta a OrderCode; utiliza Anthropic en Claves API. GitHub Copilot necesita una integración oficial propia y todavía no está integrado. Z.AI limita su Coding Plan a las herramientas que autoriza; OrderCode todavía no figura en esa lista.', 'A chat subscription is not an API key. Claude Pro/Max does not allow connecting its account to OrderCode; use Anthropic under API keys. GitHub Copilot requires its own official integration and is not integrated yet. Z.AI limits its Coding Plan to authorized tools; OrderCode is not listed yet.'],
   ['Navegación principal', 'Main navigation'],
   ['Secciones de ajustes', 'Settings sections'],
   ['Control de versiones', 'Version control'],
@@ -801,7 +821,7 @@ export function translate(value: string, language: AppLanguage): string {
     [/^Añadir a favoritos: (.+)$/, 'Add to favorites: $1'], [/^Quitar de favoritos: (.+)$/, 'Remove from favorites: $1'], [/^Gratis verificado · Conecta la clave API en Ajustes$/, 'Verified free · Connect the API key in Settings'], [/^Precio no verificado · Conecta la clave API en Ajustes$/, 'Pricing not verified · Connect the API key in Settings'], [/^Uso de tu plan · sujeto a límites · Conecta tu cuenta SuperGrok en Ajustes$/, 'Plan usage · limits apply · Connect your SuperGrok account in Settings'],
     [/^OrderCode (.+) está disponible\.$/, 'OrderCode $1 is available.'], [/^OrderCode (.+) se descargó y verificó\. Puedes instalarlo cuando termines tu trabajo\.$/, 'OrderCode $1 has been downloaded and verified. You can install it when you finish your work.'],
     [/^(.+) · Gratis verificado · sin clave$/, '$1 · Verified free · no API key required'], [/^(.+) · Gratis verificado · Conecta la clave API en Ajustes$/, '$1 · Verified free · Connect the API key in Settings'], [/^(.+) · Gratis verificado$/, '$1 · Verified free'], [/^(.+) · Plan ChatGPT · sujeto a límites$/, '$1 · ChatGPT plan · usage limits apply'], [/^(.+) · (\$[\d.]+ \/ \$[\d.]+) por 1M tokens$/, '$1 · $2 per 1M tokens'], [/^(.+) · Precio no verificado$/, '$1 · Pricing not verified'], [/^(.+) · Inferencia local · sin tarifa API$/, '$1 · Local inference · no API charge'], [/^(.+) · Conecta tu cuenta en Ajustes$/, '$1 · Connect your account in Settings'], [/^Conectado · (.+)$/, 'Connected · $1'],
-    [/^Clave API (.+)$/, 'API key for $1'], [/^Eliminar (.+)$/, 'Remove $1'], [/^Desactivar (.+)$/, 'Disable $1'], [/^Activar (.+)$/, 'Enable $1'], [/^Editar (.+)$/, 'Edit $1'], [/^Exportar (.+)$/, 'Export $1'], [/^Cerrar terminal (.+)$/, 'Close terminal $1'], [/^Editor de código: (.+)$/, 'Code editor: $1'], [/^Grafo con (\d+) nodos y (\d+) relaciones$/, 'Graph with $1 nodes and $2 relationships'], [/^(\d+) archivo$/, '$1 file'], [/^(\d+) archivos$/, '$1 files'], [/^Versión (.+)$/, 'Version $1'], [/^(\d+) listos$/, '$1 ready'], [/^(\d+) proveedores disponibles$/, '$1 providers available'],
+    [/^Clave API (.+)$/, 'API key for $1'], [/^Eliminar (.+)$/, 'Remove $1'], [/^Desactivar (.+)$/, 'Disable $1'], [/^Activar (.+)$/, 'Enable $1'], [/^Editar (.+)$/, 'Edit $1'], [/^Exportar (.+)$/, 'Export $1'], [/^Cerrar terminal (.+)$/, 'Close terminal $1'], [/^Editor de código: (.+)$/, 'Code editor: $1'], [/^Grafo con (\d+) nodos y (\d+) relaciones$/, 'Graph with $1 nodes and $2 relationships'], [/^(\d+) archivo$/, '$1 file'], [/^(\d+) archivos$/, '$1 files'], [/^Versión (.+)$/, 'Version $1'], [/^(\d+) listos$/, '$1 ready'], [/^(\d+) proveedores disponibles$/, '$1 providers available'], [/^(\d+) conexiones configuradas$/, '$1 configured connections'], [/^(\d+) modelos disponibles. Elige uno en la conversación.$/, '$1 models available. Choose one in the conversation.'],
   ];
   for (const [pattern, replacement] of patterns) if (pattern.test(trimmed)) return value.replace(trimmed, trimmed.replace(pattern, replacement));
   return value;

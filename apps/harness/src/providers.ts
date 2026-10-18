@@ -478,6 +478,21 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
 }
 
 /** SuperGrok plan access through xAI's OAuth device flow. API-key billing remains a separate provider. */
+export class MiniMaxPlanProvider extends OpenAICompatibleProvider {
+  constructor() { super("minimax_plan", "MiniMax M Plan", "https://api.minimax.io/v1", ""); this.setCredential(envKey("minimax_plan")); }
+
+  setCredential(key: string | undefined): void {
+    if (key && !key.startsWith("sk-cp-")) throw new HarnessError("INVALID_PROVIDER_CREDENTIAL", "Use a MiniMax subscription key (sk-cp-). A standard API key does not use M Plan benefits.");
+    super.setCredential(key);
+  }
+
+  async listModels(signal?: AbortSignal): Promise<ProviderModel[]> {
+    // Restrict the general MiniMax catalog to the model documented for M Plan.
+    if (!this.configured) return [{ id: "MiniMax-M3.1-Flash-Preview", providerId: this.id, label: "MiniMax M3.1 Flash Preview", capabilities: ["chat", "streaming", "tool-calling"], available: false, priceKind: "subscription", availabilityReason: "Conecta una clave de suscripción MiniMax M Plan (sk-cp-)." }];
+    return (await super.listModels(signal)).filter((model) => model.id === "MiniMax-M3.1-Flash-Preview").map((model) => ({ ...model, priceKind: "subscription", pricing: undefined }));
+  }
+}
+
 export class XaiPlanProvider extends OpenAICompatibleProvider {
   private credential?: XaiOAuthCredential;
   private refreshing?: Promise<void>;
@@ -922,6 +937,7 @@ function defaultAdapters(onOAuthTokensRotated?: (credential: ChatGPTOAuthCredent
     new OpenAICompatibleProvider("openai", "OpenAI", process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1"),
     new ChatGPTPlanProvider(onOAuthTokensRotated),
     new XaiPlanProvider(onXaiOAuthTokensRotated),
+    new MiniMaxPlanProvider(),
     new OpenAICompatibleProvider("openrouter", "OpenRouter", process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1", undefined, { "HTTP-Referer": "https://ordercode.local", "X-Title": "OrderCode" }),
     new OpenAICompatibleProvider("opencode_zen", "OpenCode", process.env.OPENCODE_ZEN_BASE_URL ?? "https://opencode.ai/zen/v1", undefined, {}, false, process.env.OPENCODE_ZEN_MODELS_URL ?? "https://opencode.ai/zen/v1/models", process.env.OPENCODE_ZEN_PRICING_URL ?? "https://dev.opencode.ai/v2/docs/console/models/"),
     new OpenAICompatibleProvider("deepseek", "DeepSeek", process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com/v1"),
@@ -939,6 +955,6 @@ function defaultAdapters(onOAuthTokensRotated?: (credential: ChatGPTOAuthCredent
 }
 
 export function clearProviderSecretsFromEnvironment(): void {
-  for (const name of ["OPENAI_API_KEY", "OPENROUTER_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_API_KEY", "DEEPSEEK_API_KEY", "MISTRAL_API_KEY", "GROQ_API_KEY", "TOGETHER_API_KEY", "FIREWORKS_API_KEY", "CEREBRAS_API_KEY", "ANTHROPIC_API_KEY", "XAI_API_KEY", "XAI_PLAN_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OLLAMA_API_KEY", "LMSTUDIO_API_KEY"]) delete process.env[name];
+  for (const name of ["OPENAI_API_KEY", "OPENROUTER_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_API_KEY", "DEEPSEEK_API_KEY", "MISTRAL_API_KEY", "GROQ_API_KEY", "TOGETHER_API_KEY", "FIREWORKS_API_KEY", "CEREBRAS_API_KEY", "ANTHROPIC_API_KEY", "XAI_API_KEY", "XAI_PLAN_API_KEY", "MINIMAX_PLAN_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OLLAMA_API_KEY", "LMSTUDIO_API_KEY"]) delete process.env[name];
 }
 

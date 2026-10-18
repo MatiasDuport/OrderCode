@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::{process::Command, sync::Mutex, thread, time::{Duration, Instant}};
+use std::{process::Command, sync::{Mutex, atomic::{AtomicU64, Ordering}}, thread, time::{Duration, Instant}};
 use tauri::Emitter;
 use url::Url;
 
@@ -10,6 +10,25 @@ const DEVICE_ENDPOINT: &str = "https://auth.x.ai/oauth2/device/code";
 const TOKEN_ENDPOINT: &str = "https://auth.x.ai/oauth2/token";
 const SCOPE: &str = "openid profile email offline_access grok-cli:access api:access";
 static CREDENTIAL_LOCK: Mutex<()> = Mutex::new(());
+static LOGIN_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+pub fn cancel_login() { LOGIN_GENERATION.fetch_add(1, Ordering::SeqCst); }
+
+fn check_login(generation: u64) -> Result<(), String> {
+    if LOGIN_GENERATION.load(Ordering::SeqCst) != generation { return Err("Inicio de sesión de Grok cancelado.".into()); }
+    Ok(())
+}
+
+async fn wait_for_poll(interval: Duration, generation: u64) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let deadline = Instant::now() + interval;
+        while Instant::now() < deadline {
+            check_login(generation)?;
+            thread::sleep(Duration::from_millis(100).min(deadline.saturating_duration_since(Instant::now())));
+        }
+        check_login(generation)
+    }).await.map_err(|_| "No se pudo continuar el inicio de sesión.".to_string())?
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -163,37 +182,42 @@ pub async fn revoke_credential(credential: &XaiCredential) {
 }
 
 pub async fn connect(app: &tauri::AppHandle) -> Result<XaiCredential, String> {
+    let generation = LOGIN_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     let client = reqwest::Client::builder().connect_timeout(Duration::from_secs(10)).timeout(Duration::from_secs(30)).redirect(reqwest::redirect::Policy::none()).build().map_err(|error| format!("No se pudo preparar la conexión segura de xAI: {error}"))?;
     let response = client.post(DEVICE_ENDPOINT).header("content-type", "application/x-www-form-urlencoded").body(form_body(&[("client_id", CLIENT_ID), ("scope", SCOPE)])).send().await.map_err(|error| format!("No se pudo iniciar la autorización SuperGrok: {error}"))?;
     if !response.status().is_success() { return Err(format!("xAI rechazó el inicio de sesión ({})", response.status())); }
     let device: DeviceCodeResponse = response.json().await.map_err(|_| "xAI devolvió una solicitud de inicio de sesión no válida.".to_string())?;
     if device.device_code.is_empty() || device.user_code.is_empty() || device.expires_in == 0 { return Err("xAI devolvió un código de inicio de sesión no válido.".into()); }
     let verification = device.verification_uri_complete.as_deref().unwrap_or(&device.verification_uri);
-    if !matches_xai_verification_url(verification) { return Err("xAI devolvió una dirección de verificación no segura.".into()); }
+    check_login(generation)?;
+    if !matches_xai_verification_url(verification) || !matches_xai_verification_url(&device.verification_uri) { return Err("xAI devolvió una dirección de verificación no segura.".into()); }
     let _ = app.emit("ordercode-xai-device-code", DeviceCodeNotice { user_code: device.user_code.clone(), verification_uri: device.verification_uri.clone(), expires_in: device.expires_in });
-    open_system_browser(verification)?;
+    // The visible verification link remains usable when the system browser cannot launch.
+    let _ = open_system_browser(verification);
 
     let mut interval = Duration::from_secs(device.interval.unwrap_or(5).clamp(1, 30));
     let deadline = Instant::now() + Duration::from_secs(device.expires_in.min(1_800));
     loop {
+        wait_for_poll(interval, generation).await?;
         if Instant::now() >= deadline { return Err("El código de acceso SuperGrok expiró. Inténtalo de nuevo.".into()); }
         let response = client.post(TOKEN_ENDPOINT).header("content-type", "application/x-www-form-urlencoded").body(form_body(&[("grant_type", "urn:ietf:params:oauth:grant-type:device_code"), ("device_code", device.device_code.as_str()), ("client_id", CLIENT_ID)])).send().await.map_err(|error| format!("No se pudo completar la autorización SuperGrok: {error}"))?;
         if response.status().is_success() {
+            check_login(generation)?;
             let tokens: TokenResponse = response.json().await.map_err(|_| "xAI devolvió credenciales no válidas.".to_string())?;
             let credential = XaiCredential { access_token: tokens.access_token, refresh_token: tokens.refresh_token, expires_at: now_ms().saturating_add(tokens.expires_in.saturating_mul(1_000)), connection_id: uuid::Uuid::new_v4().to_string() };
             if credential.access_token.is_empty() || credential.refresh_token.is_empty() || tokens.expires_in == 0 { return Err("xAI devolvió credenciales incompletas.".into()); }
+            check_login(generation)?;
             return Ok(credential);
         }
         let status = response.status();
         let error = response.json::<OAuthError>().await.unwrap_or(OAuthError { error: None, error_description: None });
         match error.error.as_deref() {
             Some("authorization_pending") => {},
-            Some("slow_down") => { interval += Duration::from_secs(5); tauri::async_runtime::spawn_blocking(move || thread::sleep(interval)).await.map_err(|failure| format!("Falló la espera del código de acceso: {failure}"))?; continue; },
+            Some("slow_down") => { interval += Duration::from_secs(5); },
             Some("access_denied") => return Err("Se rechazó el acceso a la cuenta SuperGrok.".into()),
             Some("expired_token") => return Err("El código de acceso SuperGrok expiró. Inténtalo de nuevo.".into()),
             _ => { let detail = error.error_description.unwrap_or_else(|| error.error.unwrap_or_else(|| status.to_string())); return Err(format!("xAI no pudo completar la autorización ({detail}).")); }
         }
-        tauri::async_runtime::spawn_blocking(move || thread::sleep(interval)).await.map_err(|failure| format!("Falló la espera del código de acceso: {failure}"))?;
     }
 }
 
@@ -206,15 +230,32 @@ fn form_body(values: &[(&str, &str)]) -> String {
 }
 
 fn matches_xai_verification_url(value: &str) -> bool {
-    Url::parse(value).ok().is_some_and(|url| url.scheme() == "https" && matches!(url.host_str(), Some("x.ai" | "www.x.ai" | "auth.x.ai")) && url.username().is_empty() && url.password().is_none() && url.port().is_none())
+    !value.chars().any(char::is_control) && Url::parse(value).ok().is_some_and(|url| url.scheme() == "https" && matches!(url.host_str(), Some("x.ai" | "www.x.ai" | "auth.x.ai" | "accounts.x.ai" | "grok.com" | "www.grok.com")) && url.username().is_empty() && url.password().is_none() && url.port().is_none())
 }
 
 fn open_system_browser(url: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
-    let result = Command::new("rundll32.exe").args(["url.dll,FileProtocolHandler", url]).spawn();
+    let result = { use std::os::windows::process::CommandExt; Command::new("rundll32.exe").creation_flags(0x08000000).args(["url.dll,FileProtocolHandler", url]).spawn() };
     #[cfg(target_os = "macos")]
     let result = Command::new("open").arg(url).spawn();
     #[cfg(all(unix, not(target_os = "macos")))]
     let result = Command::new("xdg-open").arg(url).spawn();
     result.map(|_| ()).map_err(|error| format!("No se pudo abrir el navegador del sistema: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn verification_accepts_current_xai_accounts_host_only_over_https() {
+        assert!(matches_xai_verification_url("https://accounts.x.ai/device?user_code=EXAMPLE"));
+        assert!(matches_xai_verification_url("https://auth.x.ai/device"));
+        for url in ["https://accounts.x.ai.evil.test/device", "http://accounts.x.ai/device", "https://evil.test/", "https://user@accounts.x.ai/device", "https://accounts.x.ai:444/device", "javascript:alert(1)", "https://accounts.x.ai/\n"] { assert!(!matches_xai_verification_url(url), "{url}"); }
+    }
+    #[test]
+    fn canceled_login_does_not_continue_polling() {
+        let generation = LOGIN_GENERATION.load(Ordering::SeqCst);
+        cancel_login();
+        assert!(check_login(generation).is_err());
+    }
 }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
-import { ChatGPTPlanProvider, OpenAICompatibleProvider, ProviderRegistry, XaiPlanProvider, type ChatGPTOAuthCredential } from "./providers.js";
+import { ChatGPTPlanProvider, OpenAICompatibleProvider, ProviderRegistry, XaiPlanProvider, MiniMaxPlanProvider, type ChatGPTOAuthCredential } from "./providers.js";
 import type { ProviderRequest, ToolDefinition } from "./types.js";
 
 const request = (model = "fixture-model"): ProviderRequest => ({ model, messages: [{ role: "system", content: "Use tools accurately." }, { role: "user", content: "Inspect the project." }] });
@@ -383,4 +383,37 @@ test("native APIs receive the selected effort in their own request field and rej
   fetchFixture(t, (_url, init) => { assert.equal(JSON.parse(String(init.body)).reasoning_effort, "high"); return json({ choices: [{ message: { content: "ok" }, finish_reason: "stop" }] }); });
   await xai.complete({ ...request("grok-4.5"), reasoningEffort: "high" });
   await assert.rejects(xai.complete({ ...request("grok-4.5"), reasoningEffort: "xhigh" }), /does not support/);
+});
+
+
+test("MiniMax subscription uses its own key, authenticated catalog and streaming tool transport", async (t) => {
+  const adapter = new MiniMaxPlanProvider();
+  adapter.setCredential(undefined);
+  assert.equal((await adapter.listModels())[0]?.available, false);
+  assert.throws(() => adapter.setCredential("sk-api-standard"), /subscription key/);
+  adapter.setCredential("sk-cp-fixture");
+  fetchFixture(t, (url, init) => {
+    assert.equal(new Headers(init.headers).get("authorization"), "Bearer sk-cp-fixture");
+    assert.equal(url.origin, "https://api.minimax.io");
+    if (url.pathname.endsWith("/models")) return json({ data: [{ id: "MiniMax-M3.1-Flash-Preview" }, { id: "MiniMax-M3" }] });
+    const body = JSON.parse(String(init.body));
+    assert.equal(body.model, "MiniMax-M3.1-Flash-Preview");
+    assert.match(body.tools[0].function.name, /^fs_read_/);
+    return stream([event({ choices: [{ delta: { reasoning_content: "check", content: "Ready" }, finish_reason: "stop" }], usage: { prompt_tokens: 9, completion_tokens: 3 } }), event("[DONE]")]);
+  });
+  const models = await adapter.listModels();
+  assert.equal(models.length, 1);
+  assert.equal(models[0]?.priceKind, "subscription");
+  assert.equal(models[0]?.available, true);
+  const result = await adapter.stream({ ...request("MiniMax-M3.1-Flash-Preview"), tools: [tool("fs.read")] }, () => undefined);
+  assert.equal(result.content, "Ready");
+  assert.equal(result.responseState?.reasoningContent, "check");
+  adapter.setCredential(undefined);
+  assert.equal(adapter.configured, false);
+});
+
+test("MiniMax rejects a revoked subscription instead of reporting it ready", async (t) => {
+  const adapter = new MiniMaxPlanProvider(); adapter.setCredential("sk-cp-invalid");
+  fetchFixture(t, () => json({ error: "invalid_api_key" }, 401));
+  await assert.rejects(adapter.listModels(), /discovery failed \(401\)/);
 });

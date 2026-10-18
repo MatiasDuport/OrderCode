@@ -63,6 +63,8 @@ Los tres comparten un único runtime. Auto no impone secuencias ni cuotas arbitr
 
 **Suscripciones:** únicamente integraciones oficiales y autorizadas; no asumir que ChatGPT, Grok u otras suscripciones incluyen acceso API.
 
+**Conexiones de planes:** ChatGPT mediante consentimiento delegado; Grok mediante código de dispositivo xAI y acceso a Grok Build habilitado en la cuenta; MiniMax M Plan mediante clave de suscripción `sk-cp-` y catálogo limitado a los modelos documentados para ese plan. Ajustes separa Suscripciones, Claves API y Locales. Comprobar modelos consulta el catálogo autenticado, sin ejecutar inferencia; no garantiza cuota disponible. No ofrecer acceso Claude Pro/Max ni Z.AI Coding Plan como integrado cuando el proveedor no autorice OrderCode.
+
 **Seguridad y gasto:** secretos en almacenes seguros; presupuestos por sesión, proyecto y proveedor; costos exactos, estimados o desconocidos claramente diferenciados.
 
 ## 6. Agentes
