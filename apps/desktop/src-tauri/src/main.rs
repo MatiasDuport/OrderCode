@@ -6,6 +6,8 @@ mod xai;
 use serde::Serialize;
 use portable_pty::{native_pty_system, Child as PtyChild, CommandBuilder, MasterPty, PtySize};
 use std::{collections::{hash_map::DefaultHasher, HashMap}, env, fs, hash::{Hash, Hasher}, io::{BufRead, BufReader, Read, Write}, path::{Path, PathBuf}, process::{Child, ChildStdin, Command, Stdio}, sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, mpsc, Arc, Mutex}, thread, time::Duration};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
@@ -157,6 +159,8 @@ async fn harness_start(app: tauri::AppHandle, state: State<'_, BrokerState>, wor
     let working_directory = workspace_path.map(PathBuf::from).filter(|path| path.is_dir()).or_else(|| std::env::current_dir().ok());
     let mut command = Command::new(node);
     command.arg(&script).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(0x08000000); // CREATE_NO_WINDOW; the embedded terminal uses its own PTY.
     if let Some(directory) = working_directory { command.current_dir(directory); }
     let mut child = command.spawn().map_err(|error| format!("No se pudo iniciar Harness con Node.js: {error}"))?;
     let stdin = child.stdin.take().ok_or_else(|| "Harness no expuso stdin".to_string())?;

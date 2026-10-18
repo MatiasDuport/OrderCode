@@ -543,7 +543,9 @@ kbd { background: var(--surface-raised); border-color: var(--border); box-shadow
 .updater-release-notes { max-height: 120px; overflow: auto; margin: 8px 0 10px; padding: 9px 11px; border-left: 2px solid color-mix(in srgb,var(--blue) 50%,transparent); color: var(--muted); background: color-mix(in srgb,var(--surface-raised) 60%,transparent); font-size: 10px; line-height: 1.55; white-space: pre-wrap; }
 .updater-status-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .updater-status-footer small { color: var(--muted); font-size: 10px; }
-.updater-status-footer .settings-primary-action { display: inline-flex; align-items: center; gap: 6px; margin: 0; }
+.updater-status-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.updater-status-actions .settings-primary-action, .updater-status-actions .updater-secondary-action { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 30px; margin: 0; white-space: nowrap; cursor: pointer; }
+.updater-status-actions .updater-secondary-action:disabled { opacity: .45; cursor: not-allowed; }
 .updater-progress { position: relative; height: 3px; overflow: hidden; margin: 9px 0 11px; border-radius: 3px; background: var(--surface-raised); }
 .updater-progress span { display: block; height: 100%; min-width: 7%; border-radius: inherit; background: var(--spectrum); transition: width 180ms ease-out; }
 :root[data-theme='light'] .updater-public-card { background: linear-gradient(115deg,#f2f6ff,#fff 54%,#f7f4ff); }
@@ -552,4 +554,5 @@ kbd { background: var(--surface-raised); border-color: var(--border); box-shadow
   .update-center-button { width: 28px; flex-basis: 28px; }
   .updater-public-card { grid-template-columns: 24px minmax(0,1fr) auto; }
   .updater-status-footer { align-items: flex-start; flex-direction: column; }
+  .updater-status-actions { flex-wrap: wrap; justify-content: flex-start; }
 }
