@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
@@ -435,18 +436,20 @@ try {
   if (pricedModels[0]?.pricing?.inputPerMillionUsd !== 1 || pricedModels[0]?.pricing?.outputPerMillionUsd !== 2 || pricedTurn.costUsd !== 0.000004 || pricedTurn.costKind !== "exact" || pricedTurn.cachedTokens !== 1 || !openRouterUsageRequested) throw new Error(`OpenRouter pricing, cached tokens, or streamed billing usage was not collected: ${JSON.stringify({ pricedModels, pricedTurn, openRouterUsageRequested })}`);
   let openCodeAuthorization = "";
   let openCodeCompletionPath = "";
+  let openCodeInferenceCalls = 0;
   const openCodeServer = createServer((request, response) => {
     openCodeAuthorization = request.headers.authorization ?? "";
     response.setHeader("content-type", "application/json");
     if (request.url === "/inference/v1/models") response.end(JSON.stringify({ data: [
-      { id: "big-pickle" }, { id: "deepseek-v4.1-flash-free" }, { id: "claude-fable-5" }, { id: "unverified-free-suffix-free" },
+      { id: "big-pickle" }, { id: "deepseek-v4.1-flash-free" }, { id: "paid-chat" }, { id: "claude-fable-5" }, { id: "unverified-free-suffix-free" },
     ] }));
     else if (request.url === "/pricing") {
       response.setHeader("content-type", "text/html");
-      response.end(`<table>${[["Big Pickle", "big-pickle"], ["DeepSeek V4.1 Flash Free", "deepseek-v4.1-flash-free"]].map(([label, id]) => `<tr><td>${label}</td><td>${id}</td><td>https://opencode.ai/inference/openai/v1/chat/completions</td><td>@ai-sdk/openai-compatible</td></tr><tr><td>${label}</td><td>Free</td><td>Free</td><td>Free</td><td>-</td></tr>`).join("")}</table>`);
+      response.end(`<table>${[["Big Pickle", "big-pickle"], ["DeepSeek V4.1 Flash Free", "deepseek-v4.1-flash-free"]].map(([label, id]) => `<tr><td>${label}</td><td>${id}</td><td>https://opencode.ai/inference/openai/v1/chat/completions</td><td>@ai-sdk/openai-compatible</td></tr><tr><td>${label}</td><td>Free</td><td>Free</td><td>Free</td><td>-</td></tr>`).join("")}<tr><td>Paid Chat</td><td>paid-chat</td><td>https://opencode.ai/inference/openai/v1/chat/completions</td><td>@ai-sdk/openai-compatible</td></tr><tr><td>Paid Chat</td><td>$1.00</td><td>$2.00</td><td>-</td><td>-</td></tr></table>`);
     } else if (request.url === "/inference/openai/v1/chat/completions") {
+      openCodeInferenceCalls += 1;
       openCodeCompletionPath = request.url;
-      response.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: "OpenCode free model verified." }, finish_reason: "stop" }], usage: { prompt_tokens: 3, completion_tokens: 5 } }));
+      response.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: "Explicit paid OpenCode model verified." }, finish_reason: "stop" }], usage: { prompt_tokens: 3, completion_tokens: 5 } }));
     } else { response.statusCode = 404; response.end(JSON.stringify({ error: "not found" })); }
   });
   await new Promise<void>((resolveListen, rejectListen) => { openCodeServer.once("error", rejectListen); openCodeServer.listen(0, "127.0.0.1", resolveListen); });
@@ -455,10 +458,38 @@ try {
   if (!openCodeAddress || typeof openCodeAddress === "string") throw new Error("The OpenCode fixture did not bind a local port.");
   const openCodeOrigin = `http://127.0.0.1:${openCodeAddress.port}`;
   const openCodeFixture = new OpenAICompatibleProvider("opencode_zen", "OpenCode", `${openCodeOrigin}/inference/openai/v1`, "fixture-opencode-key", {}, false, `${openCodeOrigin}/inference/v1/models`, `${openCodeOrigin}/pricing`);
-  const openCodeModels = await openCodeFixture.listModels();
-  const openCodeTurn = await openCodeFixture.complete({ model: "big-pickle", messages: [{ role: "user", content: "hello" }] });
-  await new Promise<void>((resolveClose, rejectClose) => openCodeServer.close((error) => error ? rejectClose(error) : resolveClose()));
-  if (openCodeModels.length !== 2 || openCodeModels.some((model) => model.priceKind !== "free" || model.pricing?.inputPerMillionUsd !== 0 || model.pricing?.outputPerMillionUsd !== 0) || openCodeModels.some((model) => model.id === "claude-fable-5" || model.id === "unverified-free-suffix-free") || openCodeTurn.content !== "OpenCode free model verified." || openCodeAuthorization !== "Bearer fixture-opencode-key" || openCodeCompletionPath !== "/inference/openai/v1/chat/completions") throw new Error(`OpenCode free model filtering, pricing, API routing, or authenticated completion failed: ${JSON.stringify({ openCodeModels, openCodeTurn, openCodeAuthorization, openCodeCompletionPath })}`);
+  try {
+    const openCodeModels = await openCodeFixture.listModels();
+    assert.deepEqual(openCodeModels.map((model) => model.id), ["big-pickle", "deepseek-v4.1-flash-free", "paid-chat"]);
+    const restrictedModels = openCodeModels.filter((model) => model.priceKind === "free");
+    assert.equal(restrictedModels.length, 2);
+    for (const model of restrictedModels) {
+      assert.equal(model.available, false);
+      assert.equal(model.pricing?.inputPerMillionUsd, 0);
+      assert.equal(model.pricing?.outputPerMillionUsd, 0);
+      assert.match(model.availabilityReason ?? "", /OpenCode/);
+    }
+    assert.equal(openCodeModels.find((model) => model.id === "paid-chat")?.available, true);
+    assert.equal(openCodeModels.find((model) => model.id === "paid-chat")?.priceKind, "unknown");
+    const restricted = (error: unknown) => !!error && typeof error === "object" && "code" in error && error.code === "OPENCODE_FREE_TIER_RESTRICTED";
+    await assert.rejects(openCodeFixture.complete({ model: "big-pickle", messages: [{ role: "user", content: "Must not reach inference" }] }), restricted);
+    assert.equal(openCodeInferenceCalls, 0);
+    openCodeFixture.setCredential(undefined);
+    assert.equal(openCodeFixture.configured, false);
+    await assert.rejects(openCodeFixture.complete({ model: "deepseek-v4.1-flash-free", messages: [{ role: "user", content: "Must not reach inference" }] }), restricted);
+    await assert.rejects(openCodeFixture.complete({ model: "paid-chat", messages: [{ role: "user", content: "Needs a key" }] }), /not configured/);
+    assert.equal(openCodeInferenceCalls, 0);
+    openCodeFixture.setCredential("fixture-opencode-key");
+    const openCodeTurn = await openCodeFixture.complete({ model: "paid-chat", messages: [{ role: "user", content: "Explicitly selected authenticated paid fixture" }] });
+    assert.equal(openCodeInferenceCalls, 1);
+    assert.equal(openCodeTurn.content, "Explicit paid OpenCode model verified.");
+    assert.equal(openCodeAuthorization, "Bearer fixture-opencode-key");
+    assert.equal(openCodeCompletionPath, "/inference/openai/v1/chat/completions");
+  } finally {
+    openCodeServer.closeAllConnections();
+    await new Promise<void>((resolveClose, rejectClose) => openCodeServer.close((error) => error ? rejectClose(error) : resolveClose()));
+  }
+
   let insecureEndpointRejected = false;
   try { runtime.createCustomProvider({ label: "Insecure endpoint", baseUrl: "http://example.com/v1" }); } catch { insecureEndpointRejected = true; }
   if (!insecureEndpointRejected) throw new Error("A non-loopback HTTP custom provider endpoint was accepted.");
@@ -554,7 +585,7 @@ try {
   if (migrationPersistence.getUsageAnalytics({ projectPath: migrationDirectory, days: 0 }).providerCalls !== 2) throw new Error("Reopening an upgraded usage database duplicated legacy provider calls.");
   migrationPersistence.close();
   migrationPersistence = undefined;
-  process.stdout.write(JSON.stringify({ ok: true, sessionId: session.id, events: events.length, checks: ["approval", "git-status-stage-unstage-diff-commit-branch-tag", "publish-approval", "vercel-hook-validation-job-response-and-publish-approval", "same-model-read-only-specialist-delegation-and-durable-activity", "session-budget-persistence-output-cap-input-overrun-tool-stop-duration-and-cost-safety", "usage-ledger-unknown-metrics-estimated-savings-idempotency-agent-aggregation-restart", "usage-ledger-legacy-migration-idempotency", "project-skills-context-persistence", "agent-studio-profile-persistence-tool-restrictions-and-dry-run", "mcp-stdio-discovery-permission-and-disconnect", "persistent-incremental-code-index", "ripgrep-live-text-search-and-fts5-fallback", "custom-compatible-provider-auth-model-discovery-persistence-and-free-only-safety", "tree-sitter-typescript-python-rust-and-resolved-code-graph", "free-only-verified-pricing", "openrouter-current-pricing-streamed-cost-and-cost-budget-enforcement", "opencode-verified-free-catalog-and-chat-completions", "plan-read-only", "path-scope", "interactive-pty-auth", "context-budget", "stream-event", "restart-recovery", "durable-result"] }) + "\n");
+  process.stdout.write(JSON.stringify({ ok: true, sessionId: session.id, events: events.length, checks: ["approval", "git-status-stage-unstage-diff-commit-branch-tag", "publish-approval", "vercel-hook-validation-job-response-and-publish-approval", "same-model-read-only-specialist-delegation-and-durable-activity", "session-budget-persistence-output-cap-input-overrun-tool-stop-duration-and-cost-safety", "usage-ledger-unknown-metrics-estimated-savings-idempotency-agent-aggregation-restart", "usage-ledger-legacy-migration-idempotency", "project-skills-context-persistence", "agent-studio-profile-persistence-tool-restrictions-and-dry-run", "mcp-stdio-discovery-permission-and-disconnect", "persistent-incremental-code-index", "ripgrep-live-text-search-and-fts5-fallback", "custom-compatible-provider-auth-model-discovery-persistence-and-free-only-safety", "tree-sitter-typescript-python-rust-and-resolved-code-graph", "free-only-verified-pricing", "openrouter-current-pricing-streamed-cost-and-cost-budget-enforcement", "opencode-restricted-free-catalog-no-inference-and-explicit-authenticated-paid-chat", "plan-read-only", "path-scope", "interactive-pty-auth", "context-budget", "stream-event", "restart-recovery", "durable-result"] }) + "\n");
 } finally {
   await runtime.close();
   await costRuntime?.close();

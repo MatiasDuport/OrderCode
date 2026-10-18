@@ -98,6 +98,7 @@ interface DesktopState {
   terminalBuffers: Record<string, string>;
   activeTerminalId: string | null;
   model: string;
+  reasoningEffort: string | undefined;
   freeOnly: boolean;
   agentId: string;
   mode: WorkMode;
@@ -133,6 +134,7 @@ export const useDesktopStore = create<DesktopState>((set) => ({
   terminalBuffers: {},
   activeTerminalId: null,
   model: '',
+  reasoningEffort: undefined,
   freeOnly: false,
   agentId: 'general',
   mode: 'Build',
@@ -152,6 +154,7 @@ export const useDesktopStore = create<DesktopState>((set) => ({
   editorOriginal: '',
   set: (key, value) => set((state) => {
     const next = { [key]: value } as Partial<DesktopState>;
+    if (key === 'session') next.reasoningEffort = (value as SessionRecord | null)?.reasoningEffort;
     if (key === 'session' && (value as SessionRecord | null)?.id !== state.session?.id) next.sessionRevision = state.sessionRevision + 1;
     if (key === 'theme') next.themePreference = value as ThemePreference;
     if (key === 'themePreference') next.theme = resolveTheme(value as ThemePreference);
@@ -175,5 +178,5 @@ export const useDesktopStore = create<DesktopState>((set) => ({
     const events = [...state.events.filter((item) => item.id !== event.id), event].sort((left, right) => left.sequence - right.sequence);
     return { events, ...(event.runId ? { runtimeState: event.state } : {}), ...(event.permissionRequest ? { pendingPermission: event.permissionRequest } : {}), ...(event.summary === 'provider.chunk' ? { streamingText: state.streamingText + (event.detail ?? '') } : {}) };
   }),
-  resetSession: () => set((state) => ({ session: null, sessionRevision: state.sessionRevision + 1, messages: [], streamingText: '', events: [], runtimeState: 'CREATED', pendingPermission: null, openFile: null, editorContent: '', editorOriginal: '' })),
+  resetSession: () => set((state) => ({ session: null, reasoningEffort: undefined, sessionRevision: state.sessionRevision + 1, messages: [], streamingText: '', events: [], runtimeState: 'CREATED', pendingPermission: null, openFile: null, editorContent: '', editorOriginal: '' })),
 }));

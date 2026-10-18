@@ -15,24 +15,31 @@ test('shows the honest browser preview and keeps work mode and permission contro
   await expect(page.getByRole('heading', { name: 'Nueva sesión' })).toBeVisible();
   await expect(page.getByText('¿Qué quieres construir?')).toBeVisible();
   const dropdowns = page.locator('.composer-dropdown');
-  await expect(dropdowns).toHaveCount(3);
+  await expect(dropdowns).toHaveCount(4);
+  const modeControl = dropdowns.filter({ has: page.locator('.dropdown-label').filter({ hasText: /^Modo$/ }) });
+  const permissionControl = page.locator('.composer-dropdown--permission');
+  const effortControl = page.locator('.composer-dropdown--effort');
 
-  await dropdowns.nth(1).locator('.dropdown-trigger').click();
+  await modeControl.locator('.dropdown-trigger').click();
   await page.getByRole('option', { name: /Auto/ }).click();
-  await expect(dropdowns.nth(1).locator('.dropdown-value')).toHaveText('Auto');
+  await expect(modeControl.locator('.dropdown-value')).toHaveText('Auto');
 
-  await dropdowns.nth(2).locator('.dropdown-trigger').click();
+  await permissionControl.locator('.dropdown-trigger').click();
   await page.getByRole('option', { name: /Lectura/ }).click();
-  await expect(dropdowns.nth(2).locator('.dropdown-value')).toHaveText('Lectura');
+  await expect(permissionControl.locator('.dropdown-value')).toHaveText('Lectura');
 
-  await dropdowns.nth(0).locator('.dropdown-trigger').click();
+  await effortControl.locator('.dropdown-trigger').click();
+  await expect(page.getByRole('option', { name: /Auto/ })).toHaveAttribute('aria-selected', 'true');
+  await page.keyboard.press('Escape');
+
+  await page.locator('.composer-dropdown--model .dropdown-trigger').click();
   await expect(page.locator('.dropdown-empty')).toContainText(/requiere la app de escritorio|Configura un proveedor/i);
   await expect(page.getByRole('option')).toHaveCount(0);
 });
 
 test('shows usage, savings and session event tabs without inventing browser-preview metrics', async ({ page }) => {
   await page.goto('/');
-  await page.getByRole('button', { name: 'Activity' }).click();
+  await page.getByRole('button', { name: 'Actividad', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Uso y ahorro' })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Uso y ahorro filters' })).toBeVisible();
   await expect(page.getByText('Abre un workspace y ejecuta una tarea para empezar a registrar uso.')).toBeVisible();
@@ -58,19 +65,20 @@ test('does not pretend browser-preview messages ran through the Harness', async 
   await page.goto('/');
   await page.getByLabel('Mensaje para OrderCode').fill('Cambia un archivo y ejecuta las comprobaciones.');
   await page.getByRole('button', { name: 'Enviar mensaje' }).click();
-  await expect(page.getByText('Selecciona un modelo descubierto y conecta un workspace antes de ejecutar.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('alert')).toContainText('Selecciona un modelo descubierto y conecta un workspace antes de ejecutar.');
   await expect(page.getByRole('alertdialog')).toHaveCount(0);
-  await expect(page.getByText(/no pude completar la solicitud/i)).toBeVisible();
+  await expect(page.getByText(/no pude completar la solicitud/i)).toHaveCount(0);
+  await expect(page.getByLabel('Mensaje para OrderCode')).toHaveValue('Cambia un archivo y ejecuta las comprobaciones.');
 });
 
 test('keeps product surfaces visible without inventing unavailable runtime state', async ({ page }) => {
   await page.goto('/');
-  await page.getByRole('button', { name: 'Agents' }).click();
-  await expect(page.getByRole('heading', { name: 'Agents' })).toBeVisible();
+  await page.getByRole('button', { name: 'Agentes', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Agentes' })).toBeVisible();
   await expect(page.getByText('General', { exact: true })).toBeVisible();
 
-  await page.getByRole('button', { name: 'Extensions' }).click();
-  await expect(page.getByRole('heading', { name: 'Extensions' })).toBeVisible();
+  await page.getByRole('button', { name: 'Extensiones', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Extensiones' })).toBeVisible();
   await expect(page.getByRole('tab', { name: /Skills/ })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByRole('button', { name: 'Nuevo' })).toBeDisabled();
   await expect(page.getByText('Conecta un workspace para crear, importar y administrar Skills.')).toBeVisible();
@@ -83,13 +91,13 @@ test('keeps product surfaces visible without inventing unavailable runtime state
   await page.getByRole('tab', { name: /Skills/ }).click();
   await expect(page.getByRole('tab', { name: /Skills/ })).toHaveAttribute('aria-selected', 'true');
 
-  await page.getByRole('button', { name: 'Sessions' }).click();
-  await expect(page.getByRole('heading', { name: 'Sessions' })).toBeVisible();
-  await page.getByRole('button', { name: 'Code Intelligence' }).click();
-  await expect(page.getByRole('heading', { name: 'Code Intelligence' })).toBeVisible();
+  await page.getByRole('button', { name: 'Sesiones', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Sesiones' })).toBeVisible();
+  await page.getByRole('button', { name: 'Inteligencia de código', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Inteligencia de código' })).toBeVisible();
   await expect(page.getByLabel('Buscar símbolos')).toBeDisabled();
 
-  await page.getByRole('button', { name: 'Settings' }).click();
+  await page.getByRole('button', { name: 'Ajustes', exact: true }).click();
   await page.getByRole('button', { name: /Uso y límites/ }).click();
   await expect(page.getByText('Coste máximo (USD)')).toBeVisible();
   await page.getByRole('button', { name: 'Alternar terminal' }).click();
@@ -99,7 +107,7 @@ test('keeps product surfaces visible without inventing unavailable runtime state
 
 test('persists accessible language, theme and density preferences and traps command palette focus', async ({ page }) => {
   await page.goto('/');
-  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('button', { name: 'Ajustes', exact: true }).click();
   await page.getByLabel('Idioma', { exact: true }).selectOption('en');
   await expect(page.locator('html')).toHaveAttribute('lang', 'en');
   await page.getByLabel('Theme', { exact: true }).selectOption('light');

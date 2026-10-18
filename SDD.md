@@ -51,11 +51,13 @@ Los tres comparten un único runtime. Auto no impone secuencias ni cuotas arbitr
 
 ## 5. Model Hub
 
-**Proveedores:** OpenRouter, OpenAI, OpenCode, Anthropic, xAI, Gemini, Ollama, LM Studio y endpoints compatibles; otros mediante adaptadores autorizados. OpenCode muestra solo modelos de chat incluidos en su catálogo oficial de precio gratuito y disponibles en la cuenta.
+**Proveedores:** OpenRouter, OpenAI, OpenCode Console, Anthropic, xAI, Gemini, Ollama, LM Studio y endpoints compatibles; otros mediante adaptadores autorizados. OpenCode Console admite su API con créditos y clave; su nivel gratuito está restringido a su propia aplicación y no puede ofrecerse como disponible en OrderCode. Modelos gratuitos de otros proveedores requieren las credenciales y cuotas que estos establezcan; los modelos locales no requieren una clave API externa.
 
 **Adaptadores:** autenticación, descubrimiento, capacidades, streaming, tool calling, cancelación, caché, métricas, límites y errores normalizados, según soporte real.
 
 **Selector:** dentro del chat, con búsqueda, recientes, favoritos, proveedores, capacidades, disponibilidad, precios, modelos locales y filtro Free Only.
+
+**Esfuerzo:** selector de niveles propios del modelo cuando el proveedor exponga soporte verificable. Automático conserva el valor predeterminado; la elección se persiste por sesión y se hereda por los especialistas. Rechazar niveles incompatibles antes de inferencia y volver a Automático al cambiar a un modelo que no admita la elección actual.
 
 **Free Only:** bloquear inferencia pagada y fallbacks pagados; precio desconocido no equivale a gratuito. Revalidar promociones y límites. OrderCode no financiará la inferencia del nivel gratuito ni prometerá acceso ilimitado de terceros.
 

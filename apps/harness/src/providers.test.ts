@@ -46,28 +46,63 @@ test("model discovery excludes incompatible models and does not invent tool capa
   assert.ok(!models[0]?.capabilities.includes("tool-calling"));
 });
 
-test("OpenCode revalidates current free prices and supported endpoints without leaking credentials", async (t) => {
+test("OpenCode blocks its restricted free tier before inference with or without credentials and revalidates the catalog", async (t) => {
   let paid = false;
   let broken = false;
+  let clock = Date.now();
+  let inferenceCalls = 0;
+  t.mock.method(Date, "now", () => clock);
   fetchFixture(t, (url, init) => {
     if (url.pathname === "/pricing") {
       assert.equal(new Headers(init.headers).get("authorization"), null);
       return new Response(broken ? "<html>Sign in</html>" : `<table>
         <tr><td>Future Free</td><td>new-model-free</td><td><code>https://opencode.ai/inference/openai/v1/chat/completions</code></td><td>compatible</td></tr>
         <tr><td>Future Free</td><td>${paid ? "$0.10" : "Free"}</td><td>Free</td><td>Free</td><td>-</td></tr>
+        <tr><td>Paid Chat</td><td>paid-chat</td><td>https://opencode.ai/inference/openai/v1/chat/completions</td><td>compatible</td></tr>
+        <tr><td>Paid Chat</td><td>$1.00</td><td>$2.00</td><td>-</td><td>-</td></tr>
         <tr><td>Other Free</td><td>other-free</td><td>https://opencode.ai/inference/systemone/v1/systemone</td><td>-</td></tr>
         <tr><td>Other Free</td><td>Free</td><td>Free</td><td>-</td><td>-</td></tr>
         </table>`);
     }
-    assert.equal(new Headers(init.headers).get("authorization"), "Bearer fixture-secret");
-    return json({ data: [{ id: "new-model-free" }, { id: "other-free" }, { id: "unverified-free" }] });
+    if (init.method === "POST") {
+      inferenceCalls++;
+      assert.equal(new Headers(init.headers).get("authorization"), "Bearer fixture-secret");
+      assert.equal(JSON.parse(String(init.body)).model, "paid-chat");
+      return json({ choices: [{ message: { content: "ok" }, finish_reason: "stop" }] });
+    }
+    return json({ data: [{ id: "new-model-free" }, { id: "paid-chat" }, { id: "other-free" }, { id: "unverified-free" }] });
   });
-  const adapter = new OpenAICompatibleProvider("opencode_zen", "OpenCode", "https://fixture.invalid/v1", "fixture-secret", {}, false, "https://fixture.invalid/models", "https://fixture.invalid/pricing");
+  const adapter = new OpenAICompatibleProvider("opencode_zen", "OpenCode", "https://fixture.invalid/v1", "", {}, false, "https://fixture.invalid/models", "https://fixture.invalid/pricing");
+  assert.equal(adapter.configured, false);
   const models = await adapter.listModels();
-  assert.deepEqual(models.map((model) => model.id), ["new-model-free"]);
+  assert.deepEqual(models.map((model) => model.id), ["new-model-free", "paid-chat"]);
   assert.equal(models[0]?.pricing?.inputPerMillionUsd, 0);
+  assert.equal(models[0]?.available, false);
+  assert.match(models[0]?.availabilityReason ?? "", /OpenCode/);
+  assert.equal(models[1]?.priceKind, "unknown");
+  assert.equal(models[1]?.available, false);
+  const restricted = (error: unknown) => !!error && typeof error === "object" && "code" in error && error.code === "OPENCODE_FREE_TIER_RESTRICTED";
+  await assert.rejects(adapter.complete(request("new-model-free")), restricted);
+  await assert.rejects(adapter.complete(request("paid-chat")), /not configured/);
+  adapter.setCredential("fixture-secret");
+  assert.equal(adapter.configured, true);
+  assert.equal((await adapter.listModels())[0]?.available, false);
+  assert.equal((await adapter.listModels())[1]?.available, true);
+  await assert.rejects(adapter.complete(request("new-model-free")), restricted);
+  await assert.rejects(adapter.complete(request("unverified-free")), /not currently listed/);
+  assert.equal(inferenceCalls, 0);
+  await adapter.complete(request("paid-chat"));
+  assert.equal(inferenceCalls, 1);
   paid = true;
-  assert.deepEqual(await adapter.listModels(), []);
+  const changed = await adapter.listModels();
+  assert.equal(changed[0]?.priceKind, "unknown");
+  assert.equal(changed[0]?.available, true);
+  // An expired cache must notice a paid model becoming restricted before the next POST.
+  paid = false; clock += 60_001;
+  await assert.rejects(adapter.complete(request("new-model-free")), restricted);
+  assert.equal(inferenceCalls, 1);
+  adapter.setCredential(undefined);
+  assert.equal(adapter.configured, false);
   broken = true;
   await assert.rejects(adapter.listModels(), /could not be verified/);
 });
@@ -251,4 +286,47 @@ test("Gemini errors and interrupted output are failures, safety blocks keep thei
   }
   fetchFixture(t, () => stream([event({ promptFeedback: { blockReason: "SAFETY" } })]));
   assert.equal((await adapter.stream(request(), () => undefined)).finishReason, "SAFETY");
+});
+
+
+test("reasoning selectors follow each native model and OpenRouter's live per-model catalog", async (t) => {
+  fetchFixture(t, () => json({ data: [{ id: "gpt-4.1" }, { id: "gpt-5.1" }, { id: "gpt-5.2" }, { id: "gpt-6-astra" }] }));
+  const openai = new OpenAICompatibleProvider("openai", "OpenAI", "https://api.openai.com/v1", "fixture");
+  const models = await openai.listModels();
+  assert.deepEqual(models[0]?.reasoningEfforts, []);
+  assert.deepEqual(models[1]?.reasoningEfforts, ["none", "low", "medium", "high"]);
+  assert.deepEqual(models[2]?.reasoningEfforts, ["none", "low", "medium", "high", "xhigh"]);
+  assert.deepEqual(models[3]?.reasoningEfforts, ["low", "medium", "high", "xhigh", "max"]);
+  fetchFixture(t, () => json({ data: [{ id: "routed", reasoning: { supported_efforts: ["high", "low", "none"], mandatory: true } }, { id: "automatic-router" }, { id: "gateway", reasoning: { supported_efforts: null } }] }));
+  const router = new OpenAICompatibleProvider("openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "fixture");
+  const routed = await router.listModels();
+  assert.deepEqual(routed[0]?.reasoningEfforts, ["low", "high"]);
+  assert.deepEqual(routed[1]?.reasoningEfforts, []);
+  assert.equal(routed[2]?.reasoningEfforts?.includes("max"), true);
+  let sent = 0;
+  fetchFixture(t, (_url, init) => { sent++; const payload = JSON.parse(String(init.body)); assert.deepEqual(payload.reasoning, { effort: "low" }); assert.deepEqual(payload.provider, { require_parameters: true }); return json({ choices: [{ message: { content: "ok" }, finish_reason: "stop" }] }); });
+  await assert.rejects(router.complete({ ...request("routed"), reasoningEffort: "medium" }), /does not support/);
+  assert.equal(sent, 0);
+  await router.complete({ ...request("routed"), reasoningEffort: "low" });
+  assert.equal(sent, 1);
+});
+
+test("native APIs receive the selected effort in their own request field and reject unsupported levels before inference", async (t) => {
+  const openai = new OpenAICompatibleProvider("openai", "OpenAI", "https://api.openai.com/v1", "fixture");
+  fetchFixture(t, (_url, init) => { assert.deepEqual(JSON.parse(String(init.body)).reasoning, { effort: "xhigh" }); return stream([completed()]); });
+  await openai.complete({ ...request("gpt-5.2"), reasoningEffort: "xhigh" });
+  await assert.rejects(openai.complete({ ...request("gpt-4.1"), reasoningEffort: "high" }), /does not support/);
+  const registry = new ProviderRegistry();
+  const claude = registry.get("anthropic")!; claude.setCredential!("fixture");
+  fetchFixture(t, (_url, init) => { assert.deepEqual(JSON.parse(String(init.body)).output_config, { effort: "max" }); return json({ content: [{ type: "text", text: "ok" }], stop_reason: "end_turn" }); });
+  await claude.complete({ ...request("claude-opus-4-6"), reasoningEffort: "max" });
+  await assert.rejects(claude.complete({ ...request("claude-opus-4-6"), reasoningEffort: "xhigh" }), /does not support/);
+  const gemini = registry.get("gemini")!; gemini.setCredential!("fixture");
+  fetchFixture(t, (_url, init) => { assert.deepEqual(JSON.parse(String(init.body)).generationConfig.thinkingConfig, { thinkingLevel: "minimal" }); return json({ candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }] }); });
+  await gemini.complete({ ...request("gemini-3-flash-preview"), reasoningEffort: "minimal" });
+  await assert.rejects(gemini.complete({ ...request("gemini-3-pro-preview"), reasoningEffort: "medium" }), /does not support/);
+  const xai = registry.get("xai")!; xai.setCredential!("fixture");
+  fetchFixture(t, (_url, init) => { assert.equal(JSON.parse(String(init.body)).reasoning_effort, "high"); return json({ choices: [{ message: { content: "ok" }, finish_reason: "stop" }] }); });
+  await xai.complete({ ...request("grok-4.5"), reasoningEffort: "high" });
+  await assert.rejects(xai.complete({ ...request("grok-4.5"), reasoningEffort: "xhigh" }), /does not support/);
 });

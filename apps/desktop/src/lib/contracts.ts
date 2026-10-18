@@ -27,6 +27,7 @@ export interface SessionConfig {
   modelId?: string;
   freeOnly?: boolean;
   budget?: ExecutionBudget;
+  reasoningEffort?: string;
   mode: WorkMode;
   permission: PermissionProfile;
 }

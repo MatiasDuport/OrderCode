@@ -29,7 +29,7 @@ export const isDesktopApp = isTauri;
 const fallbackHealth: BrokerHealth = { ok: false, version: 'browser-preview', platform: typeof navigator === 'undefined' ? 'browser' : navigator.platform, harnessConnected: false };
 
 type RpcEnvelope<T = unknown> = { result?: T; error?: { message?: string; data?: { message?: string } } };
-type HarnessSession = { id: string; projectPath: string; title: string; modelId?: string; providerId?: string; freeOnly?: boolean; budget?: SessionRecord['budget']; mode: string; permissionProfile: string; state: string; createdAt: string; updatedAt: string; sequence: number };
+type HarnessSession = { id: string; projectPath: string; title: string; modelId?: string; providerId?: string; freeOnly?: boolean; reasoningEffort?: string; budget?: SessionRecord['budget']; mode: string; permissionProfile: string; state: string; createdAt: string; updatedAt: string; sequence: number };
 
 export async function listCustomAgents(): Promise<AgentProfile[]> { return rpc<AgentProfile[]>('agents.list'); }
 export async function listAvailableAgentTools(sessionId?: string): Promise<AgentToolChoice[]> { return rpc<AgentToolChoice[]>('tools.list', sessionId ? { sessionId } : {}); }
@@ -117,6 +117,7 @@ function toDesktopSession(value: Record<string, unknown>, fallback: SessionRecor
     model: typeof value.modelId === 'string' ? value.modelId : fallback.model,
     providerId: typeof value.providerId === 'string' ? value.providerId : fallback.providerId,
     freeOnly: typeof value.freeOnly === 'boolean' ? value.freeOnly : fallback.freeOnly ?? false,
+    reasoningEffort: typeof value.reasoningEffort === 'string' ? value.reasoningEffort : undefined,
     budget: desktopBudget(value.budget, fallback.budget),
     mode: modeMap[String(value.mode)] ?? fallback.mode,
     permission: permissionMap[String(value.permissionProfile)] ?? fallback.permission,
@@ -132,9 +133,24 @@ async function call<T>(command: string, args: Record<string, unknown>, browserVa
   return invoke<T>(command, args);
 }
 
+// Optional object fields disappear on the JSON wire. Normalize them before
+// validation while leaving invalid values (including array holes) to the schema.
+function omitUndefinedProperties(value: unknown, ancestors = new WeakSet<object>()): unknown {
+  if (!value || typeof value !== 'object') return value;
+  if (ancestors.has(value)) throw new Error('La solicitud contiene una referencia circular.');
+  if (!Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) return value;
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) return Array.from(value, (entry) => omitUndefinedProperties(entry, ancestors));
+    return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined).map(([key, entry]) => [key, omitUndefinedProperties(entry, ancestors)]));
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
 async function rpc<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
   if (!isTauri()) throw new Error('El runtime requiere la aplicación de escritorio de OrderCode.');
-  const request = harnessRpcRequestSchema.parse({ jsonrpc: '2.0', id: crypto.randomUUID(), method, params });
+  const request = harnessRpcRequestSchema.parse({ jsonrpc: '2.0', id: crypto.randomUUID(), method, params: omitUndefinedProperties(params) });
   const response = await invoke<RpcEnvelope<T>>('harness_request', {
     request,
   });
@@ -175,7 +191,7 @@ export async function listSessions(): Promise<SessionRecord[]> {
   if (!isTauri()) return [];
   const values = await rpc<HarnessSession[]>('session.list');
   return values.map((item) => toDesktopSession(item as unknown as Record<string, unknown>, {
-    id: item.id, projectPath: item.projectPath, model: item.modelId ?? '', providerId: item.providerId ?? '', freeOnly: item.freeOnly ?? false, budget: item.budget, mode: 'Build', permission: 'Guiado', createdAt: item.createdAt, state: item.state as SessionRecord['state'], sequence: item.sequence,
+    id: item.id, projectPath: item.projectPath, model: item.modelId ?? '', providerId: item.providerId ?? '', freeOnly: item.freeOnly ?? false, reasoningEffort: item.reasoningEffort, budget: item.budget, mode: 'Build', permission: 'Guiado', createdAt: item.createdAt, state: item.state as SessionRecord['state'], sequence: item.sequence,
   }));
 }
 
@@ -197,6 +213,7 @@ export async function createSession(config: SessionConfig): Promise<SessionRecor
     permissionProfile: profileId(config.permission),
     freeOnly: config.freeOnly ?? false,
     budget: config.budget,
+    reasoningEffort: config.reasoningEffort,
     ...selection,
   });
   const session = toDesktopSession(value as unknown as Record<string, unknown>, fallback);
@@ -211,7 +228,7 @@ export async function activateSession(session: SessionRecord): Promise<void> {
 
 export async function loadSession(sessionId: string): Promise<{ session: SessionRecord; messages: Array<{ id: string; role: 'user' | 'assistant'; content: string; createdAt: string }>; events: HarnessEvent[]; pendingPermissions: Array<Record<string, unknown>> }> {
   const raw = await rpc<HarnessSession>('session.get', { sessionId });
-  const fallback: SessionRecord = { id: sessionId, projectPath: raw.projectPath, model: raw.modelId ?? '', providerId: raw.providerId ?? '', freeOnly: raw.freeOnly ?? false, budget: raw.budget, mode: 'Build', permission: 'Guiado', createdAt: raw.createdAt, state: 'CREATED', sequence: raw.sequence };
+  const fallback: SessionRecord = { id: sessionId, projectPath: raw.projectPath, model: raw.modelId ?? '', providerId: raw.providerId ?? '', freeOnly: raw.freeOnly ?? false, reasoningEffort: raw.reasoningEffort, budget: raw.budget, mode: 'Build', permission: 'Guiado', createdAt: raw.createdAt, state: 'CREATED', sequence: raw.sequence };
   const [messages, events, pendingRequests] = await Promise.all([
     rpc<Array<{ id: string; role: string; content: string; createdAt: string }>>('session.messages', { sessionId, limit: 200 }),
     rpc<Array<Record<string, unknown>>>('session.events', { sessionId, afterSequence: Math.max(0, raw.sequence - 500) }),
@@ -266,10 +283,10 @@ function toDesktopEvent(event: Record<string, unknown>): HarnessEvent {
   };
 }
 
-export async function sendSessionMessage(sessionId: string, message: string, mode: WorkMode, model: string, permission: PermissionProfile, providerId?: string, agentId?: string, freeOnly = false): Promise<HarnessEvent> {
+export async function sendSessionMessage(sessionId: string, message: string, mode: WorkMode, model: string, permission: PermissionProfile, providerId?: string, agentId?: string, freeOnly = false, reasoningEffort?: string): Promise<HarnessEvent> {
   if (!isTauri()) return { id: crypto.randomUUID(), sessionId, sequence: 0, state: 'WAITING_USER', summary: 'Disponible en la app de escritorio', detail: 'El navegador solo muestra la vista previa. Para ejecutar tareas, abre OrderCode Desktop.' };
   const selection = modelSelection(model, providerId);
-  const value = await rpc<Record<string, unknown>>('run', { sessionId, goal: message, mode: mode.toLowerCase(), permissionProfile: profileId(permission), freeOnly, ...(agentId ? { agentId } : {}), ...selection });
+  const value = await rpc<Record<string, unknown>>('run', { sessionId, goal: message, mode: mode.toLowerCase(), permissionProfile: profileId(permission), freeOnly, reasoningEffort: reasoningEffort ?? null, ...(agentId ? { agentId } : {}), ...selection });
   const state = typeof value.state === 'string' ? value.state as HarnessEvent['state'] : 'FAILED';
   const assistant = value.assistantMessage && typeof value.assistantMessage === 'object' ? value.assistantMessage as Record<string, unknown> : undefined;
   const pending = value.pendingPermission && typeof value.pendingPermission === 'object' ? value.pendingPermission as Record<string, unknown> : undefined;
@@ -361,7 +378,7 @@ export function executeAllowed(command: string, cwd?: string): Promise<{ code: n
 }
 
 export type ProviderInfo = { id: string; label: string; baseUrl: string; configured: boolean; custom?: boolean };
-export type ProviderModel = { id: string; providerId: string; label: string; capabilities: string[]; available: boolean; priceKind: 'free' | 'paid' | 'unknown' | 'local' | 'subscription'; pricing?: { inputPerMillionUsd: number; outputPerMillionUsd: number; updatedAt: string } };
+export type ProviderModel = { id: string; providerId: string; label: string; capabilities: string[]; available: boolean; availabilityReason?: string; reasoningEfforts?: string[]; priceKind: 'free' | 'paid' | 'unknown' | 'local' | 'subscription'; pricing?: { inputPerMillionUsd: number; outputPerMillionUsd: number; updatedAt: string } };
 export function listProviders(): Promise<ProviderInfo[]> { return rpc('providers.list'); }
 export function listProviderModels(providerId: string): Promise<ProviderModel[]> { return rpc('provider.models', { providerId }); }
 export function providerKeysStatus(providerIds: string[] = []): Promise<Record<string, boolean>> { return call('provider_keys_status', { providerIds }, {}); }
@@ -413,5 +430,5 @@ export async function removeProviderCredential(providerId: string): Promise<void
 }
 
 export async function updateSession(session: SessionRecord): Promise<void> {
-  await rpc('session.update', { sessionId: session.id, patch: { mode: session.mode.toLowerCase(), permissionProfile: profileId(session.permission), freeOnly: session.freeOnly ?? false, budget: session.budget, ...modelSelection(session.model, session.providerId) } });
+  await rpc('session.update', { sessionId: session.id, patch: { mode: session.mode.toLowerCase(), permissionProfile: profileId(session.permission), freeOnly: session.freeOnly ?? false, budget: session.budget, reasoningEffort: session.reasoningEffort ?? null, ...modelSelection(session.model, session.providerId) } });
 }

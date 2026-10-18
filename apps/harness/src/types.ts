@@ -142,6 +142,7 @@ export interface SessionRecord {
   providerId?: string;
   freeOnly?: boolean;
   budget?: ExecutionBudget;
+  reasoningEffort?: string;
   mode: RunMode;
   permissionProfile: PermissionProfile;
   state: RuntimeState;
@@ -343,6 +344,8 @@ export interface ProviderModel {
   capabilities: string[];
   available: boolean;
   priceKind: "free" | "paid" | "unknown" | "local" | "subscription";
+  reasoningEfforts?: string[];
+  availabilityReason?: string;
   pricing?: { inputPerMillionUsd: number; outputPerMillionUsd: number; updatedAt: string };
 }
 
@@ -377,6 +380,7 @@ export interface ProviderTurn {
 
 export interface ProviderRequest {
   model: string;
+  reasoningEffort?: string;
   maxOutputTokens?: number;
   messages: Array<{ role: "system" | "user" | "assistant" | "tool"; content: string; toolCallId?: string; toolName?: string; toolCalls?: ProviderToolCall[]; responseState?: ProviderResponseState }>;
   tools?: ToolDefinition[];

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { HarnessError } from "./errors.js";
+import { catalogReasoningEfforts, nativeReasoningEfforts, validateReasoningEffort } from "./reasoning.js";
 import type { CustomProviderConfig, ProviderModel, ProviderRequest, ProviderToolCall, ProviderTurn, ToolDefinition } from "./types.js";
 
 export interface ProviderAdapter {
@@ -128,7 +129,7 @@ function pricePerMillion(value: unknown): number | undefined {
 
 // The public API omits prices. Join the provider's current endpoint and pricing tables;
 // names ending in "free" and old promotions are insufficient evidence of a zero price.
-async function openCodeFreeModels(url: string, signal?: AbortSignal): Promise<Map<string, string>> {
+async function openCodeCatalog(url: string, signal?: AbortSignal): Promise<{ freeModels: Map<string, string>; chatModels: Map<string, string> }> {
   const response = await fetch(url, { headers: { accept: "text/html" }, signal: discoverySignal(signal), redirect: "error" });
   if (!response.ok) throw new HarnessError("PROVIDER_ERROR", `OpenCode pricing verification failed (${response.status}).`);
   const html = await response.text();
@@ -136,15 +137,19 @@ async function openCodeFreeModels(url: string, signal?: AbortSignal): Promise<Ma
   const rows = [...html.matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi)].map((row) => cells(row[0]));
   const normalize = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, "");
   const freeNames = new Set(rows.filter((row) => row.length >= 3 && row.slice(1, 3).every((cell) => /^(?:free|\$?0(?:\.0+)?)$/i.test(cell)) && row.slice(3).every((cell) => /^(?:free|\$?0(?:\.0+)?|[-–—])$/i.test(cell))).map((row) => normalize(row[0]!)));
-  const models = new Map<string, string>();
+  const freeModels = new Map<string, string>();
+  const chatModels = new Map<string, string>();
   for (const row of rows) {
     if (row.length !== 4 || !row[0] || !row[1] || !/^[a-zA-Z0-9._-]+$/.test(row[1])) continue;
-    if (row[2] === "https://opencode.ai/inference/openai/v1/chat/completions" && freeNames.has(normalize(row[0]))) models.set(row[1], row[0]);
+    if (row[2] !== "https://opencode.ai/inference/openai/v1/chat/completions") continue;
+    chatModels.set(row[1], row[0]);
+    if (freeNames.has(normalize(row[0]))) freeModels.set(row[1], row[0]);
   }
   if (!rows.length || !rows.some((row) => row[2]?.startsWith("https://opencode.ai/inference/")) || !rows.some((row) => row.length >= 5)) throw new HarnessError("INVALID_PROVIDER_RESPONSE", "OpenCode's current endpoint and pricing tables could not be verified.");
-  return models;
+  return { freeModels, chatModels };
 }
 
+const OPENCODE_FREE_TIER_RESTRICTION = "Los modelos gratuitos de OpenCode solo pueden usarse en su aplicación. Elige otro proveedor o un modelo local.";
 const OPENCODE_FREE_MODELS_CACHE_MS = 60_000;
 
 function mapToolNames(tools: ToolDefinition[]): { wire: ToolDefinition[]; decode: (value: string) => string } {
@@ -181,6 +186,7 @@ function responsesPayload(request: ProviderRequest, toolMap?: ReturnType<typeof 
   }
   return { model: request.model, input, store: false, stream: true,
     max_output_tokens: request.maxOutputTokens ?? 8192,
+    ...(request.reasoningEffort ? { reasoning: { effort: request.reasoningEffort } } : {}),
     ...(system ? { instructions: system } : {}),
     ...(toolMap ? { tools: toolMap.wire.map((tool) => ({ type: "function", name: tool.name, description: tool.description, parameters: tool.inputSchema, strict: false })) } : {}),
   };
@@ -214,7 +220,7 @@ export class ChatGPTPlanProvider implements ProviderAdapter {
     if (response.status === 401) { await response.body?.cancel(); response = await send(true); }
     if (!response.ok) throw new HarnessError("PROVIDER_ERROR", `ChatGPT model discovery failed (${response.status}).`, { providerId: this.id, status: response.status, diagnostics: (await response.text()).slice(0, 2_000) });
     const payload = await response.json() as { models?: Array<{ slug?: string; display_name?: string; visibility?: string }> };
-    return (payload.models ?? []).filter((model) => typeof model.slug === "string" && model.visibility === "list").map((model) => ({ id: model.slug!, providerId: this.id, label: model.display_name ?? model.slug!, capabilities: ["chat", "streaming", "tool-calling"], available: true, priceKind: "subscription" }));
+    return (payload.models ?? []).filter((model) => typeof model.slug === "string" && model.visibility === "list").map((model) => ({ id: model.slug!, providerId: this.id, label: model.display_name ?? model.slug!, reasoningEfforts: nativeReasoningEfforts(this.id, model.slug!), capabilities: ["chat", "streaming", "tool-calling"], available: true, priceKind: "subscription" }));
   }
 
   async complete(request: ProviderRequest): Promise<ProviderTurn> {
@@ -223,6 +229,7 @@ export class ChatGPTPlanProvider implements ProviderAdapter {
 
   async stream(request: ProviderRequest, onChunk: (chunk: string) => void): Promise<ProviderTurn> {
     if (!this.configured) throw new HarnessError("PROVIDER_NOT_CONFIGURED", "Sign in with ChatGPT in Settings to use your ChatGPT plan.");
+    validateReasoningEffort(request.reasoningEffort, nativeReasoningEfforts(this.id, request.model), request.model);
     const toolMap = request.tools?.length ? mapToolNames(request.tools) : undefined;
     const payload = responsesPayload(request, toolMap);
     const signal = request.signal ? AbortSignal.any([request.signal, this.credentialAbort.signal]) : this.credentialAbort.signal;
@@ -337,7 +344,8 @@ async function parseResponsesStream(body: ReadableStream<Uint8Array>, onChunk: (
 export class OpenAICompatibleProvider implements ProviderAdapter {
   configured: boolean;
   private apiKey?: string;
-  private verifiedOpenCodeFreeModels?: { ids: Set<string>; expiresAt: number };
+  private readonly reasoningByModel = new Map<string, string[]>();
+  private verifiedOpenCodeFreeModels?: { ids: Set<string>; chatIds: Set<string>; expiresAt: number };
 
   constructor(
     readonly id: string,
@@ -351,7 +359,7 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
   ) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
     this.apiKey = apiKey;
-    this.configured = Boolean(apiKey) || allowUnauthenticated || id === "ollama" || id === "lmstudio" || id === "opencode_zen";
+    this.configured = Boolean(apiKey) || allowUnauthenticated || id === "ollama" || id === "lmstudio";
   }
 
   readonly baseUrl: string;
@@ -372,23 +380,24 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
     if (!this.configured && !local && !publicCatalog) return [];
     const [response, openCodeModels] = await Promise.all([
       fetch(this.modelsUrl ?? `${this.baseUrl}/models`, { headers: { ...this.headers(), accept: "application/json" }, signal: discoverySignal(signal), redirect: "error" }),
-      this.id === "opencode_zen" ? openCodeFreeModels(this.pricingUrl, signal) : undefined,
+      this.id === "opencode_zen" ? openCodeCatalog(this.pricingUrl, signal) : undefined,
     ]);
     if (!response.ok) throw new HarnessError("PROVIDER_ERROR", `Model discovery failed (${response.status}).`, { providerId: this.id, status: response.status });
-    type CatalogModel = { id?: string; name?: string; type?: string; capabilities?: { completion_chat?: boolean; function_calling?: boolean }; supported_parameters?: string[]; architecture?: { output_modalities?: string[] }; pricing?: { prompt?: string | number; completion?: string | number } };
+    type CatalogModel = { reasoning?: { supported_efforts?: string[] | null; mandatory?: boolean }; id?: string; name?: string; type?: string; capabilities?: { completion_chat?: boolean; function_calling?: boolean }; supported_parameters?: string[]; architecture?: { output_modalities?: string[] }; pricing?: { prompt?: string | number; completion?: string | number } };
     const payload = await response.json() as { data?: CatalogModel[] };
     if (!Array.isArray(payload.data)) throw new HarnessError("INVALID_PROVIDER_RESPONSE", "The model catalog did not contain a models list.");
-    const models: ProviderModel[] = payload.data.filter((model): model is CatalogModel & { id: string } => typeof model.id === "string").flatMap((model) => {
+    const models: ProviderModel[] = payload.data.filter((model): model is CatalogModel & { id: string } => typeof model.id === "string").flatMap((model): ProviderModel[] => {
       if (model.capabilities?.completion_chat === false || (model.type && !["chat", "language", "model"].includes(model.type)) || (model.architecture?.output_modalities && !model.architecture.output_modalities.includes("text"))) return [];
       if (this.id === "openai" && (!/^(?:gpt-|chatgpt-|o\d|codex-)/.test(model.id) || /(?:audio|realtime|transcrib|tts|image|instruct|deep-research|search-preview)/i.test(model.id))) return [];
       if (/(?:^|[\/_-])(?:embed(?:ding)?s?|rerank|whisper|tts|moderation|dall-e)(?:[\/_-]|$)/i.test(model.id)) return [];
+      const reasoningEfforts = this.id === "openrouter" ? catalogReasoningEfforts(model.reasoning) : nativeReasoningEfforts(this.id, model.id);
       if (this.id === "opencode_zen") {
-        const label = openCodeModels?.get(model.id);
+        const label = openCodeModels?.chatModels.get(model.id);
         if (!label) return [];
+        const free = openCodeModels!.freeModels.has(model.id);
         return [{
-          id: model.id, providerId: this.id, label, capabilities: ["chat", "streaming", "tool-calling"], available: true,
-          priceKind: "free" as const,
-          pricing: { inputPerMillionUsd: 0, outputPerMillionUsd: 0, updatedAt: new Date().toISOString() },
+          id: model.id, providerId: this.id, label, reasoningEfforts, capabilities: ["chat", "streaming", "tool-calling"], available: !free && Boolean(this.apiKey),
+          ...(free ? { availabilityReason: OPENCODE_FREE_TIER_RESTRICTION, priceKind: "free" as const, pricing: { inputPerMillionUsd: 0, outputPerMillionUsd: 0, updatedAt: new Date().toISOString() } } : { priceKind: "unknown" as const, ...(!this.apiKey ? { availabilityReason: "Conecta tu clave API de OpenCode Console para usar este modelo." } : {}) }),
         }];
       }
       const inputPerMillionUsd = this.id === "openrouter" ? pricePerMillion(model.pricing?.prompt) : undefined;
@@ -397,25 +406,32 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
       const localModel = (this.id === "ollama" || this.id === "lmstudio") && isLoopbackEndpoint(this.baseUrl);
       const toolSupport = model.capabilities?.function_calling ?? (model.supported_parameters ? model.supported_parameters.includes("tools") : true);
       return [{
-        id: model.id, providerId: this.id, label: model.name ?? model.id, capabilities: ["chat", "streaming", ...(toolSupport ? ["tool-calling"] : [])], available: this.configured || localModel,
+        id: model.id, providerId: this.id, label: model.name ?? model.id, reasoningEfforts, capabilities: ["chat", "streaming", ...(toolSupport ? ["tool-calling"] : [])], available: this.configured || localModel,
         priceKind: localModel ? "local" : verifiedPricing ? (inputPerMillionUsd === 0 && outputPerMillionUsd === 0 ? "free" : "paid") : "unknown",
         ...(verifiedPricing ? { pricing: { inputPerMillionUsd, outputPerMillionUsd, updatedAt: new Date().toISOString() } } : {}),
       }];
     });
-    if (this.id === "opencode_zen") this.verifiedOpenCodeFreeModels = { ids: new Set(models.map((model) => model.id)), expiresAt: Date.now() + OPENCODE_FREE_MODELS_CACHE_MS };
+    this.reasoningByModel.clear();
+    for (const model of models) this.reasoningByModel.set(model.id, model.reasoningEfforts ?? []);
+    if (this.id === "opencode_zen") this.verifiedOpenCodeFreeModels = { ids: new Set(openCodeModels?.freeModels.keys()), chatIds: new Set(models.map((model) => model.id)), expiresAt: Date.now() + OPENCODE_FREE_MODELS_CACHE_MS };
     return models;
   }
 
   private async request(request: ProviderRequest, stream: boolean, onChunk: (chunk: string) => void): Promise<ProviderTurn> {
     const local = this.id === "ollama" || this.id === "lmstudio" || this.allowUnauthenticated;
-    if (!this.apiKey && !local) {
-      if (this.id !== "opencode_zen") throw new HarnessError("PROVIDER_NOT_CONFIGURED", `Provider ${this.id} is not configured. Supply its API key in Settings or via its environment variable.`);
+    if (this.id === "opencode_zen") {
       let verified = this.verifiedOpenCodeFreeModels;
       if (!verified || verified.expiresAt <= Date.now()) {
         await this.listModels(request.signal);
         verified = this.verifiedOpenCodeFreeModels;
       }
-      if (!verified?.ids.has(request.model)) throw new HarnessError("PROVIDER_NOT_CONFIGURED", "This OpenCode model is not currently verified as free. Select a listed free model or connect an OpenCode API key in Settings.", { providerId: this.id });
+      if (verified?.ids.has(request.model)) throw new HarnessError("OPENCODE_FREE_TIER_RESTRICTED", OPENCODE_FREE_TIER_RESTRICTION, { providerId: this.id });
+      if (!verified?.chatIds.has(request.model)) throw new HarnessError("OPENCODE_MODEL_UNVERIFIED", "This OpenCode model is not currently listed for the supported chat endpoint. Select a model from the current catalog.", { providerId: this.id });
+    }
+    if (!this.apiKey && !local) throw new HarnessError("PROVIDER_NOT_CONFIGURED", `Provider ${this.id} is not configured. Supply its API key in Settings or via its environment variable.`);
+    if (request.reasoningEffort) {
+      if (this.id === "openrouter" && !this.reasoningByModel.has(request.model)) await this.listModels(request.signal);
+      validateReasoningEffort(request.reasoningEffort, this.reasoningByModel.get(request.model) ?? nativeReasoningEfforts(this.id, request.model), request.model);
     }
     const mappedTools = request.tools?.length ? mapToolNames(request.tools) : undefined;
     const useResponses = this.id === "openai" && !/^(?:gpt-3\.5|gpt-4(?:$|-)|chatgpt-4o)/.test(request.model);
@@ -423,6 +439,7 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
       model: request.model,
       ...(this.id === "openai" ? { max_completion_tokens: request.maxOutputTokens ?? 8192 } : { max_tokens: request.maxOutputTokens ?? 8192 }),
       messages: toOpenAIMessages(request.messages),
+      ...(request.reasoningEffort ? this.id === "openrouter" ? { reasoning: { effort: request.reasoningEffort }, provider: { require_parameters: true } } : { reasoning_effort: request.reasoningEffort } : {}),
       stream,
       ...(stream && ["openrouter", "openai"].includes(this.id) ? { stream_options: { include_usage: true } } : {}),
       ...(mappedTools ? { tools: mappedTools.wire.map(toOpenAITool) } : {}),
@@ -448,7 +465,7 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
     return { ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}), accept: "text/event-stream", ...this.extraHeaders };
   }
 
-  setCredential(key: string | undefined): void { this.apiKey = key; this.configured = Boolean(key) || this.allowUnauthenticated || this.id === "ollama" || this.id === "lmstudio" || this.id === "opencode_zen"; }
+  setCredential(key: string | undefined): void { this.apiKey = key; this.configured = Boolean(key) || this.allowUnauthenticated || this.id === "ollama" || this.id === "lmstudio"; }
 }
 
 /** SuperGrok plan access through xAI's OAuth device flow. API-key billing remains a separate provider. */
@@ -627,11 +644,12 @@ class AnthropicProvider implements ProviderAdapter {
     const response = await fetch(`${this.baseUrl.replace(/\/$/, "")}/v1/models?limit=100`, { headers: { ...this.headers(), accept: "application/json" }, signal: discoverySignal(signal), redirect: "error" });
     if (!response.ok) throw new HarnessError("PROVIDER_ERROR", `Anthropic model discovery failed (${response.status}).`);
     const data = await response.json() as { data?: Array<{ id?: string; display_name?: string }> };
-    return (data.data ?? []).filter((model): model is { id: string; display_name?: string } => typeof model.id === "string").map((model) => ({ id: model.id, providerId: this.id, label: model.display_name ?? model.id, capabilities: ["chat", "streaming", "tool-calling"], available: true, priceKind: "unknown" }));
+    return (data.data ?? []).filter((model): model is { id: string; display_name?: string } => typeof model.id === "string").map((model) => ({ id: model.id, providerId: this.id, label: model.display_name ?? model.id, reasoningEfforts: nativeReasoningEfforts(this.id, model.id), capabilities: ["chat", "streaming", "tool-calling"], available: true, priceKind: "unknown" }));
   }
 
   private async request(request: ProviderRequest, streaming: boolean, onChunk: (chunk: string) => void): Promise<ProviderTurn> {
     if (!this.apiKey) throw new HarnessError("PROVIDER_NOT_CONFIGURED", "Anthropic API credentials are not configured.");
+    validateReasoningEffort(request.reasoningEffort, nativeReasoningEfforts(this.id, request.model), request.model);
     const mapped = request.tools?.length ? mapToolNames(request.tools) : undefined;
     const system = request.messages.filter((message) => message.role === "system").map((message) => message.content).join("\n\n");
     const messages: Array<{ role: string; content: string | Array<Record<string, unknown>> }> = [];
@@ -649,7 +667,7 @@ class AnthropicProvider implements ProviderAdapter {
     }
     const response = await fetch(`${this.baseUrl.replace(/\/$/, "")}/v1/messages`, {
       method: "POST", headers: { ...this.headers(), "content-type": "application/json" }, signal: request.signal, redirect: "error",
-      body: JSON.stringify({ model: request.model, max_tokens: request.maxOutputTokens ?? 8192, messages, ...(system ? { system } : {}), ...(streaming ? { stream: true } : {}), ...(mapped ? { tools: mapped.wire.map((tool) => ({ name: tool.name, description: tool.description, input_schema: tool.inputSchema })) } : {}) }),
+      body: JSON.stringify({ model: request.model, max_tokens: request.maxOutputTokens ?? 8192, ...(request.reasoningEffort ? { output_config: { effort: request.reasoningEffort } } : {}), messages, ...(system ? { system } : {}), ...(streaming ? { stream: true } : {}), ...(mapped ? { tools: mapped.wire.map((tool) => ({ name: tool.name, description: tool.description, input_schema: tool.inputSchema })) } : {}) }),
     });
     if (!response.ok) throw new HarnessError("PROVIDER_ERROR", `Anthropic request failed (${response.status}).`, { diagnostics: (await response.text()).slice(0, 2_000) });
     if (!streaming) return parseAnthropicTurn(await response.json(), mapped?.decode);
@@ -736,10 +754,11 @@ class GeminiProvider implements ProviderAdapter {
     const response = await fetch(`${this.baseUrl.replace(/\/$/, "")}/models?pageSize=1000`, { headers: { "x-goog-api-key": this.apiKey }, signal: discoverySignal(signal), redirect: "error" });
     if (!response.ok) throw new HarnessError("PROVIDER_ERROR", `Gemini model discovery failed (${response.status}).`);
     const data = await response.json() as { models?: Array<{ name?: string; displayName?: string; supportedGenerationMethods?: string[] }> };
-    return (data.models ?? []).filter((model) => typeof model.name === "string" && (model.supportedGenerationMethods ?? []).includes("generateContent")).map((model) => ({ id: model.name!.replace(/^models\//, ""), providerId: this.id, label: model.displayName ?? model.name!, capabilities: model.supportedGenerationMethods ?? [], available: true, priceKind: "unknown" }));
+    return (data.models ?? []).filter((model) => typeof model.name === "string" && (model.supportedGenerationMethods ?? []).includes("generateContent")).map((model) => ({ id: model.name!.replace(/^models\//, ""), providerId: this.id, label: model.displayName ?? model.name!, reasoningEfforts: nativeReasoningEfforts(this.id, model.name!.replace(/^models\//, "")), capabilities: model.supportedGenerationMethods ?? [], available: true, priceKind: "unknown" }));
   }
   private async request(request: ProviderRequest, streaming: boolean, onChunk: (chunk: string) => void): Promise<ProviderTurn> {
     if (!this.apiKey) throw new HarnessError("PROVIDER_NOT_CONFIGURED", "Google Gemini API credentials are not configured.");
+    validateReasoningEffort(request.reasoningEffort, nativeReasoningEfforts(this.id, request.model), request.model);
     const tools = request.tools?.length ? mapToolNames(request.tools) : undefined;
     const system = request.messages.filter((message) => message.role === "system").map((message) => message.content).join("\n\n");
     const contents: Array<{ role: string; parts: Array<Record<string, unknown>> }> = [];
@@ -758,7 +777,7 @@ class GeminiProvider implements ProviderAdapter {
       contents.push({ role: message.role === "assistant" ? "model" : "user", parts });
     }
     const method = streaming ? "streamGenerateContent?alt=sse" : "generateContent";
-    const response = await fetch(`${this.baseUrl.replace(/\/$/, "")}/models/${encodeURIComponent(request.model)}:${method}`, { method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": this.apiKey }, body: JSON.stringify({ contents, generationConfig: { maxOutputTokens: request.maxOutputTokens ?? 8192 }, ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}), ...(tools ? { tools: [{ functionDeclarations: tools.wire.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.inputSchema })) }] } : {}) }), signal: request.signal, redirect: "error" });
+    const response = await fetch(`${this.baseUrl.replace(/\/$/, "")}/models/${encodeURIComponent(request.model)}:${method}`, { method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": this.apiKey }, body: JSON.stringify({ contents, generationConfig: { maxOutputTokens: request.maxOutputTokens ?? 8192, ...(request.reasoningEffort ? { thinkingConfig: { thinkingLevel: request.reasoningEffort } } : {}) }, ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}), ...(tools ? { tools: [{ functionDeclarations: tools.wire.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.inputSchema })) }] } : {}) }), signal: request.signal, redirect: "error" });
     if (!response.ok) throw new HarnessError("PROVIDER_ERROR", `Gemini request failed (${response.status}).`, { diagnostics: (await response.text()).slice(0, 2_000) });
     if (!streaming) return parseGeminiTurn(await response.json(), tools?.decode);
     if (!response.body) throw new HarnessError("PROVIDER_STREAM_UNAVAILABLE", "Gemini returned no streaming response body.");

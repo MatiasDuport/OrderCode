@@ -1,4 +1,4 @@
-import { Code2, FileCode2, FileText, FolderOpen, GitBranch, Plus, Search } from 'lucide-react';
+import { Code2, FileCode2, FolderOpen, GitBranch, Plus, Search, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Divider, IconButton, Kbd, PanelTitle } from './ui';
 import { useDesktopStore } from '../lib/store';
@@ -6,8 +6,10 @@ import { createSession, gitStatus, health, invokeHarnessTool, pickWorkspaceFolde
 import type { WorkspaceEntry } from '../lib/contracts';
 import { Localized } from '../lib/localization';
 
-export function WorkspaceSidebar() {
-  const { session, model, mode, permission, freeOnly, openFile: selectedFile, set } = useDesktopStore();
+export function WorkspaceSidebar({ onClose }: { onClose: () => void }) {
+  const { session, model, reasoningEffort, mode, permission, freeOnly, runtimeState, openFile: selectedFile, set } = useDesktopStore();
+  const [connecting, setConnecting] = useState(false);
+  const busy = connecting || ['RUNNING', 'PREPARING', 'WAITING_APPROVAL'].includes(runtimeState);
   const [entries, setEntries] = useState<WorkspaceEntry[]>([]);
   const [git, setGit] = useState('');
   const [error, setError] = useState('');
@@ -25,16 +27,18 @@ export function WorkspaceSidebar() {
   }, [session?.id, session?.projectPath]);
 
   const connectWorkspace = async () => {
+    if (busy) return;
     const active = useDesktopStore.getState();
     if (active.editorContent !== active.editorOriginal) {
       setError('Guarda o descarta los cambios del editor antes de cambiar de workspace.');
       return;
     }
     setError('');
+    setConnecting(true);
     try {
       const value = await pickWorkspaceFolder(session?.projectPath ?? undefined);
       if (!value) return;
-      const next = await createSession({ projectPath: value, model, mode, permission, freeOnly });
+      const next = await createSession({ projectPath: value, model, reasoningEffort, mode, permission, freeOnly });
       set('session', next);
       set('model', next.providerId && next.model ? `${next.providerId}::${next.model}` : next.model);
       set('freeOnly', next.freeOnly ?? false);
@@ -44,6 +48,7 @@ export function WorkspaceSidebar() {
       set('health', await health());
       setEntries(await workspaceTree()); setGit(await gitStatus());
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setConnecting(false); }
   };
 
   const openFile = async (path: string) => {
@@ -67,8 +72,8 @@ export function WorkspaceSidebar() {
   };
 
   return <Localized><aside className="workspace-sidebar" aria-label="Workspace">
-    <PanelTitle title="WORKSPACE" action={<IconButton icon={Plus} label="Añadir workspace" onClick={() => void connectWorkspace()} />} />
-    <button type="button" className="workspace-root" onClick={() => void connectWorkspace()}><span className="workspace-root-icon"><Code2 size={14} /></span><span>{workspaceName}</span></button>
+    <PanelTitle title="Workspace" action={<div className="workspace-panel-actions"><IconButton icon={Plus} label="Añadir workspace" disabled={busy} onClick={() => void connectWorkspace()} /><IconButton icon={X} label="Cerrar Workspace" onClick={onClose} /></div>} />
+    <button type="button" className="workspace-root" disabled={busy} onClick={() => void connectWorkspace()} title={session?.projectPath}><span className="workspace-root-icon"><Code2 size={14} /></span><span>{connecting ? 'Conectando…' : workspaceName}</span></button>
     <label className="file-search"><Search size={14} /><input aria-label="Buscar archivos" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={session ? 'Buscar archivos...' : 'Abre un workspace'} disabled={!session} />{session && <Kbd>Ctrl P</Kbd>}</label>
     {session && visibleEntries.length ? <div className="tree tree-files" role="tree" aria-label="Archivos del proyecto">{visibleEntries.map((entry) => entry.kind === 'directory' ? <div className="tree-entry tree-entry--directory" key={entry.path} title={entry.path}><FolderOpen size={13} /><span>{entry.path}</span></div> : <button type="button" className={`tree-entry tree-entry--file ${selectedFile === entry.path ? 'is-active' : ''}`} key={entry.path} title={entry.path} onClick={() => void openFile(entry.path)}><FileCode2 size={13} /><span>{entry.path}</span></button>)}</div> : <div className="tree tree-empty" role="tree" aria-label="Archivos del proyecto"><FolderOpen size={22} /><strong>{error ? 'No se pudo cargar el workspace' : session ? 'Sin archivos coincidentes' : 'Sin workspace abierto'}</strong><span>{error || (session ? 'Prueba con otra búsqueda.' : 'Pulsa + para conectar una carpeta.')}</span></div>}
     <div className="sidebar-bottom"><Divider /><div className="git-header"><GitBranch size={13} /><strong>Git</strong><span className="panel-title-spacer" /><span className="muted">{session ? (git || 'Sin cambios') : 'Sin workspace'}</span></div><button type="button" className="sidebar-git-link" onClick={() => set('currentView', 'Git')} disabled={!session}>Abrir control de versiones</button></div>

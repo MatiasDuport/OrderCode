@@ -80,7 +80,7 @@ Estas dimensiones son **objetivos de referencia**, no límites rígidos; adaptar
 | Iconografía habitual | 14-16 px, consistente |
 | Controles de barra / menús | 30-32 px de alto |
 | Área interactiva de iconos | Aproximadamente 28-32 px; ampliar según accesibilidad |
-| Barra superior | 48 px |
+| Barra superior | 38 px |
 | Rail de navegación | 56 px contraído; etiquetas en una capa de 190 px al pasar el cursor o recibir foco |
 | Sidebar desplegada | 200-240 px, redimensionable |
 | Panel contextual | 280-340 px cuando exista espacio |
@@ -102,7 +102,7 @@ La interfaz es un **workbench adaptable**, no un dashboard. Solo la conversació
 
 ### 4.1. Barra superior
 
-Mostrar: proyecto activo, conversación actual cuando proceda, estado general compacto, búsqueda/command palette y acciones para controlar la disposición de paneles. Evitar duplicar aquí el selector de modelo, el modo o los permisos del composer.
+Mostrar únicamente el isotipo transparente de OrderCode, sin texto ni fondo, y accesos compactos a comandos, terminal, actualizaciones y ajustes. El proyecto se selecciona en Workspace; su nombre aparece en el encabezado de conversación. Evitar duplicar aquí el selector de modelo, el esfuerzo, el modo o los permisos del composer.
 
 ### 4.2. Navegación lateral
 
@@ -110,6 +110,7 @@ Mostrar: proyecto activo, conversación actual cuando proceda, estado general co
 - Secciones: Workspace, Sessions, Agents, Code Intelligence, Extensions, Activity y Settings.
 - Agrupar los accesos menos frecuentes para no presentar siete paneles abiertos a la vez.
 - El explorador empieza contraído. El panel asociado muestra solo el árbol o lista necesaria y se puede contraer por completo.
+- Workspace se abre y se cierra desde el mismo acceso lateral, desde su botón de cierre o con Escape. En ventanas estrechas también se cierra al pulsar fuera. Al navegar a otra sección se contrae.
 - En proyectos con muchas sesiones, búsqueda y elementos recientes antes que listas interminables.
 
 ### 4.3. Área central

@@ -5,6 +5,7 @@ import { ContextBuilder, compactPriorToolResults, estimateCompactedToolResultSav
 import { CodeIntelligence } from "./code.js";
 import { AgentRegistry } from "./agents.js";
 import { HarnessError } from "./errors.js";
+import { normalizeReasoningEffort, validateReasoningEffort } from "./reasoning.js";
 import { compactOutput, FileLogStore } from "./logging.js";
 import { PermissionEngine } from "./permissions.js";
 import { SqlitePersistence, defaultDataDirectory, newId, type Persistence } from "./persistence.js";
@@ -34,10 +35,12 @@ export interface CreateSessionInput {
   providerId?: string;
   freeOnly?: boolean;
   budget?: ExecutionBudget;
+  reasoningEffort?: string | null;
 }
 
 export interface RunInput {
   sessionId: string;
+  reasoningEffort?: string | null;
   goal: string;
   modelId?: string;
   providerId?: string;
@@ -197,6 +200,7 @@ export class HarnessRuntime {
       ...(input.modelId ? { modelId: input.modelId } : {}),
       ...(input.providerId ? { providerId: input.providerId } : {}),
       freeOnly: input.freeOnly ?? false,
+      reasoningEffort: normalizeReasoningEffort(input.reasoningEffort),
       budget: normalizeBudget(input.budget),
       mode: input.mode ?? "build", permissionProfile: input.permissionProfile ?? "guided", state: "CREATED",
     });
@@ -210,7 +214,7 @@ export class HarnessRuntime {
     return session;
   }
 
-  updateSession(sessionId: string, patch: Partial<Pick<SessionRecord, "title" | "modelId" | "providerId" | "freeOnly" | "budget" | "mode" | "permissionProfile">>): SessionRecord {
+  updateSession(sessionId: string, patch: Partial<Pick<SessionRecord, "title" | "modelId" | "providerId" | "freeOnly" | "budget" | "mode" | "permissionProfile">> & { reasoningEffort?: string | null }): SessionRecord {
     const current = this.getSession(sessionId);
     if (this.activeRuns.has(sessionId)) throw new HarnessError("SESSION_BUSY", "Pause or finish the active run before changing session settings.");
     if (current.state === "WAITING_APPROVAL" && Object.keys(patch).some((key) => key !== "title")) throw new HarnessError("APPROVAL_PENDING", "Resolve the pending approval before changing the model, mode, permissions, or budget.");
@@ -218,7 +222,9 @@ export class HarnessRuntime {
     if (patch.permissionProfile !== undefined && !["reading", "guided", "auto", "advanced"].includes(patch.permissionProfile)) throw new HarnessError("INVALID_PERMISSION_PROFILE", "Permission profile is not supported.");
     if (patch.freeOnly !== undefined && typeof patch.freeOnly !== "boolean") throw new HarnessError("INVALID_FREE_ONLY", "Free Only must be a boolean.");
     if (patch.budget !== undefined) patch = { ...patch, budget: normalizeBudget(patch.budget) };
-    return this.persistence.updateSession(sessionId, patch);
+    const modelChanged = patch.modelId !== undefined && patch.modelId !== current.modelId || patch.providerId !== undefined && patch.providerId !== current.providerId;
+    const { reasoningEffort, ...settings } = patch;
+    return this.persistence.updateSession(sessionId, { ...settings, ...(reasoningEffort !== undefined || modelChanged ? { reasoningEffort: normalizeReasoningEffort(reasoningEffort) } : {}) });
   }
 
   listSessions(projectPath?: string): SessionRecord[] {
@@ -296,8 +302,10 @@ export class HarnessRuntime {
       if (duration === 0 || session.budget?.maxInputTokens === 0 || session.budget?.maxOutputTokens === 0) throw new HarnessError("EXECUTION_BUDGET_REACHED", "The configured session budget does not allow an agent test.");
       let selected: ProviderModel | undefined;
       const costCeiling = session.budget?.maxCostUsd;
-      if (session.freeOnly || costCeiling !== null && costCeiling !== undefined) {
+      if (session.reasoningEffort || session.freeOnly || costCeiling !== null && costCeiling !== undefined) {
         selected = (await provider.listModels(controller.signal)).find((model) => model.id === session.modelId);
+        validateReasoningEffort(session.reasoningEffort, selected?.reasoningEfforts, session.modelId);
+        if (selected && !selected.available) throw new HarnessError("MODEL_UNAVAILABLE", selected.availabilityReason ?? "The selected model is not available through this connection.");
         if (session.freeOnly && (!selected || (selected.priceKind !== "free" && selected.priceKind !== "local"))) throw new HarnessError("FREE_ONLY_BLOCKED", "Free Only blocked the agent test because the selected model does not have verified free or local pricing.");
         if (costCeiling !== null && costCeiling !== undefined && !selected?.pricing) throw new HarnessError("COST_BUDGET_UNAVAILABLE", "The agent test needs verified model pricing to enforce the session cost ceiling.");
       }
@@ -327,6 +335,7 @@ export class HarnessRuntime {
       this.persistence.recordUsageCall(usageRecord);
       const turn = await provider.complete({
         model: session.modelId,
+        reasoningEffort: session.reasoningEffort,
         maxOutputTokens,
         messages,
         tools: [], signal: controller.signal,
@@ -351,6 +360,7 @@ export class HarnessRuntime {
       ...(input.modelId ? { modelId: input.modelId } : {}),
       ...(input.providerId ? { providerId: input.providerId } : {}),
       ...(input.freeOnly === undefined ? {} : { freeOnly: input.freeOnly }),
+      ...(input.reasoningEffort !== undefined || input.modelId !== undefined && input.modelId !== current.modelId || input.providerId !== undefined && input.providerId !== current.providerId ? { reasoningEffort: normalizeReasoningEffort(input.reasoningEffort) } : {}),
       ...(input.mode ? { mode: input.mode } : {}),
       ...(input.permissionProfile ? { permissionProfile: input.permissionProfile } : {}),
     });
@@ -384,10 +394,12 @@ export class HarnessRuntime {
       if (!provider) throw new HarnessError("PROVIDER_NOT_FOUND", `Provider not found: ${providerId}`);
       if (!provider.configured) return this.waitingForModel(session.id, runId, [], usage, startedAt, `${provider.label} is not configured. Add credentials in Settings.`);
       let selectedModel: ProviderModel | undefined;
-      if (session.freeOnly || session.budget?.maxCostUsd !== null && session.budget?.maxCostUsd !== undefined) {
+      if (session.reasoningEffort || session.freeOnly || session.budget?.maxCostUsd !== null && session.budget?.maxCostUsd !== undefined) {
         try {
           const models = await provider.listModels(controller.signal);
           selectedModel = models.find((item) => item.id === modelId);
+          validateReasoningEffort(session.reasoningEffort, selectedModel?.reasoningEfforts, modelId);
+          if (selectedModel && !selectedModel.available) return this.waitingForModel(session.id, runId, [], usage, startedAt, selectedModel.availabilityReason ?? "The selected model is not available through this connection.");
           if (session.freeOnly && (!selectedModel || (selectedModel.priceKind !== "free" && selectedModel.priceKind !== "local"))) {
             return this.waitingForModel(session.id, runId, [], usage, startedAt, "Free Only blocked this run because the selected model does not have verified free or local pricing. Select a verified free or local model; no inference was sent.");
           }
@@ -396,7 +408,7 @@ export class HarnessRuntime {
           }
         } catch (error) {
           if (controller.signal.aborted) throw error;
-          const reason = session.freeOnly ? "Free Only could not verify the selected model's current pricing, so no inference was sent." : "The cost ceiling could not verify current model pricing, so no inference was sent.";
+          const reason = session.reasoningEffort ? "The selected reasoning effort could not be verified; no inference was sent." : session.freeOnly ? "Free Only could not verify the selected model's current pricing, so no inference was sent." : "The cost ceiling could not verify current model pricing, so no inference was sent.";
           return this.waitingForModel(session.id, runId, [], usage, startedAt, `${reason} ${error instanceof Error ? error.message : String(error)}`);
         }
       }
@@ -614,7 +626,7 @@ export class HarnessRuntime {
         };
         let turn: ProviderTurn;
         try {
-          turn = await provider.stream({ model: checkpoint.modelId, ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }), messages: requestContext.messages, tools: availableTools, signal, stream: true }, queueChunk);
+          turn = await provider.stream({ model: checkpoint.modelId, reasoningEffort: session.reasoningEffort, ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }), messages: requestContext.messages, tools: availableTools, signal, stream: true }, queueChunk);
         } finally {
           flushChunk();
         }
@@ -828,6 +840,7 @@ export class HarnessRuntime {
       this.persistence.recordUsageCall(usageRecord);
       const turn = await provider.stream({
         model: checkpoint.modelId,
+        reasoningEffort: session.reasoningEffort,
         ...(specialistOutputLimit === undefined ? {} : { maxOutputTokens: specialistOutputLimit }),
         stream: true,
         tools: [],

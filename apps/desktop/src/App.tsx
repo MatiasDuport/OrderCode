@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { Activity, BookOpen, Bot, Code2, FolderOpen, GitBranch, Moon, PanelLeftClose, PanelLeftOpen, Puzzle, Server, Sun } from 'lucide-react';
+import { Activity, BookOpen, Bot, Code2, FolderOpen, GitBranch, Moon, Puzzle, Server, Sun } from 'lucide-react';
 import { ChatPanel } from './components/ChatPanel';
 import { listen } from '@tauri-apps/api/event';
 const CodeGraphView = lazy(() => import('./components/CodeGraphView').then((module) => ({ default: module.CodeGraphView })));
@@ -424,9 +424,24 @@ export default function App() {
     return () => { cancelled = true; unlisten?.(); };
   }, []);
 
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    const dismiss = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !event.defaultPrevented) set('sidebarOpen', false);
+    };
+    window.addEventListener('keydown', dismiss);
+    return () => window.removeEventListener('keydown', dismiss);
+  }, [sidebarOpen, set]);
+
   const navigateTo = (view: string) => {
+    if (view === 'Workspace') {
+      const current = useDesktopStore.getState();
+      set('currentView', 'Workspace');
+      set('sidebarOpen', current.currentView === 'Workspace' ? !current.sidebarOpen : true);
+      return;
+    }
     set('currentView', view);
-    if (window.innerWidth <= 960) set('sidebarOpen', false);
+    set('sidebarOpen', false);
   };
 
   const handleUpdateAction = () => {
@@ -529,10 +544,10 @@ export default function App() {
   const systemReducedMotion = useReducedMotion();
   const motionDisabled = reducedMotion || systemReducedMotion;
   const isApproval = runtimeState === 'WAITING_APPROVAL' && !!pendingPermission;
-  return <MotionConfig reducedMotion={motionDisabled ? 'always' : 'never'} transition={{ duration: motionDisabled ? 0 : .2, ease: [.2, .7, .2, 1] }}><div className="app-shell"><TopBar onToggleSidebar={() => set('sidebarOpen', !sidebarOpen)} onToggleTerminal={() => set('terminalOpen', !terminalOpen)} onCommandPalette={() => setCommandPaletteOpen(true)} onOpenWorkspace={() => { set('currentView', 'Workspace'); set('sidebarOpen', true); }} onSettings={() => navigateTo('Settings')} onUpdateAction={handleUpdateAction} /><div className="app-body"><NavRail active={currentView} onSelect={navigateTo} /><AnimatePresence initial={false}>{sidebarOpen && <motion.div className="sidebar-motion" initial={motionDisabled ? false : { width: 0, opacity: 0 }} animate={{ width: 240, opacity: 1 }} exit={{ width: 0, opacity: 0 }}><WorkspaceSidebar /></motion.div>}</AnimatePresence><div className="work-stack"><section className={`work-area ${reviewOpen ? 'has-review' : ''}`}>
+  return <MotionConfig reducedMotion={motionDisabled ? 'always' : 'never'} transition={{ duration: motionDisabled ? 0 : .2, ease: [.2, .7, .2, 1] }}><div className="app-shell"><TopBar onToggleTerminal={() => set('terminalOpen', !terminalOpen)} onCommandPalette={() => setCommandPaletteOpen(true)} onSettings={() => navigateTo('Settings')} onUpdateAction={handleUpdateAction} /><div className="app-body"><NavRail active={currentView} workspaceOpen={sidebarOpen} onSelect={navigateTo} />{sidebarOpen && <button type="button" className="workspace-panel-backdrop" aria-label="Cerrar Workspace" onClick={() => set('sidebarOpen', false)} />}<AnimatePresence initial={false}>{sidebarOpen && <motion.div id="workspace-panel" className="sidebar-motion" initial={motionDisabled ? false : { width: 0, opacity: 0 }} animate={{ width: 216, opacity: 1 }} exit={{ width: 0, opacity: 0 }}><WorkspaceSidebar onClose={() => set('sidebarOpen', false)} /></motion.div>}</AnimatePresence><div className="work-stack"><section className={`work-area ${reviewOpen ? 'has-review' : ''}`}>
     <motion.div className="view-transition" key={currentView} initial={motionDisabled ? false : { opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}>
-    {currentView === 'Workspace' ? <ChatPanel onOpenReview={() => set('reviewOpen', true)} onOpenSettings={() => set('currentView', 'Settings')} /> : <Surface view={currentView} onSelectSession={openSession} onOpenSettings={() => set('currentView', 'Workspace')} />}
+    {currentView === 'Workspace' ? <ChatPanel onOpenReview={() => set('reviewOpen', true)} onOpenSettings={() => navigateTo('Settings')} /> : <Surface view={currentView} onSelectSession={openSession} onOpenSettings={() => navigateTo('Workspace')} />}
     </motion.div>
     {reviewOpen && <Suspense fallback={<div className="surface-empty" role="status">Cargando revisión…</div>}><ReviewPanel onClose={() => set('reviewOpen', false)} /></Suspense>}
-  </section><div className={`terminal-dock ${terminalOpen ? '' : 'is-closed'}`}>{(terminalOpen || terminalSessions.length > 0) && <Suspense fallback={null}><TerminalPanel /></Suspense>}</div></div></div><StatusBar />{bootstrapError && <div className="bootstrap-alert" role="status"><span>{bootstrapError}</span><button type="button" onClick={() => setBootstrapError('')}>Cerrar</button></div>}<Localized><div className="theme-switch"><button type="button" className={theme === 'dark' ? 'is-active' : ''} onClick={() => set('theme', 'dark')} aria-label="Tema oscuro"><Moon size={13} /></button><button type="button" className={theme === 'light' ? 'is-active' : ''} onClick={() => set('theme', 'light')} aria-label="Tema claro"><Sun size={13} /></button></div></Localized>{commandPaletteOpen && <Suspense fallback={null}><CommandPalette open onClose={() => setCommandPaletteOpen(false)} onAction={(action) => { setCommandPaletteOpen(false); if (action === 'Workspace') navigateTo('Workspace'); else if (action === 'Review') set('reviewOpen', true); else if (action === 'Terminal') set('terminalOpen', true); else navigateTo(action); }} /></Suspense>}{isApproval && <Suspense fallback={null}><ApprovalDialog request={pendingPermission} onReject={() => void approvePermission('reject')} onApprove={(decision) => void approvePermission(decision)} /></Suspense>}<Localized><div className="mobile-panel-toggle"><button type="button" onClick={() => set('sidebarOpen', !sidebarOpen)} aria-label="Alternar sidebar">{sidebarOpen ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}</button></div></Localized></div></MotionConfig>;
+  </section><div className={`terminal-dock ${terminalOpen ? '' : 'is-closed'}`}>{(terminalOpen || terminalSessions.length > 0) && <Suspense fallback={null}><TerminalPanel /></Suspense>}</div></div></div><StatusBar />{bootstrapError && <div className="bootstrap-alert" role="status"><span>{bootstrapError}</span><button type="button" onClick={() => setBootstrapError('')}>Cerrar</button></div>}<Localized><div className="theme-switch"><button type="button" className={theme === 'dark' ? 'is-active' : ''} onClick={() => set('theme', 'dark')} aria-label="Tema oscuro"><Moon size={13} /></button><button type="button" className={theme === 'light' ? 'is-active' : ''} onClick={() => set('theme', 'light')} aria-label="Tema claro"><Sun size={13} /></button></div></Localized>{commandPaletteOpen && <Suspense fallback={null}><CommandPalette open onClose={() => setCommandPaletteOpen(false)} onAction={(action) => { setCommandPaletteOpen(false); if (action === 'Workspace') navigateTo('Workspace'); else if (action === 'Review') set('reviewOpen', true); else if (action === 'Terminal') set('terminalOpen', true); else navigateTo(action); }} /></Suspense>}{isApproval && <Suspense fallback={null}><ApprovalDialog request={pendingPermission} onReject={() => void approvePermission('reject')} onApprove={(decision) => void approvePermission(decision)} /></Suspense>}</div></MotionConfig>;
 }

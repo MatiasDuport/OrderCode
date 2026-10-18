@@ -20,13 +20,15 @@ const permissions: Array<{ name: PermissionProfile; description: string }> = [
   { name: 'Auto', description: 'Permitir acciones seguras; pedir autorización para acciones sensibles' },
   { name: 'Avanzado', description: 'Permisos amplios dentro del workspace' },
 ];
+const effortLabels: Record<string, string> = { none: 'Sin esfuerzo adicional', minimal: 'Mínimo', low: 'Bajo', medium: 'Medio', high: 'Alto', xhigh: 'Extra alto', max: 'Máximo' };
+const effortLabel = (value: string) => effortLabels[value] ?? value;
 
 function modelProviderLabel(providerId: string): string {
   return providerId === 'opencode_zen' ? 'OpenCode' : providerId === 'openai_chatgpt' ? 'ChatGPT' : providerId === 'xai_plan' ? 'SuperGrok' : providerId === 'openrouter' ? 'OpenRouter' : providerId === 'ollama' ? 'Ollama' : providerId === 'lmstudio' ? 'LM Studio' : providerId;
 }
 
 function modelRank(item: ProviderModel, recentModels: string[], favoriteModels: string[]): number[] {
-  const tier = item.priceKind === 'free' ? 0 : item.priceKind === 'subscription' ? 1 : item.priceKind === 'local' ? 2 : item.priceKind === 'paid' ? 3 : 4;
+  const tier = item.availabilityReason ? 5 : item.priceKind === 'free' ? 0 : item.priceKind === 'subscription' ? 1 : item.priceKind === 'local' ? 2 : item.priceKind === 'paid' ? 3 : 4;
   const key = `${item.providerId}::${item.id}`;
   const favorite = favoriteModels.includes(key);
   const recent = recentModels.indexOf(key);
@@ -62,9 +64,9 @@ function ChangedFiles({ onOpenReview }: { onOpenReview: () => void }) {
   return <Localized><section className="changed-files"><div className="section-heading"><strong>Cambios de esta ejecución</strong><span className="panel-title-spacer" /><span className="delta">{files.length} archivo{files.length === 1 ? '' : 's'}</span></div>{files.map((name) => <div className="changed-file" key={name}><span className="code-badge">{name.split('.').pop()?.toUpperCase() ?? 'FILE'}</span><span>{name}</span></div>)}<button className="review-link" type="button" onClick={onOpenReview}>Revisar cambios <Kbd>Ctrl ⇧ D</Kbd></button></section></Localized>;
 }
 
-function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings }: { onSubmit: (content: string) => Promise<void>; onCancel: () => void; onConfigError: (error: string) => void; onOpenSettings: () => void }) {
+function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings }: { onSubmit: (content: string) => Promise<boolean>; onCancel: () => void; onConfigError: (error: string) => void; onOpenSettings: () => void }) {
   const [value, setValue] = useState('');
-  const [open, setOpen] = useState<'model' | 'mode' | 'permission' | null>(null);
+  const [open, setOpen] = useState<'model' | 'effort' | 'mode' | 'permission' | null>(null);
   const [modelQuery, setModelQuery] = useState('');
   const [models, setModels] = useState<ProviderModel[]>([]);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
@@ -77,7 +79,7 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings }: { onSub
   const loadingCatalogs = useRef(new Set<string>());
   const failedCatalogs = useRef(new Set<string>());
   const catalogRevision = useRef(0);
-  const { model, mode, permission, freeOnly, runtimeState, session, health: brokerHealth, hiddenModelProviders, showAdvancedModels, recentModels, favoriteModels, set } = useDesktopStore();
+  const { model, reasoningEffort, mode, permission, freeOnly, runtimeState, session, health: brokerHealth, hiddenModelProviders, showAdvancedModels, recentModels, favoriteModels, set } = useDesktopStore();
   useEffect(() => {
     let current = true;
     const refresh = async () => {
@@ -121,24 +123,28 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings }: { onSub
     setCatalogBusy(true);
     setDiscovery('Cargando modelos destacados…');
     for (const provider of pending) loadingCatalogs.current.add(provider.id);
-    void Promise.allSettled(pending.map(async (provider) => ({ providerId: provider.id, models: await listProviderModels(provider.id) }))).then((results) => {
-      if (catalogRevision.current !== revision) return;
-      let failed = false;
-      for (const [index, result] of results.entries()) {
-        const providerId = pending[index].id;
-        loadingCatalogs.current.delete(providerId);
-        if (result.status === 'fulfilled') { catalogCache.current.set(result.value.providerId, result.value.models); failedCatalogs.current.delete(providerId); }
-        else { failedCatalogs.current.add(providerId); failed = true; }
-      }
-      const found = included.flatMap((provider) => catalogCache.current.get(provider.id) ?? []);
-      setModels(found);
-      setCatalogBusy(false);
-      setCatalogError(failed || targets.some((provider) => failedCatalogs.current.has(provider.id)));
-      setDiscovery(failed ? 'No se pudo cargar un catálogo. Revisa la conexión e inténtalo de nuevo.' : found.length ? '' : included.length ? 'No se encontraron modelos en los proveedores seleccionados.' : 'Activa un proveedor en Ajustes para descubrir modelos.');
-    });
+    for (const provider of pending) {
+      void listProviderModels(provider.id).then((found) => {
+        if (catalogRevision.current !== revision) return;
+        catalogCache.current.set(provider.id, found);
+        failedCatalogs.current.delete(provider.id);
+      }).catch(() => {
+        if (catalogRevision.current === revision) failedCatalogs.current.add(provider.id);
+      }).finally(() => {
+        if (catalogRevision.current !== revision) return;
+        loadingCatalogs.current.delete(provider.id);
+        const found = included.flatMap((item) => catalogCache.current.get(item.id) ?? []);
+        const failed = targets.some((item) => failedCatalogs.current.has(item.id));
+        setModels(found);
+        setCatalogBusy(targets.some((item) => loadingCatalogs.current.has(item.id)));
+        setCatalogError(failed);
+        setDiscovery(failed ? 'No se pudo cargar un catálogo. Revisa la conexión e inténtalo de nuevo.' : found.length ? '' : included.length ? 'No se encontraron modelos en los proveedores seleccionados.' : 'Activa un proveedor en Ajustes para descubrir modelos.');
+      });
+    }
   }, [providers, hiddenModelProviders, advancedCatalog, catalogRetry, catalogRevision.current]);
 
   const selectedModel = models.find((item) => model === `${item.providerId}::${item.id}`);
+  const efforts = selectedModel?.reasoningEfforts ?? [];
   const modelNeedsCredentials = Boolean(selectedModel && !selectedModel.available);
   const freeOnlyBlocked = freeOnly && (!selectedModel || (selectedModel.priceKind !== 'free' && selectedModel.priceKind !== 'local'));
   const filteredModels = useMemo(() => {
@@ -166,8 +172,8 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings }: { onSub
   const hasMoreModels = models.some((item) => !hiddenModelProviders.includes(item.providerId) && (!freeOnly || item.priceKind === 'free' || item.priceKind === 'local')) && models.filter((item) => !hiddenModelProviders.includes(item.providerId) && (!freeOnly || item.priceKind === 'free' || item.priceKind === 'local')).length > filteredModels.length;
   const hasDeferredCatalog = providers.some((provider) => provider.id === 'openrouter' && !hiddenModelProviders.includes(provider.id) && !catalogCache.current.has(provider.id));
   const retryCatalogs = () => { for (const provider of providers) if (failedCatalogs.current.has(provider.id) && !hiddenModelProviders.includes(provider.id)) failedCatalogs.current.delete(provider.id); setCatalogRetry((value) => value + 1); };
-  const submit = async () => { const trimmed = value.trim(); if (!trimmed || ['RUNNING', 'PREPARING', 'WAITING_APPROVAL'].includes(useDesktopStore.getState().runtimeState)) return; if (modelNeedsCredentials) { onConfigError(selectedModel?.providerId === 'openai_chatgpt' ? 'Conecta tu cuenta ChatGPT en Ajustes antes de usar el modelo.' : 'Conecta la clave API de este proveedor en Ajustes antes de usar el modelo.'); return; } if (freeOnlyBlocked) { onConfigError('Free Only necesita un modelo con precio gratuito verificado o inferencia local. No se enviará la solicitud con el modelo actual.'); return; } setValue(''); await onSubmit(trimmed); };
-  const changeSetting = async (patch: Partial<Pick<SessionRecord, 'mode' | 'permission' | 'model' | 'providerId' | 'freeOnly'>>): Promise<void> => {
+  const submit = async () => { const trimmed = value.trim(); if (!trimmed || ['RUNNING', 'PREPARING', 'WAITING_APPROVAL'].includes(useDesktopStore.getState().runtimeState)) return; if (modelNeedsCredentials) { onConfigError(selectedModel?.availabilityReason ?? (selectedModel?.providerId === 'openai_chatgpt' ? 'Conecta tu cuenta ChatGPT en Ajustes antes de usar el modelo.' : 'Conecta la clave API de este proveedor en Ajustes antes de usar el modelo.')); return; } if (freeOnlyBlocked) { onConfigError('Free Only necesita un modelo con precio gratuito verificado o inferencia local. No se enviará la solicitud con el modelo actual.'); return; } setValue(''); if (!await onSubmit(trimmed)) setValue((current) => current || trimmed); };
+  const changeSetting = async (patch: Partial<Pick<SessionRecord, 'mode' | 'permission' | 'model' | 'providerId' | 'freeOnly' | 'reasoningEffort'>>): Promise<void> => {
     const active = useDesktopStore.getState().session;
     if (!active) return;
     const updated = { ...active, ...patch };
@@ -181,11 +187,11 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings }: { onSub
   const renderModelOption = (item: ProviderModel) => {
     const key = `${item.providerId}::${item.id}`;
     const favorite = favoriteModels.includes(key);
-    const price = item.priceKind === 'free' ? item.providerId === 'opencode_zen' ? 'Gratis verificado · sin clave' : 'Gratis verificado' : item.priceKind === 'local' ? 'Inferencia local · sin tarifa API' : item.priceKind === 'subscription' ? 'Uso de tu plan · sujeto a límites' : item.pricing ? `$${item.pricing.inputPerMillionUsd.toFixed(6)} / $${item.pricing.outputPerMillionUsd.toFixed(6)} por 1M tokens` : 'Precio no verificado';
-    const needsConnection = item.providerId === 'openai_chatgpt' ? 'Conecta tu cuenta en Ajustes' : item.providerId === 'xai_plan' ? 'Conecta tu cuenta SuperGrok en Ajustes' : 'Conecta la clave API en Ajustes';
-    const description = `${price}${item.available ? '' : ` · ${needsConnection}`}`;
+    const price = item.priceKind === 'free' ? 'Gratis verificado' : item.priceKind === 'local' ? 'Inferencia local · sin tarifa API' : item.priceKind === 'subscription' ? 'Uso de tu plan · sujeto a límites' : item.pricing ? `$${item.pricing.inputPerMillionUsd.toFixed(6)} / $${item.pricing.outputPerMillionUsd.toFixed(6)} por 1M tokens` : 'Precio no verificado';
+    const needsConnection = item.availabilityReason ?? (item.providerId === 'openai_chatgpt' ? 'Conecta tu cuenta en Ajustes' : item.providerId === 'xai_plan' ? 'Conecta tu cuenta SuperGrok en Ajustes' : 'Conecta la clave API en Ajustes');
+    const description = item.availabilityReason ?? `${price}${item.available ? '' : ` · ${needsConnection}`}`;
     return <div className="model-option-row" key={key}>
-      <DropdownOption active={model === key} description={description} onClick={() => { if (!item.available) { setOpen(null); onOpenSettings(); return; } set('model', key); set('recentModels', [key, ...recentModels.filter((value) => value !== key)].slice(0, 5)); setOpen(null); if (session) void changeSetting({ model: item.id, providerId: item.providerId }); }}>{item.label}</DropdownOption>
+      <DropdownOption active={model === key} disabled={Boolean(item.availabilityReason)} description={description} onClick={() => { if (!item.available) { setOpen(null); onOpenSettings(); return; } const effort = reasoningEffort && item.reasoningEfforts?.includes(reasoningEffort) ? reasoningEffort : undefined; set('model', key); set('reasoningEffort', effort); set('recentModels', [key, ...recentModels.filter((value) => value !== key)].slice(0, 5)); setOpen(null); if (session) void changeSetting({ model: item.id, providerId: item.providerId, reasoningEffort: effort }); }}>{item.label}</DropdownOption>
       <button type="button" className={`model-favorite-button ${favorite ? 'is-active' : ''}`} aria-label={`${favorite ? 'Quitar de favoritos' : 'Añadir a favoritos'}: ${item.label}`} aria-pressed={favorite} title={favorite ? 'Quitar de favoritos' : 'Añadir a favoritos'} onClick={(event) => { event.stopPropagation(); set('favoriteModels', favorite ? favoriteModels.filter((value) => value !== key) : [...favoriteModels, key].slice(-100)); }}><Star size={13} /></button>
     </div>;
   };
@@ -201,68 +207,80 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings }: { onSub
         {advancedCatalog && (hasMoreModels || showAllNow === true) && <button type="button" className="model-catalog-toggle" onClick={() => { setModelQuery(''); setShowAllNow(false); }}><span>Volver a recomendados</span><small>Lista breve con gratuitos, favoritos y recientes primero</small></button>}
         {!filteredModels.length && <div className="dropdown-empty">{freeOnly ? 'No hay modelos locales o gratuitos con precio verificado. Los modelos con precio desconocido quedan bloqueados.' : discovery || 'No hay resultados.'}<button type="button" onClick={() => { setOpen(null); onOpenSettings(); }}>Abrir Ajustes</button></div>}
       </Dropdown>
+      <Dropdown label="Esfuerzo" value={`Esfuerzo: ${reasoningEffort ? effortLabel(reasoningEffort) : 'Auto'}`} open={open === 'effort'} onOpenChange={(value) => setOpen((current) => value ? 'effort' : current === 'effort' ? null : current)} className="composer-dropdown composer-dropdown--effort">
+        <div className="dropdown-search">Esfuerzo del modelo</div>
+        <DropdownOption active={!reasoningEffort} description={efforts.length ? 'Usar el nivel predeterminado del proveedor.' : 'Este modelo no expone niveles de esfuerzo configurables.'} onClick={() => { set('reasoningEffort', undefined); setOpen(null); void changeSetting({ reasoningEffort: undefined }); }}>Automático</DropdownOption>
+        {efforts.map((effort) => <DropdownOption key={effort} active={reasoningEffort === effort} onClick={() => { set('reasoningEffort', effort); setOpen(null); void changeSetting({ reasoningEffort: effort }); }}>{effortLabel(effort)}</DropdownOption>)}
+      </Dropdown>
       <Dropdown label="Modo" value={mode} open={open === 'mode'} onOpenChange={(value) => setOpen((current) => value ? 'mode' : current === 'mode' ? null : current)} className="composer-dropdown"><div className="dropdown-search"><ShieldCheck size={13} /> Modo de trabajo</div>{modes.map((item) => <DropdownOption key={item.name} active={mode === item.name} description={item.description} onClick={() => { set('mode', item.name); setOpen(null); void changeSetting({ mode: item.name }); }}>{item.name}</DropdownOption>)}</Dropdown>
       <Dropdown label="Permisos" value={permission} open={open === 'permission'} onOpenChange={(value) => setOpen((current) => value ? 'permission' : current === 'permission' ? null : current)} className="composer-dropdown composer-dropdown--permission"><div className="dropdown-search"><ShieldCheck size={13} /> Perfil de permisos</div>{permissions.map((item) => <DropdownOption key={item.name} active={permission === item.name} description={item.description} onClick={() => { set('permission', item.name); setOpen(null); void changeSetting({ permission: item.name }); }}>{item.name}</DropdownOption>)}</Dropdown>
       <span className="control-spacer" />
       {runtimeState === 'RUNNING' || runtimeState === 'PREPARING' ? <button className="send-button send-button--stop" type="button" aria-label="Detener ejecución" onClick={onCancel}><Square size={12} fill="currentColor" /></button> : <button className="send-button" type="submit" aria-label="Enviar mensaje" disabled={!value.trim() || runtimeState === 'WAITING_APPROVAL' || modelNeedsCredentials || freeOnlyBlocked}><Send size={15} /></button>}
     </div>
-    <div className="composer-hint"><span>{modelNeedsCredentials ? selectedModel?.providerId === 'openai_chatgpt' ? 'Conecta tu cuenta ChatGPT en Ajustes para usar estos modelos.' : 'Conecta la clave API del proveedor en Ajustes para usar este catálogo.' : freeOnlyBlocked ? 'Selecciona un modelo gratuito verificado o local para continuar.' : runtimeState === 'RUNNING' ? 'Ejecución real · actividad guardada en la sesión' : 'Enter para enviar · Shift+Enter para nueva línea'}</span><span>{runtimeState === 'RUNNING' ? 'Esc para detener' : session ? mode : 'Conecta un workspace antes de ejecutar'}</span></div>
+    <div className="composer-hint"><span>{modelNeedsCredentials ? selectedModel?.availabilityReason ?? (selectedModel?.providerId === 'openai_chatgpt' ? 'Conecta tu cuenta ChatGPT en Ajustes para usar estos modelos.' : 'Conecta la clave API del proveedor en Ajustes para usar este catálogo.') : freeOnlyBlocked ? 'Selecciona un modelo gratuito verificado o local para continuar.' : runtimeState === 'RUNNING' ? 'Ejecución real · actividad guardada en la sesión' : 'Enter para enviar · Shift+Enter para nueva línea'}</span><span>{runtimeState === 'RUNNING' ? 'Esc para detener' : session ? mode : 'Conecta un workspace antes de ejecutar'}</span></div>
   </form></Localized>;
 }
 
 export function ChatPanel({ onOpenReview, onOpenSettings }: { onOpenReview: () => void; onOpenSettings: () => void }) {
-  const { messages, streamingText, mode, permission, model, freeOnly, session, agentId, runtimeState, addMessage, addEvent, set } = useDesktopStore();
+  const { messages, streamingText, mode, permission, model, reasoningEffort, freeOnly, session, agentId, runtimeState, addMessage, addEvent, set } = useDesktopStore();
   const [error, setError] = useState<string | null>(null);
-  const handleSubmit = async (content: string) => {
+  const [openingWorkspace, setOpeningWorkspace] = useState(false);
+  const handleSubmit = async (content: string): Promise<boolean> => {
     const initial = useDesktopStore.getState();
-    if (['RUNNING', 'PREPARING', 'WAITING_APPROVAL'].includes(initial.runtimeState)) return;
+    if (['RUNNING', 'PREPARING', 'WAITING_APPROVAL'].includes(initial.runtimeState)) return false;
+    let submitted = false;
     setError(null);
     set('runtimeState', 'PREPARING');
     let activeSession = initial.session;
     let revision = initial.sessionRevision;
     const isCurrent = () => useDesktopStore.getState().sessionRevision === revision && useDesktopStore.getState().session?.id === activeSession?.id;
     const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    addMessage({ id: crypto.randomUUID(), role: 'user', content, timestamp });
     try {
       if (!activeSession) {
         if (!model) throw new Error('Selecciona un modelo descubierto y conecta un workspace antes de ejecutar.');
         const workspace = await pickWorkspaceFolder();
-        if (!isCurrent()) return;
-        if (!workspace) throw new Error('Selecciona una carpeta desde el panel Workspace para iniciar la sesión.');
-        const created = await createSession({ projectPath: workspace, model, mode, permission, freeOnly });
-        if (!isCurrent()) return;
+        if (!isCurrent()) return false;
+        if (!workspace) { set('runtimeState', initial.runtimeState); return false; }
+        const created = await createSession({ projectPath: workspace, model, reasoningEffort, mode, permission, freeOnly });
+        if (!isCurrent()) return false;
         activeSession = created;
         set('session', activeSession);
         revision = useDesktopStore.getState().sessionRevision;
         set('sessions', [activeSession, ...useDesktopStore.getState().sessions.filter((item) => item.id !== activeSession?.id)]);
       }
+      addMessage({ id: crypto.randomUUID(), role: 'user', content, timestamp });
+      submitted = true;
       set('streamingText', '');
-      await followSessionOperation(activeSession.id, () => sendSessionMessage(activeSession!.id, content, mode, model, permission, activeSession!.providerId, agentId, freeOnly));
+      await followSessionOperation(activeSession.id, () => sendSessionMessage(activeSession!.id, content, mode, model, permission, activeSession!.providerId, agentId, freeOnly, reasoningEffort));
+      return true;
     } catch (cause) {
-      if (!isCurrent()) return;
+      if (!isCurrent()) return submitted;
       const message = cause instanceof Error ? cause.message : String(cause);
       setError(message);
       set('streamingText', '');
       set('runtimeState', 'FAILED');
       if (activeSession) addEvent({ id: crypto.randomUUID(), sessionId: activeSession.id, sequence: 0, state: 'FAILED', summary: 'Ejecución fallida', detail: message });
-      addMessage({ id: crypto.randomUUID(), role: 'assistant', content: `No pude completar la solicitud: ${message}`, timestamp });
+      return submitted;
     }
   };
   const openWorkspace = async () => {
+    if (openingWorkspace || ['RUNNING', 'PREPARING', 'WAITING_APPROVAL'].includes(useDesktopStore.getState().runtimeState)) return;
     setError(null);
+    setOpeningWorkspace(true);
     try {
       const active = useDesktopStore.getState();
       if (active.editorContent !== active.editorOriginal) throw new Error('Guarda o descarta los cambios del editor antes de cambiar de workspace.');
       const projectPath = await pickWorkspaceFolder(session?.projectPath);
       if (!projectPath) return;
-      const next = await createSession({ projectPath, model, mode, permission, freeOnly });
+      const next = await createSession({ projectPath, model, reasoningEffort, mode, permission, freeOnly });
       set('session', next); set('model', next.providerId && next.model ? `${next.providerId}::${next.model}` : next.model); set('freeOnly', next.freeOnly ?? false);
       set('sessions', [next, ...useDesktopStore.getState().sessions.filter((item) => item.id !== next.id)]);
       set('messages', []); set('events', []); set('streamingText', ''); set('pendingPermission', null); set('openFile', null); set('editorContent', ''); set('editorOriginal', '');
       set('runtimeState', next.state); set('sidebarOpen', true); set('health', await health());
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setOpeningWorkspace(false); }
   };
   const empty = !messages.length && !streamingText;
   const stateLabel = runtimeState === 'CREATED' ? 'Listo' : runtimeState.replaceAll('_', ' ').toLowerCase();
-  return <Localized><main className={`chat-panel ${empty ? 'is-empty' : ''}`}><div className="conversation-header"><div><h1>{session ? session.projectPath.split(/[\\/]/).filter(Boolean).at(-1) ?? 'Sesión activa' : 'Nueva sesión'}</h1><p><StatusDot color={runtimeState === 'FAILED' ? 'red' : session ? 'green' : 'muted'} /> {mode} <span>·</span> {error ? 'Error' : stateLabel}</p></div><IconButton icon={MoreHorizontal} label="Más acciones" onClick={onOpenSettings} /></div><div className="conversation-stage"><div className="conversation-scroll">{messages.length ? messages.map((message) => <Message message={message} key={message.id} />) : <div className="conversation-empty"><strong>¿Qué quieres construir?</strong><p>Conecta un workspace, configura un proveedor y elige Plan, Build o Auto.</p></div>}{streamingText && <Message message={{ id: 'assistant-stream', role: 'assistant', content: streamingText, timestamp: 'Ahora' }} />}<ActivityGroup /><ChangedFiles onOpenReview={onOpenReview} />{error && <div className="inline-error"><X size={14} /><span>{error}</span></div>}</div><Composer onSubmit={handleSubmit} onCancel={() => { if (session) { const revision = useDesktopStore.getState().sessionRevision; void cancelSession(session.id).then(() => { if (useDesktopStore.getState().sessionRevision === revision) set('runtimeState', 'CANCELLED'); }).catch((cause) => setError(String(cause))); } }} onConfigError={setError} onOpenSettings={onOpenSettings} />{empty && <div className="workspace-start-actions"><button type="button" onClick={() => void openWorkspace()}><FolderOpen size={15} />Abrir workspace</button><button type="button" onClick={onOpenSettings}><Settings size={15} />Abrir Ajustes</button></div>}</div><div className="chat-footer">{session && <button type="button" onClick={onOpenReview}>Abrir revisión de cambios</button>}<span className="panel-title-spacer" /><span>{session ? 'Runtime local · sesión persistente' : 'Sin sesión activa'}</span></div></main></Localized>;
+  return <Localized><main className={`chat-panel ${empty ? 'is-empty' : ''}`}><div className="conversation-header"><div><h1>{session ? session.projectPath.split(/[\\/]/).filter(Boolean).at(-1) ?? 'Sesión activa' : 'Nueva sesión'}</h1><p><StatusDot color={runtimeState === 'FAILED' ? 'red' : session ? 'green' : 'muted'} /> {mode} <span>·</span> {error ? 'Error' : stateLabel}</p></div><IconButton icon={MoreHorizontal} label="Más acciones" onClick={onOpenSettings} /></div><div className="conversation-stage"><div className="conversation-scroll">{messages.length ? messages.map((message) => <Message message={message} key={message.id} />) : <div className="conversation-empty"><strong>¿Qué quieres construir?</strong><p>Conecta un workspace, configura un proveedor y elige Plan, Build o Auto.</p></div>}{streamingText && <Message message={{ id: 'assistant-stream', role: 'assistant', content: streamingText, timestamp: 'Ahora' }} />}<ActivityGroup /><ChangedFiles onOpenReview={onOpenReview} />{error && <div className="inline-error" role="alert"><X size={14} /><span>{error}</span></div>}</div><Composer onSubmit={handleSubmit} onCancel={() => { if (session) { const revision = useDesktopStore.getState().sessionRevision; void cancelSession(session.id).then(() => { if (useDesktopStore.getState().sessionRevision === revision) set('runtimeState', 'CANCELLED'); }).catch((cause) => setError(String(cause))); } }} onConfigError={setError} onOpenSettings={onOpenSettings} />{empty && <div className="workspace-start-actions"><button type="button" disabled={openingWorkspace} onClick={() => void openWorkspace()}><FolderOpen size={15} />Abrir workspace</button><button type="button" onClick={onOpenSettings}><Settings size={15} />Abrir Ajustes</button></div>}</div><div className="chat-footer">{session && <button type="button" onClick={onOpenReview}>Abrir revisión de cambios</button>}<span className="panel-title-spacer" /><span>{session ? 'Runtime local · sesión persistente' : 'Sin sesión activa'}</span></div></main></Localized>;
 }

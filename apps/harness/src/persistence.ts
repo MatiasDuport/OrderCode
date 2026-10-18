@@ -31,7 +31,7 @@ export interface Persistence {
   createSession(input: Omit<SessionRecord, "createdAt" | "updatedAt" | "sequence">): SessionRecord;
   getSession(id: string): SessionRecord | undefined;
   listSessions(projectPath?: string, limit?: number): SessionRecord[];
-  updateSession(id: string, patch: Partial<Pick<SessionRecord, "title" | "modelId" | "providerId" | "freeOnly" | "budget" | "mode" | "permissionProfile" | "state">>): SessionRecord;
+  updateSession(id: string, patch: Partial<Pick<SessionRecord, "title" | "modelId" | "providerId" | "freeOnly" | "budget" | "reasoningEffort" | "mode" | "permissionProfile" | "state">>): SessionRecord;
   listMessages(sessionId: string, limit?: number): MessageRecord[];
   appendMessage(message: MessageRecord): void;
   appendEvent(event: HarnessEvent): void;
@@ -133,6 +133,7 @@ export class SqlitePersistence implements Persistence {
     `);
     const sessionColumns = new Set((this.db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>).map((column) => column.name));
     if (!sessionColumns.has("free_only")) this.db.exec("ALTER TABLE sessions ADD COLUMN free_only INTEGER NOT NULL DEFAULT 0");
+    if (!sessionColumns.has("reasoning_effort")) this.db.exec("ALTER TABLE sessions ADD COLUMN reasoning_effort TEXT");
     if (!sessionColumns.has("budget_json")) this.db.exec("ALTER TABLE sessions ADD COLUMN budget_json TEXT NOT NULL DEFAULT '{}'");
     const messageColumns = new Set((this.db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>).map((column) => column.name));
     if (!messageColumns.has("tool_call_id")) this.db.exec("ALTER TABLE messages ADD COLUMN tool_call_id TEXT");
@@ -251,29 +252,29 @@ export class SqlitePersistence implements Persistence {
   createSession(input: Omit<SessionRecord, "createdAt" | "updatedAt" | "sequence">): SessionRecord {
     const now = new Date().toISOString();
     const record: SessionRecord = { ...input, createdAt: now, updatedAt: now, sequence: 0 };
-    this.db.prepare("INSERT INTO sessions (id, project_path, title, model_id, provider_id, free_only, budget_json, mode, permission_profile, state, created_at, updated_at, sequence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(record.id, record.projectPath, record.title, record.modelId ?? null, record.providerId ?? null, record.freeOnly ? 1 : 0, JSON.stringify(record.budget ?? {}), record.mode, record.permissionProfile, record.state, record.createdAt, record.updatedAt, record.sequence);
+    this.db.prepare("INSERT INTO sessions (id, project_path, title, model_id, provider_id, free_only, budget_json, reasoning_effort, mode, permission_profile, state, created_at, updated_at, sequence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(record.id, record.projectPath, record.title, record.modelId ?? null, record.providerId ?? null, record.freeOnly ? 1 : 0, JSON.stringify(record.budget ?? {}), record.reasoningEffort ?? null, record.mode, record.permissionProfile, record.state, record.createdAt, record.updatedAt, record.sequence);
     return record;
   }
 
   getSession(id: string): SessionRecord | undefined {
-    const row = this.db.prepare("SELECT id, project_path, title, model_id, provider_id, free_only, budget_json, mode, permission_profile, state, created_at, updated_at, sequence FROM sessions WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+    const row = this.db.prepare("SELECT id, project_path, title, model_id, provider_id, free_only, budget_json, reasoning_effort, mode, permission_profile, state, created_at, updated_at, sequence FROM sessions WHERE id = ?").get(id) as Record<string, unknown> | undefined;
     return row ? this.sessionFromRow(row) : undefined;
   }
 
   listSessions(projectPath?: string, limit = 100): SessionRecord[] {
     const rows = projectPath
-      ? this.db.prepare("SELECT id, project_path, title, model_id, provider_id, free_only, budget_json, mode, permission_profile, state, created_at, updated_at, sequence FROM sessions WHERE project_path = ? ORDER BY updated_at DESC LIMIT ?").all(projectPath, limit)
-      : this.db.prepare("SELECT id, project_path, title, model_id, provider_id, free_only, budget_json, mode, permission_profile, state, created_at, updated_at, sequence FROM sessions ORDER BY updated_at DESC LIMIT ?").all(limit);
+      ? this.db.prepare("SELECT id, project_path, title, model_id, provider_id, free_only, budget_json, reasoning_effort, mode, permission_profile, state, created_at, updated_at, sequence FROM sessions WHERE project_path = ? ORDER BY updated_at DESC LIMIT ?").all(projectPath, limit)
+      : this.db.prepare("SELECT id, project_path, title, model_id, provider_id, free_only, budget_json, reasoning_effort, mode, permission_profile, state, created_at, updated_at, sequence FROM sessions ORDER BY updated_at DESC LIMIT ?").all(limit);
     return (rows as Array<Record<string, unknown>>).map((row) => this.sessionFromRow(row));
   }
 
-  updateSession(id: string, patch: Partial<Pick<SessionRecord, "title" | "modelId" | "providerId" | "freeOnly" | "budget" | "mode" | "permissionProfile" | "state">>): SessionRecord {
+  updateSession(id: string, patch: Partial<Pick<SessionRecord, "title" | "modelId" | "providerId" | "freeOnly" | "budget" | "reasoningEffort" | "mode" | "permissionProfile" | "state">>): SessionRecord {
     const current = this.getSession(id);
     if (!current) throw new Error(`Session not found: ${id}`);
     const next = { ...current, ...patch, updatedAt: new Date().toISOString() };
-    this.db.prepare("UPDATE sessions SET title=?, model_id=?, provider_id=?, free_only=?, budget_json=?, mode=?, permission_profile=?, state=?, updated_at=? WHERE id=?")
-      .run(next.title, next.modelId ?? null, next.providerId ?? null, next.freeOnly ? 1 : 0, JSON.stringify(next.budget ?? {}), next.mode, next.permissionProfile, next.state, next.updatedAt, id);
+    this.db.prepare("UPDATE sessions SET title=?, model_id=?, provider_id=?, free_only=?, budget_json=?, reasoning_effort=?, mode=?, permission_profile=?, state=?, updated_at=? WHERE id=?")
+      .run(next.title, next.modelId ?? null, next.providerId ?? null, next.freeOnly ? 1 : 0, JSON.stringify(next.budget ?? {}), next.reasoningEffort ?? null, next.mode, next.permissionProfile, next.state, next.updatedAt, id);
     return next;
   }
 
@@ -502,6 +503,7 @@ export class SqlitePersistence implements Persistence {
       id: String(row.id), projectPath: String(row.project_path), title: String(row.title),
       ...(row.model_id ? { modelId: String(row.model_id) } : {}), ...(row.provider_id ? { providerId: String(row.provider_id) } : {}),
       freeOnly: Number(row.free_only) === 1,
+      ...(typeof row.reasoning_effort === "string" ? { reasoningEffort: row.reasoning_effort } : {}),
       budget: { maxInputTokens: null, maxOutputTokens: null, maxCostUsd: null, maxDurationMs: null, maxToolCalls: null, ...parseJson<Partial<NonNullable<SessionRecord["budget"]>>>(String(row.budget_json ?? "{}")) },
       mode: row.mode as SessionRecord["mode"], permissionProfile: row.permission_profile as SessionRecord["permissionProfile"], state: row.state as SessionRecord["state"],
       createdAt: String(row.created_at), updatedAt: String(row.updated_at), sequence: Number(row.sequence),

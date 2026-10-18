@@ -219,3 +219,47 @@ test("code intelligence excludes tool resources and caches and shares concurrent
   assert.equal((await env.runtime.code.index(env.project)).updatedFiles, 0);
   assert.deepEqual(await env.runtime.code.search(env.project, "ignoredDependency"), []);
 });
+
+
+test("reasoning effort persists, inherits into tool turns and specialists, resets on Auto, and blocks unsupported inference", async (t) => {
+  const efforts: Array<string | undefined> = [];
+  const adapter = provider(async (request) => {
+    efforts.push(request.reasoningEffort);
+    if (efforts.length === 1) return { ...done(), toolCalls: [{ id: "delegate-1", name: "agents.delegate", arguments: { role: "review", task: "Review supplied context", context: "The project has one source file." } }], finishReason: "tool_calls" };
+    return done();
+  });
+  const list = adapter.listModels;
+  adapter.listModels = async (signal) => (await list(signal)).map((model) => ({ ...model, reasoningEfforts: ["low", "high"] }));
+  const env = await fixture(t, adapter);
+  const session = env.runtime.createSession({ ...config(env.project), reasoningEffort: "high" });
+  assert.equal(env.runtime.getSession(session.id).reasoningEffort, "high");
+  await env.runtime.close();
+  env.runtime = await createHarnessRuntime({ dataDirectory: env.data, providers: [adapter] });
+  assert.equal(env.runtime.getSession(session.id).reasoningEffort, "high");
+  assert.equal((await env.runtime.run({ sessionId: session.id, goal: "Inspect source via the review specialist." })).state, "COMPLETED");
+  assert.deepEqual(efforts, ["high", "high", "high"]);
+  assert.equal((await env.runtime.run({ sessionId: session.id, goal: "Hello", reasoningEffort: null })).state, "COMPLETED");
+  assert.equal(efforts.at(-1), undefined);
+  assert.equal(env.runtime.getSession(session.id).reasoningEffort, undefined);
+  env.runtime.updateSession(session.id, { reasoningEffort: "high" });
+  assert.equal(env.runtime.updateSession(session.id, { reasoningEffort: null }).reasoningEffort, undefined);
+  const before = efforts.length;
+  const result = await env.runtime.run({ sessionId: session.id, goal: "Unsupported level", reasoningEffort: "xhigh" });
+  assert.equal(result.state, "WAITING_USER");
+  assert.equal(efforts.length, before);
+  assert.match(result.reason ?? "", /does not support/);
+});
+
+
+test("Free Only blocks unavailable models even when their zero price is verified", async (t) => {
+  let calls = 0;
+  const adapter = provider(async () => { calls++; return done(); }, { inputPerMillionUsd: 0, outputPerMillionUsd: 0, updatedAt: new Date().toISOString() });
+  const list = adapter.listModels;
+  adapter.listModels = async (signal) => (await list(signal)).map((model) => ({ ...model, available: false, availabilityReason: "Restricted to the provider's application." }));
+  const env = await fixture(t, adapter);
+  const session = env.runtime.createSession({ ...config(env.project), freeOnly: true });
+  const result = await env.runtime.run({ sessionId: session.id, goal: "Inspect project." });
+  assert.equal(result.state, "WAITING_USER");
+  assert.match(result.reason ?? "", /Restricted/);
+  assert.equal(calls, 0);
+});

@@ -65,6 +65,7 @@ export const sessionSchema = z.object({
   title: nonEmptyStringSchema.max(300),
   mode: workModeSchema,
   modelId: idSchema.nullable(),
+  reasoningEffort: z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max"]).optional(),
   permissionProfile: z.enum(["READ_ONLY", "GUIDED", "AUTO", "ADVANCED"]),
   state: runtimeStateSchema,
   createdAt: timestampSchema,

@@ -48,11 +48,15 @@ export const modelPricingSchema = z.object({
 });
 export type ModelPricing = z.infer<typeof modelPricingSchema>;
 
+export const reasoningEffortSchema = z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+export type ReasoningEffort = z.infer<typeof reasoningEffortSchema>;
+
 export const modelCapabilitiesSchema = z.object({
   streaming: z.boolean().default(false),
   toolCalling: z.boolean().default(false),
   vision: z.boolean().default(false),
   reasoning: z.boolean().default(false),
+  reasoningEfforts: z.array(reasoningEffortSchema).optional(),
   cancellation: z.boolean().default(false),
   contextWindowTokens: nonNegativeIntSchema,
   maxOutputTokens: nonNegativeIntSchema.nullable().default(null),
@@ -66,6 +70,7 @@ export const modelDescriptorSchema = z.object({
   canonicalName: nonEmptyStringSchema.max(500),
   description: z.string().max(2_000).default(""),
   availability: modelAvailabilitySchema,
+  availabilityReason: z.string().max(2_000).optional(),
   local: z.boolean().default(false),
   favorite: z.boolean().default(false),
   capabilities: modelCapabilitiesSchema,
@@ -80,6 +85,7 @@ export const modelSelectionSchema = z.object({
   modelId: idSchema,
   freeOnly: z.boolean().default(false),
   selectedAt: timestampSchema,
+  reasoningEffort: reasoningEffortSchema.optional(),
 });
 export type ModelSelection = z.infer<typeof modelSelectionSchema>;
 
