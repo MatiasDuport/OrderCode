@@ -28,7 +28,7 @@ function modelProviderLabel(providerId: string): string {
 }
 
 function modelRank(item: ProviderModel, recentModels: string[], favoriteModels: string[]): number[] {
-  const tier = item.availabilityReason ? 5 : item.priceKind === 'free' ? 0 : item.priceKind === 'subscription' ? 1 : item.priceKind === 'local' ? 2 : item.priceKind === 'paid' ? 3 : 4;
+  const tier = item.priceKind === 'free' ? 0 : item.priceKind === 'subscription' ? 1 : item.priceKind === 'local' ? 2 : item.priceKind === 'paid' ? 3 : 4;
   const key = `${item.providerId}::${item.id}`;
   const favorite = favoriteModels.includes(key);
   const recent = recentModels.indexOf(key);
@@ -108,7 +108,7 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings }: { onSub
   useEffect(() => {
     const revision = catalogRevision.current;
     const included = providers.filter((provider) => !hiddenModelProviders.includes(provider.id));
-    const eager = included.filter((provider) => provider.id !== 'openrouter' && (provider.configured || ['ollama', 'lmstudio', 'opencode_zen'].includes(provider.id)));
+    const eager = included.filter((provider) => provider.configured || ['ollama', 'lmstudio', 'opencode_zen', 'openrouter'].includes(provider.id));
     const targets = advancedCatalog ? included.filter((provider) => provider.configured || ['ollama', 'lmstudio', 'opencode_zen', 'openrouter'].includes(provider.id)) : eager;
     const pending = targets.filter((provider) => !catalogCache.current.has(provider.id) && !loadingCatalogs.current.has(provider.id) && !failedCatalogs.current.has(provider.id));
     if (!pending.length) {
@@ -129,7 +129,7 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings }: { onSub
         catalogCache.current.set(provider.id, found);
         failedCatalogs.current.delete(provider.id);
       }).catch(() => {
-        if (catalogRevision.current === revision) failedCatalogs.current.add(provider.id);
+        if (catalogRevision.current === revision && !['ollama', 'lmstudio'].includes(provider.id)) failedCatalogs.current.add(provider.id);
       }).finally(() => {
         if (catalogRevision.current !== revision) return;
         loadingCatalogs.current.delete(provider.id);
@@ -144,6 +144,7 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings }: { onSub
   }, [providers, hiddenModelProviders, advancedCatalog, catalogRetry, catalogRevision.current]);
 
   const selectedModel = models.find((item) => model === `${item.providerId}::${item.id}`);
+  const modelSelectionMissing = !model || !selectedModel;
   const efforts = selectedModel?.reasoningEfforts ?? [];
   const modelNeedsCredentials = Boolean(selectedModel && !selectedModel.available);
   const freeOnlyBlocked = freeOnly && (!selectedModel || (selectedModel.priceKind !== 'free' && selectedModel.priceKind !== 'local'));
@@ -172,7 +173,7 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings }: { onSub
   const hasMoreModels = models.some((item) => !hiddenModelProviders.includes(item.providerId) && (!freeOnly || item.priceKind === 'free' || item.priceKind === 'local')) && models.filter((item) => !hiddenModelProviders.includes(item.providerId) && (!freeOnly || item.priceKind === 'free' || item.priceKind === 'local')).length > filteredModels.length;
   const hasDeferredCatalog = providers.some((provider) => provider.id === 'openrouter' && !hiddenModelProviders.includes(provider.id) && !catalogCache.current.has(provider.id));
   const retryCatalogs = () => { for (const provider of providers) if (failedCatalogs.current.has(provider.id) && !hiddenModelProviders.includes(provider.id)) failedCatalogs.current.delete(provider.id); setCatalogRetry((value) => value + 1); };
-  const submit = async () => { const trimmed = value.trim(); if (!trimmed || ['RUNNING', 'PREPARING', 'WAITING_APPROVAL'].includes(useDesktopStore.getState().runtimeState)) return; if (modelNeedsCredentials) { onConfigError(selectedModel?.availabilityReason ?? (selectedModel?.providerId === 'openai_chatgpt' ? 'Conecta tu cuenta ChatGPT en Ajustes antes de usar el modelo.' : 'Conecta la clave API de este proveedor en Ajustes antes de usar el modelo.')); return; } if (freeOnlyBlocked) { onConfigError('Free Only necesita un modelo con precio gratuito verificado o inferencia local. No se enviará la solicitud con el modelo actual.'); return; } setValue(''); if (!await onSubmit(trimmed)) setValue((current) => current || trimmed); };
+  const submit = async () => { const trimmed = value.trim(); if (!trimmed || ['RUNNING', 'PREPARING', 'WAITING_APPROVAL'].includes(useDesktopStore.getState().runtimeState)) return; if (model && modelSelectionMissing) { onConfigError(catalogBusy ? 'Espera a que termine la búsqueda de modelos y selecciona uno disponible.' : 'El modelo guardado ya no está disponible. Selecciona un modelo del catálogo actual antes de enviar.'); return; } if (modelNeedsCredentials) { onConfigError(selectedModel?.availabilityReason ?? (selectedModel?.providerId === 'openai_chatgpt' ? 'Conecta tu cuenta ChatGPT en Ajustes antes de usar el modelo.' : 'Conecta la clave API de este proveedor en Ajustes antes de usar el modelo.')); return; } if (freeOnlyBlocked) { onConfigError('Free Only necesita un modelo con precio gratuito verificado o inferencia local. No se enviará la solicitud con el modelo actual.'); return; } setValue(''); if (!await onSubmit(trimmed)) setValue((current) => current || trimmed); };
   const changeSetting = async (patch: Partial<Pick<SessionRecord, 'mode' | 'permission' | 'model' | 'providerId' | 'freeOnly' | 'reasoningEffort'>>): Promise<void> => {
     const active = useDesktopStore.getState().session;
     if (!active) return;
@@ -191,7 +192,7 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings }: { onSub
     const needsConnection = item.availabilityReason ?? (item.providerId === 'openai_chatgpt' ? 'Conecta tu cuenta en Ajustes' : item.providerId === 'xai_plan' ? 'Conecta tu cuenta SuperGrok en Ajustes' : 'Conecta la clave API en Ajustes');
     const description = item.availabilityReason ?? `${price}${item.available ? '' : ` · ${needsConnection}`}`;
     return <div className="model-option-row" key={key}>
-      <DropdownOption active={model === key} disabled={Boolean(item.availabilityReason)} description={description} onClick={() => { if (!item.available) { setOpen(null); onOpenSettings(); return; } const effort = reasoningEffort && item.reasoningEfforts?.includes(reasoningEffort) ? reasoningEffort : undefined; set('model', key); set('reasoningEffort', effort); set('recentModels', [key, ...recentModels.filter((value) => value !== key)].slice(0, 5)); setOpen(null); if (session) void changeSetting({ model: item.id, providerId: item.providerId, reasoningEffort: effort }); }}>{item.label}</DropdownOption>
+      <DropdownOption active={model === key} disabled={Boolean(item.availabilityReason && (item.providerId === 'opencode_zen' || item.providerId !== 'openrouter'))} description={description} onClick={() => { if (!item.available) { setOpen(null); onOpenSettings(); return; } const effort = reasoningEffort && item.reasoningEfforts?.includes(reasoningEffort) ? reasoningEffort : undefined; set('model', key); set('reasoningEffort', effort); set('recentModels', [key, ...recentModels.filter((value) => value !== key)].slice(0, 5)); setOpen(null); if (session) void changeSetting({ model: item.id, providerId: item.providerId, reasoningEffort: effort }); }}>{item.label}</DropdownOption>
       <button type="button" className={`model-favorite-button ${favorite ? 'is-active' : ''}`} aria-label={`${favorite ? 'Quitar de favoritos' : 'Añadir a favoritos'}: ${item.label}`} aria-pressed={favorite} title={favorite ? 'Quitar de favoritos' : 'Añadir a favoritos'} onClick={(event) => { event.stopPropagation(); set('favoriteModels', favorite ? favoriteModels.filter((value) => value !== key) : [...favoriteModels, key].slice(-100)); }}><Star size={13} /></button>
     </div>;
   };
@@ -215,9 +216,9 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings }: { onSub
       <Dropdown label="Modo" value={mode} open={open === 'mode'} onOpenChange={(value) => setOpen((current) => value ? 'mode' : current === 'mode' ? null : current)} className="composer-dropdown"><div className="dropdown-search"><ShieldCheck size={13} /> Modo de trabajo</div>{modes.map((item) => <DropdownOption key={item.name} active={mode === item.name} description={item.description} onClick={() => { set('mode', item.name); setOpen(null); void changeSetting({ mode: item.name }); }}>{item.name}</DropdownOption>)}</Dropdown>
       <Dropdown label="Permisos" value={permission} open={open === 'permission'} onOpenChange={(value) => setOpen((current) => value ? 'permission' : current === 'permission' ? null : current)} className="composer-dropdown composer-dropdown--permission"><div className="dropdown-search"><ShieldCheck size={13} /> Perfil de permisos</div>{permissions.map((item) => <DropdownOption key={item.name} active={permission === item.name} description={item.description} onClick={() => { set('permission', item.name); setOpen(null); void changeSetting({ permission: item.name }); }}>{item.name}</DropdownOption>)}</Dropdown>
       <span className="control-spacer" />
-      {runtimeState === 'RUNNING' || runtimeState === 'PREPARING' ? <button className="send-button send-button--stop" type="button" aria-label="Detener ejecución" onClick={onCancel}><Square size={12} fill="currentColor" /></button> : <button className="send-button" type="submit" aria-label="Enviar mensaje" disabled={!value.trim() || runtimeState === 'WAITING_APPROVAL' || modelNeedsCredentials || freeOnlyBlocked}><Send size={15} /></button>}
+      {runtimeState === 'RUNNING' || runtimeState === 'PREPARING' ? <button className="send-button send-button--stop" type="button" aria-label="Detener ejecución" onClick={onCancel}><Square size={12} fill="currentColor" /></button> : <button className="send-button" type="submit" aria-label="Enviar mensaje" disabled={!value.trim() || runtimeState === 'WAITING_APPROVAL' || (Boolean(model) && modelSelectionMissing) || modelNeedsCredentials || freeOnlyBlocked}><Send size={15} /></button>}
     </div>
-    <div className="composer-hint"><span>{modelNeedsCredentials ? selectedModel?.availabilityReason ?? (selectedModel?.providerId === 'openai_chatgpt' ? 'Conecta tu cuenta ChatGPT en Ajustes para usar estos modelos.' : 'Conecta la clave API del proveedor en Ajustes para usar este catálogo.') : freeOnlyBlocked ? 'Selecciona un modelo gratuito verificado o local para continuar.' : runtimeState === 'RUNNING' ? 'Ejecución real · actividad guardada en la sesión' : 'Enter para enviar · Shift+Enter para nueva línea'}</span><span>{runtimeState === 'RUNNING' ? 'Esc para detener' : session ? mode : 'Conecta un workspace antes de ejecutar'}</span></div>
+    <div className="composer-hint"><span>{modelSelectionMissing ? catalogBusy ? 'Cargando modelos disponibles…' : 'Selecciona un modelo disponible en el catálogo.' : modelNeedsCredentials ? selectedModel?.availabilityReason ?? (selectedModel?.providerId === 'openai_chatgpt' ? 'Conecta tu cuenta ChatGPT en Ajustes para usar estos modelos.' : 'Conecta la clave API del proveedor en Ajustes para usar este catálogo.') : freeOnlyBlocked ? 'Selecciona un modelo gratuito verificado o local para continuar.' : runtimeState === 'RUNNING' ? 'Ejecución real · actividad guardada en la sesión' : 'Enter para enviar · Shift+Enter para nueva línea'}</span><span>{runtimeState === 'RUNNING' ? 'Esc para detener' : session ? mode : 'Conecta un workspace antes de ejecutar'}</span></div>
   </form></Localized>;
 }
 

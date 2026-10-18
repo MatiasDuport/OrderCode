@@ -145,7 +145,7 @@ async function openCodeCatalog(url: string, signal?: AbortSignal): Promise<{ fre
     chatModels.set(row[1], row[0]);
     if (freeNames.has(normalize(row[0]))) freeModels.set(row[1], row[0]);
   }
-  if (!rows.length || !rows.some((row) => row[2]?.startsWith("https://opencode.ai/inference/")) || !rows.some((row) => row.length >= 5)) throw new HarnessError("INVALID_PROVIDER_RESPONSE", "OpenCode's current endpoint and pricing tables could not be verified.");
+  if (!rows.length || !rows.some((row) => row[2]?.startsWith("https://opencode.ai/inference/openai/v1/")) || !rows.some((row) => row.length >= 5)) throw new HarnessError("INVALID_PROVIDER_RESPONSE", "OpenCode's current endpoint and pricing tables could not be verified.");
   return { freeModels, chatModels };
 }
 
@@ -374,8 +374,8 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
 
   async listModels(signal?: AbortSignal): Promise<ProviderModel[]> {
     const local = this.id === "ollama" || this.id === "lmstudio" || this.allowUnauthenticated;
-    // OpenRouter's public catalog still requires its key for inference. OpenCode's models are exposed
-    // only after joining its live catalog with the current pricing table below.
+    // OpenRouter's catalog is public, but inference requires an account key. OpenCode's free tier
+    // is listed for transparency and blocked because its owner restricts it to the OpenCode app.
     const publicCatalog = this.id === "openrouter" || this.id === "opencode_zen";
     if (!this.configured && !local && !publicCatalog) return [];
     const [response, openCodeModels] = await Promise.all([
@@ -403,14 +403,23 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
       const inputPerMillionUsd = this.id === "openrouter" ? pricePerMillion(model.pricing?.prompt) : undefined;
       const outputPerMillionUsd = this.id === "openrouter" ? pricePerMillion(model.pricing?.completion) : undefined;
       const verifiedPricing = inputPerMillionUsd !== undefined && outputPerMillionUsd !== undefined;
+      const freeRouterModel = this.id === "openrouter" && model.id === "openrouter/free";
       const localModel = (this.id === "ollama" || this.id === "lmstudio") && isLoopbackEndpoint(this.baseUrl);
       const toolSupport = model.capabilities?.function_calling ?? (model.supported_parameters ? model.supported_parameters.includes("tools") : true);
       return [{
         id: model.id, providerId: this.id, label: model.name ?? model.id, reasoningEfforts, capabilities: ["chat", "streaming", ...(toolSupport ? ["tool-calling"] : [])], available: this.configured || localModel,
-        priceKind: localModel ? "local" : verifiedPricing ? (inputPerMillionUsd === 0 && outputPerMillionUsd === 0 ? "free" : "paid") : "unknown",
-        ...(verifiedPricing ? { pricing: { inputPerMillionUsd, outputPerMillionUsd, updatedAt: new Date().toISOString() } } : {}),
+        priceKind: localModel ? "local" : freeRouterModel || (verifiedPricing && inputPerMillionUsd === 0 && outputPerMillionUsd === 0) ? "free" : verifiedPricing ? "paid" : "unknown",
+        ...(!this.configured && this.id === "openrouter" ? { availabilityReason: "Conecta una clave gratuita de OpenRouter. Los modelos marcados Gratis cobran $0 por inferencia y están sujetos a los límites del proveedor." } : {}),
+        ...(freeRouterModel ? { pricing: { inputPerMillionUsd: 0, outputPerMillionUsd: 0, updatedAt: new Date().toISOString() } } : verifiedPricing ? { pricing: { inputPerMillionUsd, outputPerMillionUsd, updatedAt: new Date().toISOString() } } : {}),
       }];
     });
+    if (this.id === "openrouter" && !models.some((model) => model.id === "openrouter/free")) {
+      models.unshift({
+        id: "openrouter/free", providerId: this.id, label: "Free · selector automático", capabilities: ["chat", "streaming", "tool-calling"],
+        available: Boolean(this.apiKey), priceKind: "free", pricing: { inputPerMillionUsd: 0, outputPerMillionUsd: 0, updatedAt: new Date().toISOString() },
+        ...(!this.apiKey ? { availabilityReason: "Conecta una clave gratuita de OpenRouter. El router solo elige modelos con costo de inferencia $0 y está sujeto a sus límites." } : {}),
+      });
+    }
     this.reasoningByModel.clear();
     for (const model of models) this.reasoningByModel.set(model.id, model.reasoningEfforts ?? []);
     if (this.id === "opencode_zen") this.verifiedOpenCodeFreeModels = { ids: new Set(openCodeModels?.freeModels.keys()), chatIds: new Set(models.map((model) => model.id)), expiresAt: Date.now() + OPENCODE_FREE_MODELS_CACHE_MS };
@@ -446,7 +455,7 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
     };
     const response = await fetch(`${this.baseUrl}/${useResponses ? "responses" : "chat/completions"}`, {
       method: "POST",
-      headers: { ...this.headers(), "content-type": "application/json" },
+      headers: { ...this.headers(), ...(this.id === "xai_plan" ? { "x-grok-model-override": request.model } : {}), "content-type": "application/json" },
       body: JSON.stringify(useResponses ? responsesPayload(request, mappedTools) : payload),
       signal: request.signal,
       redirect: "error",
@@ -475,7 +484,7 @@ export class XaiPlanProvider extends OpenAICompatibleProvider {
   private credentialGeneration = 0;
 
   constructor(private readonly onTokensRotated?: (credential: XaiOAuthCredential) => void) {
-    super("xai_plan", "SuperGrok", "https://api.x.ai/v1", "", { "User-Agent": "OrderCode" });
+    super("xai_plan", "SuperGrok", "https://cli-chat-proxy.grok.com/v1", "", { "User-Agent": "OrderCode", "X-XAI-Token-Auth": "xai-grok-cli" });
   }
 
   setCredential(key: string | undefined): void {
@@ -503,11 +512,13 @@ export class XaiPlanProvider extends OpenAICompatibleProvider {
 
   async complete(request: ProviderRequest): Promise<ProviderTurn> {
     await this.ensureAccessToken(false, request.signal);
-    try { return await super.complete(request); }
+    // The subscription proxy requires streaming for most models. Consume its SSE transport
+    // even when the Harness caller requests a one-shot result.
+    try { return await super.stream(request, () => undefined); }
     catch (error) {
       if (!this.isUnauthorized(error)) throw error;
       await this.ensureAccessToken(true, request.signal);
-      return super.complete(request);
+      return super.stream(request, () => undefined);
     }
   }
 
@@ -912,7 +923,7 @@ function defaultAdapters(onOAuthTokensRotated?: (credential: ChatGPTOAuthCredent
     new ChatGPTPlanProvider(onOAuthTokensRotated),
     new XaiPlanProvider(onXaiOAuthTokensRotated),
     new OpenAICompatibleProvider("openrouter", "OpenRouter", process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1", undefined, { "HTTP-Referer": "https://ordercode.local", "X-Title": "OrderCode" }),
-    new OpenAICompatibleProvider("opencode_zen", "OpenCode", process.env.OPENCODE_ZEN_BASE_URL ?? "https://opencode.ai/inference/openai/v1", undefined, {}, false, process.env.OPENCODE_ZEN_MODELS_URL ?? "https://opencode.ai/inference/v1/models"),
+    new OpenAICompatibleProvider("opencode_zen", "OpenCode", process.env.OPENCODE_ZEN_BASE_URL ?? "https://opencode.ai/zen/v1", undefined, {}, false, process.env.OPENCODE_ZEN_MODELS_URL ?? "https://opencode.ai/zen/v1/models", process.env.OPENCODE_ZEN_PRICING_URL ?? "https://dev.opencode.ai/v2/docs/console/models/"),
     new OpenAICompatibleProvider("deepseek", "DeepSeek", process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com/v1"),
     new OpenAICompatibleProvider("mistral", "Mistral AI", process.env.MISTRAL_BASE_URL ?? "https://api.mistral.ai/v1"),
     new OpenAICompatibleProvider("groq", "Groq", process.env.GROQ_BASE_URL ?? "https://api.groq.com/openai/v1"),

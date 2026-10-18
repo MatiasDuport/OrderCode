@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
-import { ChatGPTPlanProvider, OpenAICompatibleProvider, ProviderRegistry, type ChatGPTOAuthCredential } from "./providers.js";
+import { ChatGPTPlanProvider, OpenAICompatibleProvider, ProviderRegistry, XaiPlanProvider, type ChatGPTOAuthCredential } from "./providers.js";
 import type { ProviderRequest, ToolDefinition } from "./types.js";
 
 const request = (model = "fixture-model"): ProviderRequest => ({ model, messages: [{ role: "system", content: "Use tools accurately." }, { role: "user", content: "Inspect the project." }] });
@@ -41,9 +41,63 @@ test("model discovery excludes incompatible models and does not invent tool capa
   assert.deepEqual((await openai.listModels()).map((model) => model.id), ["gpt-4.1", "o3"]);
   fetchFixture(t, () => json({ data: [{ id: "text-only", supported_parameters: [], pricing: { prompt: "0", completion: "0" } }, { id: "embedding-only", architecture: { output_modalities: ["image"] } }] }));
   const models = await new OpenAICompatibleProvider("openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "fixture").listModels();
-  assert.equal(models.length, 1);
-  assert.equal(models[0]?.priceKind, "free");
-  assert.ok(!models[0]?.capabilities.includes("tool-calling"));
+  assert.equal(models.length, 2);
+  const textOnly = models.find((model) => model.id === "text-only");
+  assert.equal(textOnly?.priceKind, "free");
+  assert.ok(!textOnly?.capabilities.includes("tool-calling"));
+});
+
+test("OpenRouter puts the zero-cost free router in the catalog and sends it only through the keyed provider", async (t) => {
+  let requestSeen = false;
+  fetchFixture(t, (url, init) => {
+    if (url.pathname.endsWith("/models")) return json({ data: [{ id: "nvidia/example:free", name: "Example Free", pricing: { prompt: "0", completion: "0" }, supported_parameters: ["tools"] }] });
+    requestSeen = true;
+    assert.equal(new Headers(init.headers).get("authorization"), "Bearer fixture-openrouter-key");
+    assert.equal(JSON.parse(String(init.body)).model, "openrouter/free");
+    return json({ choices: [{ message: { content: "Free route ready." }, finish_reason: "stop" }], usage: { prompt_tokens: 3, completion_tokens: 4 } });
+  });
+  const router = new OpenAICompatibleProvider("openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "");
+  const unavailable = await router.listModels();
+  const freeRouter = unavailable.find((model) => model.id === "openrouter/free");
+  assert.equal(freeRouter?.priceKind, "free");
+  assert.equal(freeRouter?.available, false);
+  assert.match(freeRouter?.availabilityReason ?? "", /clave gratuita/);
+  assert.equal(unavailable.find((model) => model.id === "nvidia/example:free")?.priceKind, "free");
+  router.setCredential("fixture-openrouter-key");
+  assert.equal((await router.listModels()).find((model) => model.id === "openrouter/free")?.available, true);
+  assert.equal((await router.complete(request("openrouter/free"))).content, "Free route ready.");
+  assert.equal(requestSeen, true);
+});
+
+test("OpenRouter verifies its official free router even if the public catalog omits price metadata", async (t) => {
+  fetchFixture(t, () => json({ data: [{ id: "openrouter/free", name: "Free Models Router" }] }));
+  const router = new OpenAICompatibleProvider("openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "fixture-key");
+  const free = (await router.listModels()).find((model) => model.id === "openrouter/free");
+  assert.equal(free?.priceKind, "free");
+  assert.equal(free?.pricing?.inputPerMillionUsd, 0);
+  assert.equal(free?.pricing?.outputPerMillionUsd, 0);
+  assert.equal(free?.available, true);
+});
+
+test("SuperGrok uses the official Grok Build proxy and its subscription stream contract", async (t) => {
+  fetchFixture(t, (url, init) => {
+    assert.equal(url.origin, "https://cli-chat-proxy.grok.com");
+    assert.equal(new Headers(init.headers).get("authorization"), "Bearer fixture-grok-session");
+    assert.equal(new Headers(init.headers).get("x-xai-token-auth"), "xai-grok-cli");
+    if (url.pathname.endsWith("/models")) return json({ data: [{ id: "grok-build", name: "Grok Build" }] });
+    assert.equal(url.pathname, "/v1/chat/completions");
+    assert.equal(new Headers(init.headers).get("x-grok-model-override"), "grok-build");
+    assert.equal(JSON.parse(String(init.body)).model, "grok-build");
+    assert.equal(JSON.parse(String(init.body)).stream, true);
+    return stream([event({ choices: [{ delta: { content: "Grok plan is connected." } }] }), event({ choices: [{ delta: {}, finish_reason: "stop" }] }), event("[DONE]")]);
+  });
+  const provider = new XaiPlanProvider();
+  provider.setOAuthCredential({ accessToken: "fixture-grok-session", refreshToken: "fixture-refresh", expiresAt: Date.now() + 3_600_000, connectionId: "fixture-account" });
+  const [model] = await provider.listModels();
+  assert.equal(model?.id, "grok-build");
+  assert.equal(model?.priceKind, "subscription");
+  assert.equal(model?.available, true);
+  assert.equal((await provider.complete(request("grok-build"))).content, "Grok plan is connected.");
 });
 
 test("OpenCode blocks its restricted free tier before inference with or without credentials and revalidates the catalog", async (t) => {
@@ -300,9 +354,9 @@ test("reasoning selectors follow each native model and OpenRouter's live per-mod
   fetchFixture(t, () => json({ data: [{ id: "routed", reasoning: { supported_efforts: ["high", "low", "none"], mandatory: true } }, { id: "automatic-router" }, { id: "gateway", reasoning: { supported_efforts: null } }] }));
   const router = new OpenAICompatibleProvider("openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "fixture");
   const routed = await router.listModels();
-  assert.deepEqual(routed[0]?.reasoningEfforts, ["low", "high"]);
-  assert.deepEqual(routed[1]?.reasoningEfforts, []);
-  assert.equal(routed[2]?.reasoningEfforts?.includes("max"), true);
+  assert.deepEqual(routed.find((model) => model.id === "routed")?.reasoningEfforts, ["low", "high"]);
+  assert.deepEqual(routed.find((model) => model.id === "automatic-router")?.reasoningEfforts, []);
+  assert.equal(routed.find((model) => model.id === "gateway")?.reasoningEfforts?.includes("max"), true);
   let sent = 0;
   fetchFixture(t, (_url, init) => { sent++; const payload = JSON.parse(String(init.body)); assert.deepEqual(payload.reasoning, { effort: "low" }); assert.deepEqual(payload.provider, { require_parameters: true }); return json({ choices: [{ message: { content: "ok" }, finish_reason: "stop" }] }); });
   await assert.rejects(router.complete({ ...request("routed"), reasoningEffort: "medium" }), /does not support/);

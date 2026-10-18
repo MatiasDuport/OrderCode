@@ -433,20 +433,21 @@ try {
   const pricedModels = await openRouterFixture.listModels();
   const pricedTurn = await openRouterFixture.stream({ model: "fixture-priced-model", messages: [{ role: "user", content: "hello" }], stream: true }, () => undefined);
   await new Promise<void>((resolveClose, rejectClose) => openRouterServer.close((error) => error ? rejectClose(error) : resolveClose()));
-  if (pricedModels[0]?.pricing?.inputPerMillionUsd !== 1 || pricedModels[0]?.pricing?.outputPerMillionUsd !== 2 || pricedTurn.costUsd !== 0.000004 || pricedTurn.costKind !== "exact" || pricedTurn.cachedTokens !== 1 || !openRouterUsageRequested) throw new Error(`OpenRouter pricing, cached tokens, or streamed billing usage was not collected: ${JSON.stringify({ pricedModels, pricedTurn, openRouterUsageRequested })}`);
+  const pricedModel = pricedModels.find((model) => model.id === "fixture-priced-model");
+  if (pricedModel?.pricing?.inputPerMillionUsd !== 1 || pricedModel?.pricing?.outputPerMillionUsd !== 2 || pricedTurn.costUsd !== 0.000004 || pricedTurn.costKind !== "exact" || pricedTurn.cachedTokens !== 1 || !openRouterUsageRequested) throw new Error(`OpenRouter pricing, cached tokens, or streamed billing usage was not collected: ${JSON.stringify({ pricedModels, pricedTurn, openRouterUsageRequested })}`);
   let openCodeAuthorization = "";
   let openCodeCompletionPath = "";
   let openCodeInferenceCalls = 0;
   const openCodeServer = createServer((request, response) => {
     openCodeAuthorization = request.headers.authorization ?? "";
     response.setHeader("content-type", "application/json");
-    if (request.url === "/inference/v1/models") response.end(JSON.stringify({ data: [
+    if (request.url === "/zen/v1/models") response.end(JSON.stringify({ data: [
       { id: "big-pickle" }, { id: "deepseek-v4.1-flash-free" }, { id: "paid-chat" }, { id: "claude-fable-5" }, { id: "unverified-free-suffix-free" },
     ] }));
     else if (request.url === "/pricing") {
       response.setHeader("content-type", "text/html");
       response.end(`<table>${[["Big Pickle", "big-pickle"], ["DeepSeek V4.1 Flash Free", "deepseek-v4.1-flash-free"]].map(([label, id]) => `<tr><td>${label}</td><td>${id}</td><td>https://opencode.ai/inference/openai/v1/chat/completions</td><td>@ai-sdk/openai-compatible</td></tr><tr><td>${label}</td><td>Free</td><td>Free</td><td>Free</td><td>-</td></tr>`).join("")}<tr><td>Paid Chat</td><td>paid-chat</td><td>https://opencode.ai/inference/openai/v1/chat/completions</td><td>@ai-sdk/openai-compatible</td></tr><tr><td>Paid Chat</td><td>$1.00</td><td>$2.00</td><td>-</td><td>-</td></tr></table>`);
-    } else if (request.url === "/inference/openai/v1/chat/completions") {
+    } else if (request.url === "/zen/v1/chat/completions") {
       openCodeInferenceCalls += 1;
       openCodeCompletionPath = request.url;
       response.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: "Explicit paid OpenCode model verified." }, finish_reason: "stop" }], usage: { prompt_tokens: 3, completion_tokens: 5 } }));
@@ -457,7 +458,7 @@ try {
   const openCodeAddress = openCodeServer.address();
   if (!openCodeAddress || typeof openCodeAddress === "string") throw new Error("The OpenCode fixture did not bind a local port.");
   const openCodeOrigin = `http://127.0.0.1:${openCodeAddress.port}`;
-  const openCodeFixture = new OpenAICompatibleProvider("opencode_zen", "OpenCode", `${openCodeOrigin}/inference/openai/v1`, "fixture-opencode-key", {}, false, `${openCodeOrigin}/inference/v1/models`, `${openCodeOrigin}/pricing`);
+  const openCodeFixture = new OpenAICompatibleProvider("opencode_zen", "OpenCode", `${openCodeOrigin}/zen/v1`, "fixture-opencode-key", {}, false, `${openCodeOrigin}/zen/v1/models`, `${openCodeOrigin}/pricing`);
   try {
     const openCodeModels = await openCodeFixture.listModels();
     assert.deepEqual(openCodeModels.map((model) => model.id), ["big-pickle", "deepseek-v4.1-flash-free", "paid-chat"]);
@@ -484,7 +485,7 @@ try {
     assert.equal(openCodeInferenceCalls, 1);
     assert.equal(openCodeTurn.content, "Explicit paid OpenCode model verified.");
     assert.equal(openCodeAuthorization, "Bearer fixture-opencode-key");
-    assert.equal(openCodeCompletionPath, "/inference/openai/v1/chat/completions");
+    assert.equal(openCodeCompletionPath, "/zen/v1/chat/completions");
   } finally {
     openCodeServer.closeAllConnections();
     await new Promise<void>((resolveClose, rejectClose) => openCodeServer.close((error) => error ? rejectClose(error) : resolveClose()));
