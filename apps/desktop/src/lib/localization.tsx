@@ -762,6 +762,10 @@ export function translate(value: string, language: AppLanguage): string {
 
 const translatableProps = ['aria-label', 'title', 'placeholder', 'label', 'description'] as const;
 
+function isReactNodeArray(value: unknown[]): boolean {
+  return value.every((item) => item == null || ['string', 'number', 'boolean'].includes(typeof item) || isValidElement(item) || (Array.isArray(item) && isReactNodeArray(item)));
+}
+
 function localizeNode(node: ReactNode, language: AppLanguage): ReactNode {
   if (typeof node === 'string') return translate(node, language);
   if (Array.isArray(node)) return Children.map(node, (child) => localizeNode(child, language));
@@ -769,7 +773,7 @@ function localizeNode(node: ReactNode, language: AppLanguage): ReactNode {
   const props = { ...node.props };
   for (const key of translatableProps) if (typeof props[key] === 'string') props[key] = translate(props[key] as string, language);
   for (const [key, value] of Object.entries(props)) {
-    if (key !== 'children' && (isValidElement(value) || Array.isArray(value))) props[key] = localizeNode(value as ReactNode, language);
+    if (key !== 'children' && (isValidElement(value) || (Array.isArray(value) && isReactNodeArray(value)))) props[key] = localizeNode(value as ReactNode, language);
   }
   if (props.children !== undefined) props.children = localizeNode(props.children as ReactNode, language);
   return cloneElement(node, props);

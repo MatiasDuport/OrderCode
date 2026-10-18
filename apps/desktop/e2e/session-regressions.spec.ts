@@ -4,16 +4,18 @@ import { expect, test } from '@playwright/test';
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('ordercode.desktop.preferences.v1', JSON.stringify({ language: 'es', autoCheckUpdates: false }));
-    const fixture = { ready: false, slowResolved: false, modelRequests: 0, polls: 0, maxPolls: 0, cursors: [] as number[], runRequests: 0, completeEvents: false, folderResult: 'C:/fixtures/new-project' as string | null, requests: [] as Array<{ method: string; params: Record<string, unknown> }> };
+    const fixture = { ready: false, slowResolved: false, modelRequests: 0, polls: 0, maxPolls: 0, cursors: [] as number[], runRequests: 0, completeEvents: false, graphFailure: true, folderResult: 'C:/fixtures/new-project' as string | null, requests: [] as Array<{ method: string; params: Record<string, unknown> }> };
     const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
     const rawSession = (id: string) => ({ id, projectPath: `C:/fixtures/${id}`, title: id, modelId: 'local-code', providerId: 'ollama', mode: 'build', permissionProfile: 'guided', state: 'COMPLETED', createdAt: new Date().toISOString(), sequence: 1500 });
-    Object.assign(window, { auditFixture: fixture, __TAURI_INTERNALS__: {
+    Object.assign(window, { auditFixture: fixture, __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: () => undefined }, __TAURI_INTERNALS__: {
       transformCallback: () => 1,
       unregisterCallback: () => undefined,
       invoke: async (command: string, args: Record<string, unknown>) => {
         if (command === 'harness_start') { await pause(150); fixture.ready = true; return { ok: true, harnessConnected: true, version: 'fixture', platform: 'windows' }; }
         if (command === 'workspace_open') return args.projectPath;
         if (command === 'plugin:dialog|open') return fixture.folderResult;
+        if (command === 'plugin:event|listen') return 1;
+        if (command === 'plugin:event|unlisten') return null;
         if (command !== 'harness_request') return null;
         const { method, params } = args.request as { method: string; params: Record<string, unknown> };
         fixture.requests.push({ method, params });
@@ -30,7 +32,16 @@ test.beforeEach(async ({ page }) => {
         else if (method === 'session.update') result = true;
         else if (method === 'session.get') result = rawSession(String(params.sessionId));
         else if (method === 'session.messages') result = [{ id: 'answer', role: 'assistant', content: 'Persisted final answer', createdAt: new Date().toISOString() }];
-        else if (method === 'session.events') {
+        else if (method === 'code.graph') {
+          if (fixture.graphFailure) throw new Error('No se pudo indexar el workspace de prueba.');
+          result = { query: String(params.query ?? ''), files: 2, symbols: 2, truncated: false, relationships: [
+            { kind: 'IMPORTS', sourcePath: 'src/main.ts', targetPath: 'src/lib.ts', targetName: './lib', line: 1, confidence: 'confirmed' },
+            { kind: 'CALLS', sourcePath: 'src/main.ts', sourceName: 'main', targetPath: 'src/lib.ts', targetName: 'helper', line: 4, confidence: 'inferred' },
+          ] };
+        } else if (method === 'tool.invoke') {
+          const input = params.input as Record<string, unknown>;
+          result = { status: 'completed', summary: 'File opened', data: { path: input.path, content: 'export function main() { return helper(); }' } };
+        } else if (method === 'session.events') {
           fixture.cursors.push(Number(params.afterSequence)); fixture.polls += 1; fixture.maxPolls = Math.max(fixture.maxPolls, fixture.polls);
           await pause(350); fixture.polls -= 1;
           result = fixture.completeEvents ? [{ id: 'complete', sessionId: params.sessionId, runId: 'run', sequence: 1502, type: 'run.completed', payload: {} }] : Number(params.afterSequence) < 1501 ? [{ id: 'chunk', sessionId: params.sessionId, runId: 'run', sequence: 1501, type: 'provider.chunk', payload: { chunk: 'A streamed chunk' } }] : [];
@@ -95,6 +106,33 @@ test('selects model-specific effort and chats with a project through the compose
     const requests = (window as unknown as { auditFixture: { requests: Array<{ method: string; params: { patch?: Record<string, unknown> } }> } }).auditFixture.requests;
     return requests.filter((request) => request.method === 'session.update').at(-1)?.params.patch?.reasoningEffort;
   })).toBeNull();
+});
+
+test('recovers from a code graph error, inspects relationships and opens the real file', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('.composer-dropdown--model .dropdown-trigger').click();
+  await page.getByRole('option', { name: /Fast local code/ }).click();
+  await page.getByRole('textbox', { name: 'Mensaje para OrderCode' }).fill('Hola');
+  await page.getByRole('button', { name: 'Enviar mensaje' }).click();
+  await expect(page.getByText('Persisted final answer', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Inteligencia de código', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Buscar símbolos' })).toBeEnabled();
+  await page.getByRole('button', { name: 'Abrir grafo' }).click();
+  await expect(page.getByRole('alert')).toContainText('No se pudo cargar el grafo');
+  await expect(page.getByRole('button', { name: 'Reintentar' })).toBeVisible();
+  await expect(page.getByText('Indexando archivos y preparando relaciones…')).toHaveCount(0);
+
+  await page.evaluate(() => { (window as unknown as { auditFixture: { graphFailure: boolean } }).auditFixture.graphFailure = false; });
+  await page.getByRole('button', { name: 'Reintentar' }).click();
+  await expect(page.locator('.code-graph-panel')).toBeVisible();
+  await expect(page.locator('.code-graph-footer')).toContainText('2 relaciones');
+  await expect(page.locator('.code-graph-canvas')).toBeVisible();
+  await page.locator('[data-graph-node][aria-label^="Archivo main.ts"]').click();
+  await expect(page.getByRole('complementary', { name: 'Detalles del nodo' })).toContainText('src/main.ts');
+  await page.getByRole('button', { name: 'Abrir en el editor' }).click();
+  await expect(page.locator('.editor-toolbar code')).toHaveText('src/main.ts');
+  const readRequest = await page.evaluate(() => (window as unknown as { auditFixture: { requests: Array<{ method: string; params: Record<string, unknown> }> } }).auditFixture.requests.find((request) => request.method === 'tool.invoke'));
+  expect(readRequest?.params).toMatchObject({ name: 'fs.read', input: { path: 'src/main.ts' } });
 });
 
 test('cancelling folder selection preserves the draft without a failed conversation', async ({ page }) => {

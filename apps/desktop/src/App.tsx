@@ -42,6 +42,7 @@ function timeLabel(value: string): string { const date = new Date(value); return
 
 function CodeSurface() {
   const session = useDesktopStore((state) => state.session);
+  const set = useDesktopStore((state) => state.set);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Array<{ name: string; kind: string; path: string; line: number; excerpt?: string; source?: 'ripgrep' | 'fts5' }>>([]);
   const [graph, setGraph] = useState<Awaited<ReturnType<typeof searchCodeGraph>> | null>(null);
@@ -62,13 +63,33 @@ function CodeSurface() {
     catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setGraphLoading(false); }
   };
+  const openGraphFile = async (path: string) => {
+    if (!session) return;
+    const current = useDesktopStore.getState();
+    if (current.editorContent !== current.editorOriginal) {
+      setError('Guarda o descarta los cambios del editor antes de abrir otro archivo.');
+      return;
+    }
+    setError('');
+    try {
+      const result = await invokeHarnessTool(session.id, 'fs.read', { path });
+      if (result.status !== 'completed' || !result.data || typeof result.data !== 'object') throw new Error(String(result.summary ?? 'No se pudo abrir el archivo.'));
+      const data = result.data as Record<string, unknown>;
+      if (typeof data.content !== 'string') throw new Error('El resultado de lectura no contiene el texto del archivo.');
+      set('openFile', path);
+      set('editorContent', data.content);
+      set('editorOriginal', data.content);
+      set('reviewOpen', true);
+      set('currentView', 'Workspace');
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+  };
   const openGraph = () => { if (!session) return; setActiveTab('graph'); if (!graph || graph.query !== query.trim()) void runGraph(); };
   return <Localized><div className={`surface-page code-surface ${activeTab === 'graph' ? 'code-surface--graph' : ''}`}>
     <div className="surface-heading"><Code2 size={18} /><div><h2>Inteligencia de código</h2><p>Análisis sintáctico local, búsqueda con ripgrep y respaldo FTS5; relaciones persistentes.</p></div></div>
-    <div className="code-search"><input value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void (activeTab === 'graph' ? runGraph() : runSearch()); }} placeholder={session ? 'Buscar funciones, clases o archivos…' : 'Conecta un workspace para buscar'} disabled={!session} aria-label="Buscar símbolos" /><button type="button" onClick={() => void runSearch()} disabled={!session || !query.trim()}>Buscar</button><button type="button" onClick={() => void runGraph()} disabled={!session}>{graphLoading ? 'Indexando…' : 'Abrir grafo'}</button></div>
+    <div className="code-search"><input value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void (activeTab === 'graph' ? runGraph() : runSearch()); }} placeholder={session ? 'Buscar funciones, clases o archivos…' : 'Conecta un workspace para buscar'} disabled={!session} aria-label="Buscar símbolos" /><button type="button" onClick={() => void runSearch()} disabled={!session || !query.trim()}>Buscar</button><button type="button" onClick={openGraph} disabled={!session || graphLoading}>{graphLoading ? 'Indexando…' : 'Abrir grafo'}</button></div>
     <div className="code-index-tabs"><button type="button" className={activeTab === 'search' ? 'is-active' : ''} onClick={() => setActiveTab('search')}>Símbolos y texto</button><button type="button" className={activeTab === 'graph' ? 'is-active' : ''} disabled={!session} onClick={openGraph}>Grafo</button></div>
-    {error && <p className="inline-error">{error}</p>}
-    {activeTab === 'graph' ? graph ? <Suspense fallback={<div className="code-graph-loading" role="status">Cargando grafo…</div>}><CodeGraphView graph={graph} loading={graphLoading} onRefresh={() => void runGraph()} /></Suspense> : <div className="code-graph-loading" role="status"><span className="code-graph-loading-spinner" />{graphLoading ? 'Indexando archivos y preparando relaciones…' : 'Preparando grafo…'}</div> : results.length ? <div className="surface-list">{results.map((item) => <div className="surface-row" key={`${item.path}:${item.line}:${item.name}`}><strong>{item.name}</strong><span>{item.kind === 'text' ? ('Texto' + (item.source ? ' · ' + item.source : '')) : item.kind}</span><small>{item.path}:{item.line}</small>{item.excerpt && <code className="code-search-excerpt">{item.excerpt}</code>}</div>)}</div> : <div className="surface-empty">{session ? 'Escribe una consulta para buscar símbolos y texto del proyecto.' : 'Conecta un workspace para iniciar una búsqueda local.'}</div>}
+    {error && !(activeTab === 'graph' && !graph) && <p className="inline-error" role="alert">{error}</p>}
+    {activeTab === 'graph' ? graph ? <Suspense fallback={<div className="code-graph-loading" role="status">Cargando grafo…</div>}><CodeGraphView graph={graph} loading={graphLoading} onRefresh={() => void runGraph()} onOpenFile={(path) => void openGraphFile(path)} /></Suspense> : graphLoading ? <div className="code-graph-loading" role="status"><span className="code-graph-loading-spinner" />Indexando archivos y preparando relaciones…</div> : error ? <div className="code-graph-failure" role="alert"><strong>No se pudo cargar el grafo</strong><p>{error}</p><button type="button" onClick={() => void runGraph()}>Reintentar</button></div> : <div className="code-graph-loading" role="status">Abre el grafo para indexar archivos y preparar relaciones.</div> : results.length ? <div className="surface-list">{results.map((item) => <div className="surface-row" key={`${item.path}:${item.line}:${item.name}`}><strong>{item.name}</strong><span>{item.kind === 'text' ? ('Texto' + (item.source ? ' · ' + item.source : '')) : item.kind}</span><small>{item.path}:{item.line}</small>{item.excerpt && <code className="code-search-excerpt">{item.excerpt}</code>}</div>)}</div> : <div className="surface-empty">{session ? 'Escribe una consulta para buscar símbolos y texto del proyecto.' : 'Conecta un workspace para iniciar una búsqueda local.'}</div>}
   </div></Localized>;
 }
 
