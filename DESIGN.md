@@ -201,6 +201,8 @@ Agentes oficiales: **General, Explore, Architect, Build, Debug, QA, Security y R
 
 Apertura de carpeta/repositorio, proyectos recientes, cambio de proyecto y sesiones por proyecto. El usuario debe volver al chat del proyecto en una acción. Búsqueda, reciente y favorito sustituyen listados gigantes.
 
+El explorador Workspace usa un panel de 248 px, cabecera compacta, proyecto en dos líneas y búsqueda sin atajos decorativos. Mostrar carpetas plegables antes que archivos, nombres base con rutas completas en tooltip, iconos discretos por tipo y selección con acento azul. Cargar el contenido de cada carpeta al expandirla; ocultar por defecto carpetas auxiliares y ocultas, con un filtro explícito para revelarlas. La búsqueda conserva los antecesores de cada resultado. Ofrecer actualizar y contraer carpetas, navegación por teclado y estados de carga/error. Git ocupa una sola fila fija con rama y resumen de cambios; nunca presentar el estado bruto de Git en el panel. Mantener estos patrones en claro, oscuro y movimiento reducido.
+
 ### 7.2. Editor y diffs
 
 Editor real con pestañas, explorador opcional, navegación de símbolos y diagnósticos. Abrir archivos citados desde el chat. Vista de diff clara con archivos y líneas afectadas, agrupada por ejecución. No mostrar controles para revertir cuando la reversión no sea segura o esté disponible.

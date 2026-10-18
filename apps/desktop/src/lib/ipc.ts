@@ -344,7 +344,9 @@ export function readFile(path: string): Promise<string> {
   return call('read_file', { path }, '');
 }
 
-export function workspaceTree(): Promise<WorkspaceEntry[]> { return call('workspace_tree', {}, []); }
+export function workspaceTree(directory?: string, showAuxiliary = false): Promise<WorkspaceEntry[]> {
+  return call('workspace_tree', { ...(directory !== undefined ? { directory } : {}), showAuxiliary }, []);
+}
 export function gitStatus(): Promise<string> { return call('git_status', {}, ''); }
 
 export async function searchCode(sessionId: string, query: string): Promise<CodeSymbol[]> {

@@ -16,6 +16,25 @@ test.beforeEach(async ({ page }) => {
         if (command === 'plugin:dialog|open') return fixture.folderResult;
         if (command === 'plugin:event|listen') return 1;
         if (command === 'plugin:event|unlisten') return null;
+        if (command === 'workspace_tree') {
+          const files = [
+            { path: '.playwright-mcp', kind: 'directory', size: 0 },
+            { path: '.playwright-mcp/console-2026-10-18.log', kind: 'file', size: 2048 },
+            { path: 'src', kind: 'directory', size: 0 },
+            { path: 'src/components', kind: 'directory', size: 0 },
+            { path: 'src/components/Button.tsx', kind: 'file', size: 128 },
+            { path: 'src/App.tsx', kind: 'file', size: 256 },
+            { path: 'src/styles.css', kind: 'file', size: 64 },
+            { path: 'public', kind: 'directory', size: 0 },
+            { path: '.gitignore', kind: 'file', size: 32 },
+            { path: 'package.json', kind: 'file', size: 48 },
+            { path: 'README.md', kind: 'file', size: 128 },
+            { path: 'tsconfig.json', kind: 'file', size: 128 },
+          ];
+          if (typeof args.directory === 'string') return files.filter((entry) => entry.path.split('/').slice(0, -1).join('/') === args.directory);
+          return args.showAuxiliary ? files : files.filter((entry) => !entry.path.startsWith('.playwright-mcp'));
+        }
+        if (command === 'git_status') return '## main...origin/main\n M src/App.tsx';
         if (command !== 'harness_request') return null;
         const { method, params } = args.request as { method: string; params: Record<string, unknown> };
         fixture.requests.push({ method, params });
@@ -74,7 +93,7 @@ test('toggles Workspace from the rail, closes it explicitly and keeps chrome com
   await page.getByRole('button', { name: 'Tema claro' }).click();
   await expect(chrome.locator('.brand-lockup')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
   await workspace.click();
-  await expect(panel).toHaveCSS('width', '216px');
+  await expect(panel).toHaveCSS('width', '248px');
   if (process.env.TEMP) await page.screenshot({ path: `${process.env.TEMP}/ordercode-chrome-light.png`, animations: 'disabled' });
   await page.getByRole('button', { name: 'Tema oscuro' }).click();
   if (process.env.TEMP) await page.screenshot({ path: `${process.env.TEMP}/ordercode-chrome-dark.png`, animations: 'disabled' });
@@ -84,6 +103,70 @@ test('toggles Workspace from the rail, closes it explicitly and keeps chrome com
   await page.locator('.workspace-panel-backdrop').click({ position: { x: 350, y: 150 } });
   await expect(panel).toBeHidden();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test('explores a clean folder tree, searches nested files and opens them in both themes', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Workspace', exact: true }).click();
+  await page.getByRole('button', { name: 'Añadir workspace' }).click();
+  const panel = page.getByRole('complementary', { name: 'Workspace' });
+  const src = panel.getByRole('treeitem', { name: 'src', exact: true });
+  await expect(src).toHaveAttribute('aria-expanded', 'false');
+  await expect(panel.getByRole('treeitem', { name: /console-/ })).toHaveCount(0);
+  await expect(panel.getByRole('treeitem', { name: '.gitignore', exact: true })).toBeVisible();
+  await expect(panel.locator('.workspace-git')).toContainText('main');
+  await expect(panel.locator('.workspace-git')).toContainText('1 cambio');
+  await src.click();
+  await expect(panel.getByRole('treeitem', { name: 'App.tsx', exact: true })).toBeVisible();
+  await src.press('ArrowRight');
+  await expect(panel.getByRole('treeitem', { name: 'components', exact: true })).toBeFocused();
+  await page.keyboard.press('ArrowRight');
+  await expect(panel.getByRole('treeitem', { name: 'Button.tsx', exact: true })).toBeVisible();
+  await panel.getByRole('button', { name: 'Contraer carpetas' }).click();
+  await expect(panel.getByRole('treeitem', { name: 'App.tsx', exact: true })).toHaveCount(0);
+  const search = panel.getByRole('textbox', { name: 'Buscar archivos' });
+  await search.fill('Button');
+  await expect(panel.getByRole('treeitem', { name: 'Button.tsx', exact: true })).toBeVisible();
+  await expect(src).toHaveAttribute('aria-expanded', 'true');
+  await src.click();
+  await expect(panel.getByRole('treeitem', { name: 'Button.tsx', exact: true })).toHaveCount(0);
+  await src.press('ArrowRight');
+  await expect(panel.getByRole('treeitem', { name: 'Button.tsx', exact: true })).toBeVisible();
+  await search.fill('no-existe');
+  await expect(panel.getByText('Sin archivos coincidentes')).toBeVisible();
+  await search.press('Escape');
+  await expect(panel).toBeVisible();
+  await expect(search).toHaveValue('');
+  const filter = panel.getByRole('button', { name: 'Mostrar carpetas ocultas y auxiliares' });
+  await filter.click();
+  await panel.getByRole('treeitem', { name: '.playwright-mcp', exact: true }).click();
+  await expect(panel.getByRole('treeitem', { name: 'console-2026-10-18.log' })).toBeVisible();
+  await filter.click();
+  await expect(panel.getByRole('treeitem', { name: /console-/ })).toHaveCount(0);
+  await src.click();
+  await panel.getByRole('treeitem', { name: 'App.tsx', exact: true }).click();
+  await expect(panel.getByRole('treeitem', { name: 'App.tsx', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('.editor-toolbar code')).toHaveText('src/App.tsx');
+  await page.getByRole('button', { name: 'Cerrar revisión' }).click();
+  await panel.getByRole('treeitem', { name: 'App.tsx', exact: true }).click();
+  await expect(page.locator('.editor-toolbar code')).toBeVisible();
+  expect(await panel.locator('.workspace-tree-scroll').evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  if (process.env.TEMP) await panel.screenshot({ path: `${process.env.TEMP}/ordercode-workspace-dark.png`, animations: 'disabled' });
+  await page.getByRole('button', { name: 'Tema claro' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await expect(panel.getByRole('treeitem', { name: 'App.tsx', exact: true })).toHaveCSS('color', await page.locator('html').evaluate((element) => getComputedStyle(element).color));
+  if (process.env.TEMP) await panel.screenshot({ path: `${process.env.TEMP}/ordercode-workspace-light.png`, animations: 'disabled' });
+  await panel.getByRole('button', { name: 'Actualizar archivos' }).click();
+  await expect(src).toHaveAttribute('aria-expanded', 'false');
+  await page.setViewportSize({ width: 320, height: 720 });
+  await expect(panel).toBeHidden();
+  await page.getByRole('button', { name: 'Workspace', exact: true }).click();
+  await expect(panel).toBeVisible();
+  await expect(page.locator('.theme-switch')).toBeHidden();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await panel.getByRole('button', { name: 'Abrir control de versiones' }).click();
+  await expect(panel).toBeHidden();
 });
 
 test('selects model-specific effort and chats with a project through the composer', async ({ page }) => {

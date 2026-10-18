@@ -639,11 +639,21 @@ fn mcp_secret_account(server_id: &str, secret_key: &str) -> Result<String, Strin
 }
 
 #[tauri::command]
-fn workspace_tree(state: State<'_, BrokerState>) -> Result<Vec<WorkspaceEntry>, String> {
+fn workspace_tree(state: State<'_, BrokerState>, directory: Option<String>, show_auxiliary: Option<bool>) -> Result<Vec<WorkspaceEntry>, String> {
     let root = state.workspace_root.lock().map_err(|_| "No se pudo leer el workspace activo".to_string())?.clone().ok_or_else(|| "Abre un workspace antes de listar sus archivos".to_string())?;
     let mut entries = Vec::new();
-    collect_workspace_entries(&root, &root, 0, &mut entries)?;
-    entries.sort_by(|left, right| left.path.cmp(&right.path));
+    if let Some(relative) = directory {
+        let path = PathBuf::from(&relative);
+        if path.components().any(|part| !matches!(part, std::path::Component::Normal(_) | std::path::Component::CurDir)) {
+            return Err("La carpeta debe pertenecer al workspace activo".into());
+        }
+        let resolved = root.join(path).canonicalize().map_err(|error| format!("No se pudo abrir la carpeta: {error}"))?;
+        if !resolved.starts_with(&root) || !resolved.is_dir() { return Err("La carpeta debe pertenecer al workspace activo".into()); }
+        collect_workspace_entries(&root, &resolved, 0, &mut entries, true, false)?;
+    } else {
+        collect_workspace_entries(&root, &root, 0, &mut entries, show_auxiliary.unwrap_or(false), true)?;
+    }
+    entries.sort_by(|left, right| (left.kind != "directory").cmp(&(right.kind != "directory")).then_with(|| left.path.cmp(&right.path)));
     entries.truncate(500);
     Ok(entries)
 }
@@ -917,7 +927,7 @@ fn resolve_node_binary(resource_dir: &Path) -> Result<PathBuf, String> {
     Ok(PathBuf::from(executable))
 }
 
-fn collect_workspace_entries(root: &PathBuf, directory: &PathBuf, depth: usize, entries: &mut Vec<WorkspaceEntry>) -> Result<(), String> {
+fn collect_workspace_entries(root: &PathBuf, directory: &PathBuf, depth: usize, entries: &mut Vec<WorkspaceEntry>, show_auxiliary: bool, recursive: bool) -> Result<(), String> {
     if depth > 8 || entries.len() >= 500 { return Ok(()); }
     let read = fs::read_dir(directory).map_err(|error| format!("No se pudo listar el workspace: {error}"))?;
     for item in read {
@@ -929,10 +939,11 @@ fn collect_workspace_entries(root: &PathBuf, directory: &PathBuf, depth: usize, 
         let metadata = item.path().symlink_metadata().map_err(|error| format!("No se pudo leer metadata del workspace: {error}"))?;
         if metadata.file_type().is_symlink() { continue; }
         if metadata.is_dir() && !path.canonicalize().map(|resolved| resolved.starts_with(root)).unwrap_or(false) { continue; }
+        if metadata.is_dir() && !show_auxiliary && (name.starts_with('.') || matches!(name.as_str(), "playwright-report" | "test-results" | "coverage")) { continue; }
         let relative = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
         if metadata.is_dir() {
             entries.push(WorkspaceEntry { path: relative, kind: "directory", size: 0 });
-            collect_workspace_entries(root, &path, depth + 1, entries)?;
+            if recursive { collect_workspace_entries(root, &path, depth + 1, entries, show_auxiliary, true)?; }
         } else if metadata.is_file() {
             entries.push(WorkspaceEntry { path: relative, kind: "file", size: metadata.len() });
         }
@@ -1118,9 +1129,41 @@ mod tests {
             }
             let root = normalize_root(directory.to_str().unwrap())?;
             let mut entries = Vec::new();
-            collect_workspace_entries(&root, &root, 0, &mut entries)?;
+            collect_workspace_entries(&root, &root, 0, &mut entries, false, true)?;
             assert_eq!(entries.len(), 500);
             assert!(entries.iter().all(|entry| !entry.path.starts_with("node_modules")));
+            Ok(())
+        })();
+        assert_eq!(directory.parent(), Some(temporary.as_path()));
+        fs::remove_dir_all(&directory).unwrap();
+        result.unwrap();
+    }
+
+    #[test]
+    fn workspace_listing_loads_folders_without_auxiliary_log_flood() {
+        let temporary = std::env::temp_dir();
+        let directory = temporary.join(format!("ordercode-explorer-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(directory.join(".playwright-mcp")).unwrap();
+        fs::create_dir_all(directory.join("src/components")).unwrap();
+        let result = (|| -> Result<(), String> {
+            fs::write(directory.join("src/App.tsx"), "export default 1").map_err(|error| error.to_string())?;
+            fs::write(directory.join(".gitignore"), "node_modules").map_err(|error| error.to_string())?;
+            for index in 0..510 { fs::write(directory.join(format!(".playwright-mcp/log-{index}.txt")), "log").map_err(|error| error.to_string())?; }
+            let root = normalize_root(directory.to_str().unwrap())?;
+            let mut entries = Vec::new();
+            collect_workspace_entries(&root, &root, 0, &mut entries, true, false)?;
+            assert_eq!(entries.len(), 3);
+            assert!(entries.iter().any(|entry| entry.path == "src"));
+            assert!(entries.iter().all(|entry| !entry.path.contains('/')));
+            entries.clear();
+            collect_workspace_entries(&root, &root, 0, &mut entries, false, true)?;
+            assert!(entries.iter().any(|entry| entry.path == "src/App.tsx"));
+            assert!(entries.iter().any(|entry| entry.path == ".gitignore"));
+            assert!(entries.iter().all(|entry| !entry.path.starts_with(".playwright-mcp")));
+            entries.clear();
+            collect_workspace_entries(&root, &root.join("src"), 0, &mut entries, true, false)?;
+            assert_eq!(entries.len(), 2);
+            assert!(entries.iter().all(|entry| entry.path.starts_with("src/")));
             Ok(())
         })();
         assert_eq!(directory.parent(), Some(temporary.as_path()));
