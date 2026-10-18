@@ -82,11 +82,19 @@ test("OpenRouter verifies its official free router even if the public catalog om
 test("SuperGrok uses the official Grok Build proxy and its subscription stream contract", async (t) => {
   fetchFixture(t, (url, init) => {
     assert.equal(url.origin, "https://cli-chat-proxy.grok.com");
-    assert.equal(new Headers(init.headers).get("authorization"), "Bearer fixture-grok-session");
-    assert.equal(new Headers(init.headers).get("x-xai-token-auth"), "xai-grok-cli");
+    const headers = new Headers(init.headers);
+    assert.equal(headers.get("authorization"), "Bearer fixture-grok-session");
+    assert.equal(headers.get("x-xai-token-auth"), "xai-grok-cli");
+    assert.equal(headers.get("x-authenticateresponse"), "authenticate-response");
+    assert.equal(headers.get("x-grok-client-version"), "1.0.46");
+    assert.equal(headers.get("x-grok-client-identifier"), "ordercode");
+    assert.equal(headers.get("x-grok-client-mode"), "interactive");
     if (url.pathname.endsWith("/models")) return json({ data: [{ id: "grok-build", name: "Grok Build" }] });
     assert.equal(url.pathname, "/v1/chat/completions");
-    assert.equal(new Headers(init.headers).get("x-grok-model-override"), "grok-build");
+    assert.equal(headers.get("x-grok-model-override"), "grok-build");
+    assert.equal(headers.get("x-grok-conv-id"), "fixture-session-id");
+    assert.equal(headers.get("x-grok-session-id"), "fixture-session-id");
+    assert.match(headers.get("x-grok-req-id") ?? "", /^[0-9a-f-]{36}$/i);
     assert.equal(JSON.parse(String(init.body)).model, "grok-build");
     assert.equal(JSON.parse(String(init.body)).stream, true);
     return stream([event({ choices: [{ delta: { content: "Grok plan is connected." } }] }), event({ choices: [{ delta: {}, finish_reason: "stop" }] }), event("[DONE]")]);
@@ -97,7 +105,20 @@ test("SuperGrok uses the official Grok Build proxy and its subscription stream c
   assert.equal(model?.id, "grok-build");
   assert.equal(model?.priceKind, "subscription");
   assert.equal(model?.available, true);
-  assert.equal((await provider.complete(request("grok-build"))).content, "Grok plan is connected.");
+  assert.equal((await provider.complete({ ...request("grok-build"), sessionId: "fixture-session-id" })).content, "Grok plan is connected.");
+});
+
+test("SuperGrok makes HTTP 426 actionable without treating OAuth as a failed login", async (t) => {
+  fetchFixture(t, () => new Response("client update required", { status: 426 }));
+  const provider = new XaiPlanProvider();
+  provider.setOAuthCredential({ accessToken: "fixture-grok-session", refreshToken: "fixture-refresh", expiresAt: Date.now() + 3_600_000, connectionId: "fixture-account" });
+  await assert.rejects(provider.complete(request("grok-build")), (error: unknown) => {
+    assert.equal((error as { code?: string }).code, "PROVIDER_PROTOCOL_UPGRADE_REQUIRED");
+    assert.match((error as Error).message, /HTTP 426/);
+    assert.match((error as Error).message, /volver a conectar la cuenta no soluciona/);
+    assert.equal((error as { details?: { providerId?: string } }).details?.providerId, "xai_plan");
+    return true;
+  });
 });
 
 test("OpenCode blocks its restricted free tier before inference with or without credentials and revalidates the catalog", async (t) => {

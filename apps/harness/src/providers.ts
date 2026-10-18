@@ -41,6 +41,10 @@ export interface XaiOAuthCredential {
 
 export interface CustomProviderInput { id?: string; label: string; baseUrl: string }
 
+// cli-chat-proxy rejects requests without a current Grok Build client version.
+// Keep this aligned with xAI's published Grok Build changelog.
+const GROK_BUILD_PROXY_CLIENT_VERSION = "1.0.46";
+
 function envKey(providerId: string): string | undefined {
   const keyName = `${providerId.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_API_KEY`;
   return process.env[keyName] || (providerId === "openrouter" ? process.env.OPENROUTER_API_KEY : undefined) || (providerId === "openai" ? process.env.OPENAI_API_KEY : undefined) || (providerId === "opencode_zen" ? process.env.OPENCODE_API_KEY : undefined);
@@ -453,15 +457,28 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
       ...(stream && ["openrouter", "openai"].includes(this.id) ? { stream_options: { include_usage: true } } : {}),
       ...(mappedTools ? { tools: mappedTools.wire.map(toOpenAITool) } : {}),
     };
+    const grokSessionId = request.sessionId ?? randomUUID();
     const response = await fetch(`${this.baseUrl}/${useResponses ? "responses" : "chat/completions"}`, {
       method: "POST",
-      headers: { ...this.headers(), ...(this.id === "xai_plan" ? { "x-grok-model-override": request.model } : {}), "content-type": "application/json" },
+      headers: {
+        ...this.headers(),
+        ...(this.id === "xai_plan" ? {
+          "x-grok-model-override": request.model,
+          "x-grok-conv-id": grokSessionId,
+          "x-grok-session-id": grokSessionId,
+          "x-grok-req-id": randomUUID(),
+        } : {}),
+        "content-type": "application/json",
+      },
       body: JSON.stringify(useResponses ? responsesPayload(request, mappedTools) : payload),
       signal: request.signal,
       redirect: "error",
     });
     if (!response.ok) {
       const diagnostics = (await response.text()).slice(0, 2_000);
+      if (this.id === "xai_plan" && response.status === 426) {
+        throw new HarnessError("PROVIDER_PROTOCOL_UPGRADE_REQUIRED", "Grok Build rechazó la solicitud (HTTP 426): requiere una versión o protocolo de cliente compatible. Comprueba si hay una actualización de OrderCode; volver a conectar la cuenta no soluciona este error.", { providerId: this.id, status: response.status, diagnostics });
+      }
       throw new HarnessError("PROVIDER_ERROR", `Provider request failed (${response.status}).`, { providerId: this.id, status: response.status, diagnostics });
     }
     if (!stream && !useResponses) return parseCompletion(await response.json(), mappedTools?.decode, this.id === "openrouter");
@@ -499,7 +516,14 @@ export class XaiPlanProvider extends OpenAICompatibleProvider {
   private credentialGeneration = 0;
 
   constructor(private readonly onTokensRotated?: (credential: XaiOAuthCredential) => void) {
-    super("xai_plan", "SuperGrok", "https://cli-chat-proxy.grok.com/v1", "", { "User-Agent": "OrderCode", "X-XAI-Token-Auth": "xai-grok-cli" });
+    super("xai_plan", "SuperGrok", "https://cli-chat-proxy.grok.com/v1", "", {
+      "User-Agent": "OrderCode",
+      "X-XAI-Token-Auth": "xai-grok-cli",
+      "x-authenticateresponse": "authenticate-response",
+      "x-grok-client-version": GROK_BUILD_PROXY_CLIENT_VERSION,
+      "x-grok-client-identifier": "ordercode",
+      "x-grok-client-mode": "interactive",
+    });
   }
 
   setCredential(key: string | undefined): void {

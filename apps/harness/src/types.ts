@@ -380,6 +380,7 @@ export interface ProviderTurn {
 
 export interface ProviderRequest {
   model: string;
+  sessionId?: string;
   reasoningEffort?: string;
   maxOutputTokens?: number;
   messages: Array<{ role: "system" | "user" | "assistant" | "tool"; content: string; toolCallId?: string; toolName?: string; toolCalls?: ProviderToolCall[]; responseState?: ProviderResponseState }>;

@@ -335,6 +335,7 @@ export class HarnessRuntime {
       this.persistence.recordUsageCall(usageRecord);
       const turn = await provider.complete({
         model: session.modelId,
+        sessionId: session.id,
         reasoningEffort: session.reasoningEffort,
         maxOutputTokens,
         messages,
@@ -626,7 +627,7 @@ export class HarnessRuntime {
         };
         let turn: ProviderTurn;
         try {
-          turn = await provider.stream({ model: checkpoint.modelId, reasoningEffort: session.reasoningEffort, ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }), messages: requestContext.messages, tools: availableTools, signal, stream: true }, queueChunk);
+          turn = await provider.stream({ model: checkpoint.modelId, sessionId: session.id, reasoningEffort: session.reasoningEffort, ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }), messages: requestContext.messages, tools: availableTools, signal, stream: true }, queueChunk);
         } finally {
           flushChunk();
         }
@@ -840,6 +841,7 @@ export class HarnessRuntime {
       this.persistence.recordUsageCall(usageRecord);
       const turn = await provider.stream({
         model: checkpoint.modelId,
+        sessionId: session.id,
         reasoningEffort: session.reasoningEffort,
         ...(specialistOutputLimit === undefined ? {} : { maxOutputTokens: specialistOutputLimit }),
         stream: true,
