@@ -1,7 +1,7 @@
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import type { ToolResult } from "./types.js";
+import type { ContextReduction, ToolResult } from "./types.js";
 
 const MAX_INLINE_CHARS = 4_000;
 
@@ -37,11 +37,29 @@ export function compactOutput(content: string | undefined, maxChars = MAX_INLINE
   if (!content) return content;
   if (content.length <= maxChars) return content;
   if (maxChars <= 0) return "";
-  const marker = `\n… [${content.length - maxChars} chars omitted] …\n`;
+  let omittedChars = content.length - maxChars;
+  let marker = `\n… [${omittedChars} chars omitted] …\n`;
+  // The marker itself uses part of the output budget. Iterate until its digit count is stable.
+  while (omittedChars !== content.length - maxChars + marker.length) {
+    omittedChars = content.length - maxChars + marker.length;
+    marker = `\n… [${omittedChars} chars omitted] …\n`;
+  }
   if (marker.length >= maxChars) return content.slice(0, maxChars);
   const available = maxChars - marker.length;
   const head = Math.floor(available * 0.68);
   return `${content.slice(0, head)}${marker}${content.slice(-Math.max(0, available - head))}`;
+}
+
+/** Measure known before/after strings at the actual runtime reduction boundary. */
+export function measureContextReduction(original: string, reduced: string, previous?: ContextReduction): ContextReduction | undefined {
+  const prior = readContextReduction(previous);
+  const saved = Math.max(0, Math.ceil(original.length / 4) - Math.ceil(reduced.length / 4));
+  const estimatedTokensSaved = Math.min(Number.MAX_SAFE_INTEGER, prior + saved);
+  return estimatedTokensSaved > 0 ? { version: 1, estimatedTokensSaved } : undefined;
+}
+
+export function readContextReduction(reduction: ContextReduction | undefined): number {
+  return reduction?.version === 1 && Number.isSafeInteger(reduction.estimatedTokensSaved) && reduction.estimatedTokensSaved > 0 ? reduction.estimatedTokensSaved : 0;
 }
 
 export async function optimizeToolResult(

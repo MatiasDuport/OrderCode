@@ -87,12 +87,17 @@ export function WorkspaceSidebar({ onClose }: { onClose: () => void }) {
     setLoading(true); setError(''); setEntries([]); setSearchEntries(null); setGit(null);
     setExpanded(new Set()); setFocusedPath(''); setLoadingFolders(new Set());
     loadedFolders.current = new Set(); pendingFolders.current = new Set();
-    const [files, status] = await Promise.allSettled([workspaceTree(''), gitStatus()]);
-    if (generation.current !== current) return;
-    if (files.status === 'fulfilled') { setEntries(files.value); loadedFolders.current.add(''); }
-    else setError(files.reason instanceof Error ? files.reason.message : String(files.reason));
-    if (status.status === 'fulfilled') setGit(status.value);
-    setLoading(false);
+    void gitStatus().then((status) => { if (generation.current === current) setGit(status); }).catch(() => {});
+    try {
+      const files = await workspaceTree('');
+      if (generation.current !== current) return;
+      setEntries(files); loadedFolders.current.add('');
+    } catch (cause) {
+      if (generation.current !== current) return;
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      if (generation.current === current) setLoading(false);
+    }
   }, []);
 
   useEffect(() => {

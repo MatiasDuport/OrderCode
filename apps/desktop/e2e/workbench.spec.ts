@@ -15,16 +15,12 @@ test('shows the honest browser preview and keeps effort, work mode and permissio
   await expect(page.getByRole('heading', { name: 'Nueva conversación' })).toBeVisible();
   await expect(page.getByText('¿Qué quieres crear?')).toBeVisible();
   const dropdowns = page.locator('.composer-dropdown');
-  await expect(dropdowns).toHaveCount(4);
+  await expect(dropdowns).toHaveCount(3);
   const modeControl = dropdowns.filter({ has: page.locator('.dropdown-label').filter({ hasText: /^Modo$/ }) });
   const effortControl = page.locator('.composer-dropdown--effort');
   const permissionControl = page.locator('.composer-dropdown--options');
 
-  await expect(effortControl.locator('.dropdown-value')).toHaveText('Auto');
-  await expect(effortControl.locator('.dropdown-label')).toBeVisible();
-  await effortControl.locator('.dropdown-trigger').click();
-  await expect(page.getByText('Selecciona un modelo para ver sus niveles de esfuerzo.')).toBeVisible();
-  await page.keyboard.press('Escape');
+  await expect(effortControl).toHaveCount(0);
 
   await modeControl.locator('.dropdown-trigger').click();
   await page.getByRole('option', { name: /Auto/ }).click();
@@ -50,6 +46,24 @@ test('shows usage, savings and session event tabs without inventing browser-prev
   await expect(page.getByText('Sin eventos guardados para la sesión activa.')).toBeVisible();
   await page.getByRole('tab', { name: 'Uso y ahorro' }).click();
   await expect(page.getByRole('heading', { name: 'Uso y ahorro' })).toBeVisible();
+});
+
+test('opens a local website in the isolated viewer and rejects unsafe web addresses', async ({ page }) => {
+  await page.route('http://localhost:4175/**', (route) => route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><body><main>Servidor de desarrollo visible</main></body></html>' }));
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Herramientas', exact: true }).click();
+  await page.getByRole('button', { name: 'Web y gráficas', exact: true }).click();
+  const address = page.getByRole('textbox', { name: 'Dirección web' });
+  await address.fill('localhost:4175/demo');
+  await page.getByRole('button', { name: 'Abrir', exact: true }).click();
+  const preview = page.locator('iframe[title="Vista previa web"]');
+  await expect(preview).toHaveAttribute('src', 'http://localhost:4175/demo');
+  await expect(preview).toHaveAttribute('sandbox', 'allow-scripts allow-forms');
+  await expect(page.frameLocator('iframe[title="Vista previa web"]').getByText('Servidor de desarrollo visible')).toBeVisible();
+  await address.fill('http://example.com');
+  await page.getByRole('button', { name: 'Abrir', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('dirección HTTPS válida');
+  await expect(preview).toHaveAttribute('src', 'http://localhost:4175/demo');
 });
 
 test('localizes the usage dashboard when English is selected', async ({ page }) => {
@@ -99,14 +113,15 @@ test('keeps product surfaces visible without inventing unavailable runtime state
 
   await page.getByRole('button', { name: 'Historial', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Historial' })).toBeVisible();
+  await page.getByRole('button', { name: 'Herramientas', exact: true }).click();
   await page.getByRole('button', { name: 'Grafo y código', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Inteligencia de código' })).toBeVisible();
   await expect(page.getByLabel('Buscar símbolos')).toBeDisabled();
 
   await page.getByRole('button', { name: 'Ajustes', exact: true }).click();
-  await page.locator('.settings-nav-advanced > summary').click();
   await page.getByRole('button', { name: /Uso y límites/ }).click();
   await expect(page.getByText('Coste máximo (USD)')).toBeVisible();
+  await page.getByRole('button', { name: 'Herramientas', exact: true }).click();
   await page.getByRole('button', { name: 'Terminal', exact: true }).click();
   await page.getByRole('button', { name: 'Processes' }).click();
   await expect(page.getByText('No hay procesos de terminal')).toBeVisible();
@@ -173,7 +188,7 @@ test('guides first use and keeps advanced tools out of the main path in both the
   await page.getByRole('list', { name: 'Primeros pasos' }).getByRole('button', { name: 'Conectar modelo', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Modelos', exact: true })).toBeVisible();
   await expect(page.locator('.settings-nav-advanced')).not.toHaveAttribute('open');
-  await expect(page.locator('.settings-nav > button')).toHaveCount(4);
+  await expect(page.locator('.settings-nav > button')).toHaveCount(5);
   expect(await page.locator('.settings-provider-summary').evaluate((element) => {
     const title = element.querySelector('strong')!.getBoundingClientRect();
     const description = element.querySelector('small')!.getBoundingClientRect();

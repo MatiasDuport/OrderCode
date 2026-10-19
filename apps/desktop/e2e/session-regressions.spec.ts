@@ -19,6 +19,8 @@ test.beforeEach(async ({ page }) => {
         if (command === 'workspace_read_file') {
           Object.assign(fixture, { lastFileRead: args.path });
           if (args.path === 'img/campo.jpg') return { kind: 'image', mimeType: 'image/png', dataUrl: (fixture as unknown as { imageData: string }).imageData, size: 2048 };
+          if (args.path === 'graphs/curve.svg') return { kind: 'text', size: 96, content: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 40"><path d="M3 35L35 8L72 24" stroke="blue" fill="none"/></svg>' };
+          if (args.path === 'graphs/report.html') return { kind: 'text', size: 120, content: '<!doctype html><html><body><strong>Gráfica estática</strong><script>document.body.append("Este script no debe ejecutarse")</script></body></html>' };
           if (args.path === 'archive.bin') return { kind: 'binary', size: 256 };
           return { kind: 'text', size: 44, content: 'export function main() { return helper(); }' };
         }
@@ -32,6 +34,9 @@ test.beforeEach(async ({ page }) => {
             { path: 'src', kind: 'directory', size: 0 },
             { path: 'img', kind: 'directory', size: 0 },
             { path: 'img/campo.jpg', kind: 'file', size: 2048 },
+            { path: 'graphs', kind: 'directory', size: 0 },
+            { path: 'graphs/curve.svg', kind: 'file', size: 96 },
+            { path: 'graphs/report.html', kind: 'file', size: 120 },
             { path: 'archive.bin', kind: 'file', size: 256 },
             { path: 'src/components', kind: 'directory', size: 0 },
             { path: 'src/components/Button.tsx', kind: 'file', size: 128 },
@@ -219,6 +224,32 @@ test('previews images safely, protects binary files and keeps the full text edit
   await expect(page.getByRole('region', { name: 'Editor de código: src/App.tsx' })).toBeVisible();
   expect(await page.evaluate(() => (window as unknown as { auditFixture: { requests: Array<{ method: string }> } }).auditFixture.requests.some((item) => item.method === 'tool.invoke'))).toBe(false);
   await expect(page.getByRole('region', { name: 'Ejecución de tareas' })).toHaveCount(0);
+});
+
+test('discovers and safely previews SVG graphics and static HTML from the project', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/');
+  const dataUrl = `data:image/png;base64,${(await readFile(new URL('../../../brand/LogoSinFondo.png', import.meta.url))).toString('base64')}`;
+  await page.evaluate((imageData) => Object.assign((window as unknown as { auditFixture: object }).auditFixture, { imageData }), dataUrl);
+  await page.getByRole('button', { name: 'Proyecto', exact: true }).click();
+  await page.getByRole('button', { name: 'Añadir proyecto' }).click();
+  await page.getByRole('button', { name: 'Herramientas', exact: true }).click();
+  await page.getByRole('button', { name: 'Web y gráficas', exact: true }).click();
+  await page.getByRole('tab', { name: /Gráficas/ }).click();
+  await expect(page.getByRole('button', { name: 'graphs/curve.svg' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'graphs/report.html' })).toBeVisible();
+  await page.getByRole('button', { name: 'img/campo.jpg' }).click();
+  const raster = page.getByRole('img', { name: 'Gráfica: img/campo.jpg' });
+  await expect.poll(() => raster.evaluate((image) => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+  await page.getByRole('button', { name: 'graphs/curve.svg' }).click();
+  const image = page.getByRole('img', { name: 'Gráfica: graphs/curve.svg' });
+  await expect(image).toHaveAttribute('src', /^data:image\/svg\+xml/);
+  await page.getByRole('button', { name: 'graphs/report.html' }).click();
+  const chartFrame = page.locator('iframe[title="Gráfica graphs/report.html"]');
+  await expect(chartFrame).toHaveAttribute('sandbox', '');
+  await expect(page.frameLocator('iframe[title="Gráfica graphs/report.html"]').getByText('Gráfica estática')).toBeVisible();
+  await expect(page.locator('.visualizer-security-note')).toContainText('se omitieron los scripts');
+  await expect(page.frameLocator('iframe[title="Gráfica graphs/report.html"]').getByText('Este script no debe ejecutarse')).toHaveCount(0);
 });
 
 test('pairs parallel and legacy tool events without changing the run state', async ({ page }) => {

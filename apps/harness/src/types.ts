@@ -200,6 +200,12 @@ export interface ToolDefinition {
   inputSchema: Record<string, unknown>;
 }
 
+/** Runtime-owned accounting; never populate this from provider or tool response data. */
+export interface ContextReduction {
+  version: 1;
+  estimatedTokensSaved: number;
+}
+
 export interface ToolResult {
   ok: boolean;
   status: "completed" | "rejected" | "failed" | "cancelled";
@@ -210,6 +216,7 @@ export interface ToolResult {
   data?: unknown;
   logRef?: string;
   durationMs: number;
+  contextReduction?: ContextReduction;
 }
 
 export interface HarnessEvent {
@@ -343,6 +350,8 @@ export interface ProviderModel {
   label: string;
   capabilities: string[];
   available: boolean;
+  /** Provider-supplied position in its recommended catalog, when available. */
+  catalogRank?: number;
   priceKind: "free" | "paid" | "unknown" | "local" | "subscription";
   reasoningEfforts?: string[];
   availabilityReason?: string;
@@ -383,7 +392,7 @@ export interface ProviderRequest {
   sessionId?: string;
   reasoningEffort?: string;
   maxOutputTokens?: number;
-  messages: Array<{ role: "system" | "user" | "assistant" | "tool"; content: string; toolCallId?: string; toolName?: string; toolCalls?: ProviderToolCall[]; responseState?: ProviderResponseState }>;
+  messages: Array<{ role: "system" | "user" | "assistant" | "tool"; content: string; toolCallId?: string; toolName?: string; toolCalls?: ProviderToolCall[]; responseState?: ProviderResponseState; contextReduction?: ContextReduction }>;
   tools?: ToolDefinition[];
   signal?: AbortSignal;
   stream?: boolean;

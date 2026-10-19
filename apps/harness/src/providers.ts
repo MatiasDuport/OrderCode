@@ -382,16 +382,33 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
     // is listed for transparency and blocked because its owner restricts it to the OpenCode app.
     const publicCatalog = this.id === "openrouter" || this.id === "opencode_zen";
     if (!this.configured && !local && !publicCatalog) return [];
+    const catalogUrl = new URL(this.modelsUrl ?? `${this.baseUrl}/models`);
+    if (this.id === "openrouter") {
+      // Keep the default list focused on models suitable for coding agents. OpenRouter
+      // applies its live coding ranking; the UI's advanced catalog can still show the
+      // rest of the returned compatible models.
+      catalogUrl.searchParams.set("output_modalities", "text");
+      catalogUrl.searchParams.set("sort", "coding-high-to-low");
+      catalogUrl.searchParams.set("limit", "1000");
+    }
     const [response, openCodeModels] = await Promise.all([
-      fetch(this.modelsUrl ?? `${this.baseUrl}/models`, { headers: { ...this.headers(), accept: "application/json" }, signal: discoverySignal(signal), redirect: "error" }),
+      fetch(catalogUrl, { headers: { ...this.headers(), accept: "application/json" }, signal: discoverySignal(signal), redirect: "error" }),
       this.id === "opencode_zen" ? openCodeCatalog(this.pricingUrl, signal) : undefined,
     ]);
     if (!response.ok) throw new HarnessError("PROVIDER_ERROR", `Model discovery failed (${response.status}).`, { providerId: this.id, status: response.status });
-    type CatalogModel = { reasoning?: { supported_efforts?: string[] | null; mandatory?: boolean }; id?: string; name?: string; type?: string; capabilities?: { completion_chat?: boolean; function_calling?: boolean }; supported_parameters?: string[]; architecture?: { output_modalities?: string[] }; pricing?: { prompt?: string | number; completion?: string | number } };
+    type CatalogModel = { reasoning?: { supported_efforts?: string[] | null; mandatory?: boolean }; id?: string; name?: string; type?: string; capabilities?: { completion_chat?: boolean; function_calling?: boolean }; supported_parameters?: string[]; architecture?: { input_modalities?: string[]; output_modalities?: string[] }; pricing?: { prompt?: string | number; completion?: string | number } };
     const payload = await response.json() as { data?: CatalogModel[] };
     if (!Array.isArray(payload.data)) throw new HarnessError("INVALID_PROVIDER_RESPONSE", "The model catalog did not contain a models list.");
-    const models: ProviderModel[] = payload.data.filter((model): model is CatalogModel & { id: string } => typeof model.id === "string").flatMap((model): ProviderModel[] => {
+    const models: ProviderModel[] = payload.data.filter((model): model is CatalogModel & { id: string } => typeof model.id === "string").flatMap((model, catalogRank): ProviderModel[] => {
       if (model.capabilities?.completion_chat === false || (model.type && !["chat", "language", "model"].includes(model.type)) || (model.architecture?.output_modalities && !model.architecture.output_modalities.includes("text"))) return [];
+      // OpenRouter exposes audio-producing chat models alongside language models.
+      // OrderCode needs text output and callable tools to operate a project safely.
+      if (this.id === "openrouter") {
+        const inputs = model.architecture?.input_modalities;
+        const outputs = model.architecture?.output_modalities;
+        const supportsTools = model.capabilities?.function_calling ?? model.supported_parameters?.includes("tools") ?? false;
+        if (!inputs?.includes("text") || outputs?.length !== 1 || outputs[0] !== "text" || !supportsTools) return [];
+      }
       if (this.id === "openai" && (!/^(?:gpt-|chatgpt-|o\d|codex-)/.test(model.id) || /(?:audio|realtime|transcrib|tts|image|instruct|deep-research|search-preview)/i.test(model.id))) return [];
       if (/(?:^|[\/_-])(?:embed(?:ding)?s?|rerank|whisper|tts|moderation|dall-e)(?:[\/_-]|$)/i.test(model.id)) return [];
       const reasoningEfforts = this.id === "openrouter" ? catalogReasoningEfforts(model.reasoning) : nativeReasoningEfforts(this.id, model.id);
@@ -409,9 +426,9 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
       const verifiedPricing = inputPerMillionUsd !== undefined && outputPerMillionUsd !== undefined;
       const freeRouterModel = this.id === "openrouter" && model.id === "openrouter/free";
       const localModel = (this.id === "ollama" || this.id === "lmstudio") && isLoopbackEndpoint(this.baseUrl);
-      const toolSupport = model.capabilities?.function_calling ?? (model.supported_parameters ? model.supported_parameters.includes("tools") : true);
+      const toolSupport = model.capabilities?.function_calling ?? (model.supported_parameters ? model.supported_parameters.includes("tools") : this.id !== "openrouter");
       return [{
-        id: model.id, providerId: this.id, label: model.name ?? model.id, reasoningEfforts, capabilities: ["chat", "streaming", ...(toolSupport ? ["tool-calling"] : [])], available: this.configured || localModel,
+        id: model.id, providerId: this.id, label: model.name ?? model.id, ...(this.id === "openrouter" ? { catalogRank } : {}), reasoningEfforts, capabilities: ["chat", "streaming", ...(toolSupport ? ["tool-calling"] : [])], available: this.configured || localModel,
         priceKind: localModel ? "local" : freeRouterModel || (verifiedPricing && inputPerMillionUsd === 0 && outputPerMillionUsd === 0) ? "free" : verifiedPricing ? "paid" : "unknown",
         ...(!this.configured && this.id === "openrouter" ? { availabilityReason: "Conecta una clave gratuita de OpenRouter. Los modelos marcados Gratis cobran $0 por inferencia y están sujetos a los límites del proveedor." } : {}),
         ...(freeRouterModel ? { pricing: { inputPerMillionUsd: 0, outputPerMillionUsd: 0, updatedAt: new Date().toISOString() } } : verifiedPricing ? { pricing: { inputPerMillionUsd, outputPerMillionUsd, updatedAt: new Date().toISOString() } } : {}),
@@ -419,7 +436,7 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
     });
     if (this.id === "openrouter" && !models.some((model) => model.id === "openrouter/free")) {
       models.unshift({
-        id: "openrouter/free", providerId: this.id, label: "Free · selector automático", capabilities: ["chat", "streaming", "tool-calling"],
+        id: "openrouter/free", providerId: this.id, label: "Free · selector automático", catalogRank: Number.MAX_SAFE_INTEGER, capabilities: ["chat", "streaming", "tool-calling"],
         available: Boolean(this.apiKey), priceKind: "free", pricing: { inputPerMillionUsd: 0, outputPerMillionUsd: 0, updatedAt: new Date().toISOString() },
         ...(!this.apiKey ? { availabilityReason: "Conecta una clave gratuita de OpenRouter. El router solo elige modelos con costo de inferencia $0 y está sujeto a sus límites." } : {}),
       });
@@ -478,6 +495,18 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
       const diagnostics = (await response.text()).slice(0, 2_000);
       if (this.id === "xai_plan" && response.status === 426) {
         throw new HarnessError("PROVIDER_PROTOCOL_UPGRADE_REQUIRED", "Grok Build rechazó la solicitud (HTTP 426): requiere una versión o protocolo de cliente compatible. Comprueba si hay una actualización de OrderCode; volver a conectar la cuenta no soluciona este error.", { providerId: this.id, status: response.status, diagnostics });
+      }
+      if (this.id === "openrouter" && response.status === 429) {
+        throw new HarnessError("PROVIDER_RATE_LIMIT", "OpenRouter limitó temporalmente este modelo gratuito. Espera un poco, vuelve a intentarlo o elige otro modelo gratuito; la disponibilidad depende de las cuotas del proveedor.", { providerId: this.id, status: response.status, diagnostics, retryAfter: response.headers.get("retry-after") ?? undefined });
+      }
+      if (this.id === "openrouter" && response.status === 402) {
+        throw new HarnessError("PROVIDER_CREDITS_REQUIRED", "OpenRouter rechazó la solicitud por saldo o límites de la cuenta. Comprueba que el modelo siga marcado como Gratis y revisa el estado de tu cuenta y clave.", { providerId: this.id, status: response.status, diagnostics });
+      }
+      if (this.id === "openrouter" && response.status === 404) {
+        throw new HarnessError("PROVIDER_MODEL_UNAVAILABLE", "OpenRouter ya no ofrece este modelo con esa variante. Actualiza el catálogo y elige otro modelo disponible.", { providerId: this.id, status: response.status, diagnostics });
+      }
+      if (this.id === "openrouter" && response.status === 400) {
+        throw new HarnessError("PROVIDER_MODEL_PARAMETERS_REJECTED", "OpenRouter rechazó los parámetros del modelo. Actualiza el catálogo y selecciona un modelo compatible con herramientas y con el nivel de razonamiento elegido.", { providerId: this.id, status: response.status, diagnostics });
       }
       throw new HarnessError("PROVIDER_ERROR", `Provider request failed (${response.status}).`, { providerId: this.id, status: response.status, diagnostics });
     }

@@ -111,7 +111,7 @@ export class SqlitePersistence implements Persistence {
         project_path TEXT NOT NULL, run_id TEXT NOT NULL, provider_id TEXT NOT NULL, model_id TEXT NOT NULL,
         occurred_at TEXT NOT NULL, local_day TEXT NOT NULL,
         input_tokens INTEGER, output_tokens INTEGER, cached_tokens INTEGER,
-        estimated_sent_tokens INTEGER, estimated_saved_tokens INTEGER,
+        estimated_sent_tokens INTEGER, estimated_saved_tokens INTEGER, savings_version INTEGER,
         provider_calls INTEGER NOT NULL DEFAULT 1, measured_calls INTEGER NOT NULL DEFAULT 0,
         source_kind TEXT NOT NULL DEFAULT 'live', source_event_id TEXT UNIQUE
       );
@@ -138,8 +138,11 @@ export class SqlitePersistence implements Persistence {
     const messageColumns = new Set((this.db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>).map((column) => column.name));
     if (!messageColumns.has("tool_call_id")) this.db.exec("ALTER TABLE messages ADD COLUMN tool_call_id TEXT");
     if (!messageColumns.has("tool_calls")) this.db.exec("ALTER TABLE messages ADD COLUMN tool_calls TEXT");
+    const usageColumns = new Set((this.db.prepare("PRAGMA table_info(usage_calls)").all() as Array<{ name: string }>).map((column) => column.name));
+    // Leave earlier estimates intact for recovery, but do not certify their text-derived accounting.
+    if (!usageColumns.has("savings_version")) this.db.exec("ALTER TABLE usage_calls ADD COLUMN savings_version INTEGER");
     if (previousVersion < 8) this.backfillCompletedRunUsage();
-    this.db.exec("PRAGMA user_version = 8;");
+    this.db.exec("PRAGMA user_version = 9;");
   }
 
   static async open(directory = defaultDataDirectory()): Promise<SqlitePersistence> {
@@ -308,20 +311,22 @@ export class SqlitePersistence implements Persistence {
     const inputTokens = safeCount(record.inputTokens ?? undefined);
     const outputTokens = safeCount(record.outputTokens ?? undefined);
     const measuredCalls = record.measuredCalls ?? (inputTokens !== null && outputTokens !== null ? 1 : 0);
+    const estimatedSavedTokens = safeCount(record.estimatedSavedTokens);
     this.db.prepare(`
       INSERT INTO usage_calls (
         id, session_id, project_path, run_id, provider_id, model_id, occurred_at, local_day,
-        input_tokens, output_tokens, cached_tokens, estimated_sent_tokens, estimated_saved_tokens,
+        input_tokens, output_tokens, cached_tokens, estimated_sent_tokens, estimated_saved_tokens, savings_version,
         provider_calls, measured_calls, source_kind, source_event_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens, cached_tokens=excluded.cached_tokens,
         estimated_sent_tokens=excluded.estimated_sent_tokens, estimated_saved_tokens=excluded.estimated_saved_tokens,
+        savings_version=excluded.savings_version,
         provider_calls=excluded.provider_calls, measured_calls=excluded.measured_calls
     `).run(
       record.id, record.sessionId, record.projectPath, record.runId, record.providerId, record.modelId,
       record.occurredAt, record.localDay,
-      inputTokens, outputTokens, safeCount(record.cachedTokens), safeCount(record.estimatedSentTokens), safeCount(record.estimatedSavedTokens),
+      inputTokens, outputTokens, safeCount(record.cachedTokens), safeCount(record.estimatedSentTokens), estimatedSavedTokens, estimatedSavedTokens === null ? null : 1,
       safeCount(record.providerCalls ?? 1) ?? 1, safeCount(measuredCalls) ?? 0,
       record.sourceKind ?? "live", record.sourceEventId ?? null,
     );
@@ -347,10 +352,10 @@ export class SqlitePersistence implements Persistence {
         COALESCE(SUM(CASE WHEN input_tokens IS NOT NULL THEN 1 ELSE 0 END), 0) AS input_token_records,
         COALESCE(SUM(CASE WHEN output_tokens IS NOT NULL THEN 1 ELSE 0 END), 0) AS output_token_records,
         COALESCE(SUM(CASE WHEN cached_tokens IS NOT NULL THEN 1 ELSE 0 END), 0) AS cached_token_records,
-        COALESCE(SUM(estimated_sent_tokens), 0) AS estimated_sent_tokens,
-        COALESCE(SUM(estimated_saved_tokens), 0) AS estimated_saved_tokens,
-        COALESCE(SUM(CASE WHEN estimated_saved_tokens IS NOT NULL THEN provider_calls ELSE 0 END), 0) AS savings_calls,
-        COALESCE(SUM(CASE WHEN estimated_saved_tokens IS NULL THEN provider_calls ELSE 0 END), 0) AS untracked_savings_calls
+        COALESCE(SUM(CASE WHEN savings_version = 1 AND estimated_saved_tokens IS NOT NULL THEN estimated_sent_tokens ELSE 0 END), 0) AS estimated_sent_tokens,
+        COALESCE(SUM(CASE WHEN savings_version = 1 THEN estimated_saved_tokens ELSE 0 END), 0) AS estimated_saved_tokens,
+        COALESCE(SUM(CASE WHEN savings_version = 1 AND estimated_saved_tokens IS NOT NULL THEN provider_calls ELSE 0 END), 0) AS savings_calls,
+        COALESCE(SUM(CASE WHEN savings_version = 1 AND estimated_saved_tokens IS NOT NULL THEN 0 ELSE provider_calls END), 0) AS untracked_savings_calls
       FROM usage_calls WHERE ${where}
     `).get(...parameters) as Record<string, unknown>;
 
@@ -384,9 +389,9 @@ export class SqlitePersistence implements Persistence {
         COALESCE(SUM(measured_calls), 0) AS measured_calls,
         COALESCE(SUM(input_tokens), 0) AS input_tokens,
         COALESCE(SUM(output_tokens), 0) AS output_tokens,
-        COALESCE(SUM(estimated_sent_tokens), 0) AS estimated_sent_tokens,
-        COALESCE(SUM(estimated_saved_tokens), 0) AS estimated_saved_tokens,
-        COALESCE(SUM(CASE WHEN estimated_saved_tokens IS NOT NULL THEN provider_calls ELSE 0 END), 0) AS savings_calls
+        COALESCE(SUM(CASE WHEN savings_version = 1 AND estimated_saved_tokens IS NOT NULL THEN estimated_sent_tokens ELSE 0 END), 0) AS estimated_sent_tokens,
+        COALESCE(SUM(CASE WHEN savings_version = 1 THEN estimated_saved_tokens ELSE 0 END), 0) AS estimated_saved_tokens,
+        COALESCE(SUM(CASE WHEN savings_version = 1 AND estimated_saved_tokens IS NOT NULL THEN provider_calls ELSE 0 END), 0) AS savings_calls
       FROM usage_calls WHERE ${pointClauses.join(" AND ")} GROUP BY local_day ORDER BY local_day ASC
     `).all(...pointParams) as Array<Record<string, unknown>>;
 

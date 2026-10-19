@@ -33,7 +33,8 @@ function modelRank(item: ProviderModel, recentModels: string[], favoriteModels: 
   const favorite = favoriteModels.includes(key);
   const recent = recentModels.indexOf(key);
   const popular = /(?:gpt-4\.1|claude.*sonnet|gemini.*(?:flash|pro)|deepseek.*(?:v3|chat)|qwen.*coder|grok.*code|llama.*3\.3)/i.test(item.id) ? 0 : 1;
-  return [tier, favorite ? 0 : 1, recent < 0 ? 1 : 0, recent < 0 ? 99 : recent, item.available ? 0 : 1, popular];
+  const providerRank = item.providerId === 'openrouter' ? item.catalogRank ?? Number.MAX_SAFE_INTEGER : popular;
+  return [tier, favorite ? 0 : 1, recent < 0 ? 1 : 0, recent < 0 ? 99 : recent, item.available ? 0 : 1, providerRank];
 }
 
 function compareModelRank(left: ProviderModel, right: ProviderModel, recentModels: string[], favoriteModels: string[]): number {
@@ -220,6 +221,12 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings, onModelSt
     }
   };
 
+  useEffect(() => {
+    if (!selectedModel || !reasoningEffort || selectedModel.reasoningEfforts?.includes(reasoningEffort)) return;
+    set('reasoningEffort', undefined);
+    if (session) void changeSetting({ reasoningEffort: undefined });
+  }, [selectedModel?.providerId, selectedModel?.id, reasoningEffort, session?.id]);
+
   const renderModelOption = (item: ProviderModel) => {
     const key = `${item.providerId}::${item.id}`;
     const favorite = favoriteModels.includes(key);
@@ -245,9 +252,9 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings, onModelSt
         {!filteredModels.length && <div className="dropdown-empty">{freeOnly ? 'No hay modelos locales o gratuitos con precio verificado. Los modelos con precio desconocido quedan bloqueados.' : discovery || 'No hay resultados.'}<button type="button" onClick={() => { setOpen(null); onOpenSettings(); }}>Abrir Ajustes</button></div>}
         <button type="button" className="model-connect-action" onClick={() => { setOpen(null); onOpenSettings(); }}>Conectar otro modelo</button>
       </Dropdown>
-      <Dropdown label="Esfuerzo" value={reasoningEffort ? effortLabel(reasoningEffort) : 'Auto'} open={open === 'effort'} onOpenChange={(value) => setOpen((current) => value ? 'effort' : current === 'effort' ? null : current)} className="composer-dropdown composer-dropdown--effort">
-        {efforts.length > 0 ? <><div className="dropdown-search">Nivel de razonamiento</div><DropdownOption active={!reasoningEffort} description="Usar el nivel predeterminado del proveedor." onClick={() => { set('reasoningEffort', undefined); setOpen(null); void changeSetting({ reasoningEffort: undefined }); }}>Automático</DropdownOption>{efforts.map((effort) => <DropdownOption key={effort} active={reasoningEffort === effort} onClick={() => { set('reasoningEffort', effort); setOpen(null); void changeSetting({ reasoningEffort: effort }); }}>{effortLabel(effort)}</DropdownOption>)}</> : <div className="dropdown-empty">{selectedModel ? 'Este modelo no expone niveles de esfuerzo configurables.' : 'Selecciona un modelo para ver sus niveles de esfuerzo.'}</div>}
-      </Dropdown>
+      {efforts.length > 0 && <Dropdown label="Esfuerzo" value={reasoningEffort ? effortLabel(reasoningEffort) : 'Auto'} open={open === 'effort'} onOpenChange={(value) => setOpen((current) => value ? 'effort' : current === 'effort' ? null : current)} className="composer-dropdown composer-dropdown--effort">
+        <div className="dropdown-search">Nivel de razonamiento</div><DropdownOption active={!reasoningEffort} description="Usar el nivel predeterminado del proveedor." onClick={() => { set('reasoningEffort', undefined); setOpen(null); void changeSetting({ reasoningEffort: undefined }); }}>Automático</DropdownOption>{efforts.map((effort) => <DropdownOption key={effort} active={reasoningEffort === effort} onClick={() => { set('reasoningEffort', effort); setOpen(null); void changeSetting({ reasoningEffort: effort }); }}>{effortLabel(effort)}</DropdownOption>)}
+      </Dropdown>}
       <Dropdown label="Modo" value={mode} open={open === 'mode'} onOpenChange={(value) => setOpen((current) => value ? 'mode' : current === 'mode' ? null : current)} className="composer-dropdown composer-dropdown--mode"><div className="dropdown-search">Modo de trabajo</div>{modes.map((item) => <DropdownOption key={item.name} active={mode === item.name} description={item.description} onClick={() => { set('mode', item.name); setOpen(null); void changeSetting({ mode: item.name }); }}>{item.name}</DropdownOption>)}</Dropdown>
       <Dropdown label="Opciones" value={'Opciones · ' + permission} open={open === 'options'} onOpenChange={(value) => setOpen((current) => value ? 'options' : current === 'options' ? null : current)} className="composer-dropdown composer-dropdown--options">
         <div role="group" aria-label="Permisos"><div className="dropdown-search"><ShieldCheck size={13} />Permisos</div>{permissions.map((item) => <DropdownOption key={item.name} active={permission === item.name} description={item.description} onClick={() => { set('permission', item.name); setOpen(null); void changeSetting({ permission: item.name }); }}>{item.name}</DropdownOption>)}</div>
@@ -255,7 +262,7 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings, onModelSt
       <span className="control-spacer" />
       {runtimeState === 'RUNNING' || runtimeState === 'PREPARING' ? <button className="send-button send-button--stop" type="button" aria-label="Detener ejecución" onClick={onCancel}><Square size={12} fill="currentColor" /></button> : <button className="send-button" type="submit" aria-label="Enviar mensaje" disabled={!value.trim() || runtimeState === 'WAITING_APPROVAL' || modelSelectionMissing || modelNeedsCredentials || freeOnlyBlocked}><Send size={15} /></button>}
     </div>
-    <div className="composer-hint"><span>{modelSelectionMissing ? catalogBusy ? 'Cargando modelos disponibles…' : 'Conecta un modelo para empezar.' : modelNeedsCredentials ? selectedModel?.availabilityReason ?? (selectedModel?.providerId === 'openai_chatgpt' ? 'Conecta tu cuenta ChatGPT en Ajustes para usar estos modelos.' : 'Conecta la clave API del proveedor en Ajustes para usar este catálogo.') : freeOnlyBlocked ? 'Selecciona un modelo gratuito verificado o local para continuar.' : runtimeState === 'RUNNING' ? 'Trabajando en tu proyecto…' : 'Enter para enviar · Shift+Enter para nueva línea'}</span><span>{runtimeState === 'RUNNING' ? 'Esc para detener' : ''}</span></div>
+    {(modelSelectionMissing || modelNeedsCredentials || freeOnlyBlocked || runtimeState === 'RUNNING') && <div className="composer-hint"><span>{modelSelectionMissing ? catalogBusy ? 'Cargando modelos disponibles…' : 'Conecta un modelo para empezar.' : modelNeedsCredentials ? selectedModel?.availabilityReason ?? (selectedModel?.providerId === 'openai_chatgpt' ? 'Conecta tu cuenta ChatGPT en Ajustes para usar estos modelos.' : 'Conecta la clave API del proveedor en Ajustes para usar este catálogo.') : freeOnlyBlocked ? 'Selecciona un modelo gratuito verificado o local para continuar.' : 'Trabajando en tu proyecto…'}</span><span>{runtimeState === 'RUNNING' ? 'Esc para detener' : ''}</span></div>}
   </form></Localized>;
 }
 

@@ -7,6 +7,7 @@ const AgentStudio = lazy(() => import('./components/AgentStudio').then((module) 
 const McpManager = lazy(() => import('./components/McpManager').then((module) => ({ default: module.McpManager })));
 const McpMarketplace = lazy(() => import('./components/McpMarketplace').then((module) => ({ default: module.McpMarketplace })));
 const SkillsManager = lazy(() => import('./components/SkillsManager').then((module) => ({ default: module.SkillsManager })));
+const VisualizationView = lazy(() => import('./components/VisualizationView').then((module) => ({ default: module.VisualizationView })));
 const CommandPalette = lazy(() => import('./components/Overlays').then((module) => ({ default: module.CommandPalette })));
 const ApprovalDialog = lazy(() => import('./components/Overlays').then((module) => ({ default: module.ApprovalDialog })));
 import { NavRail } from './components/NavRail';
@@ -392,6 +393,7 @@ function Surface({ view, onSelectSession, onOpenSettings }: { view: string; onSe
   if (view === 'Agents') return <Suspense fallback={<div className="surface-empty" role="status">Cargando agentes…</div>}><AgentStudio officialAgents={agents} /></Suspense>;
   if (view === 'Extensions') return <ExtensionsSurface />;
   if (view === 'Settings') return <Suspense fallback={<div className="surface-empty" role="status">Cargando ajustes…</div>}><SettingsView onOpenWorkspace={onOpenSettings} /></Suspense>;
+  if (view === 'Visualizer') return <Suspense fallback={<div className="surface-empty" role="status">Cargando visualizador…</div>}><VisualizationView /></Suspense>;
   if (view === 'Code Intelligence') return <CodeSurface />;
   if (view === 'Git') return <GitSurface />;
   if (view === 'Release Center') return <ReleaseSurface />;

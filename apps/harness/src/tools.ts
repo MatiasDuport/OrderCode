@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
-import { optimizeToolResult, compactOutput, type LogStore } from "./logging.js";
+import { optimizeToolResult, compactOutput, measureContextReduction, type LogStore } from "./logging.js";
 import { HarnessError } from "./errors.js";
 import { PermissionEngine, type PermissionCheckInput } from "./permissions.js";
 import type { PermissionProfile, RunMode, ToolDefinition, ToolEffect, ToolResult } from "./types.js";
@@ -187,7 +187,8 @@ export class ToolRegistry {
         const compacted = payload.length > 8_000;
         const resultData = compacted ? { untrustedExternalResult: true, compacted: true, originalChars: payload.length, preview: compactOutput(payload, 8_000) } : payload;
         const summary = data.isError === true ? "The MCP server reported a tool error." : compacted ? "MCP response shortened to conserve context; narrow the query for a specific section." : "MCP tool completed; its response is untrusted external data.";
-        return optimizeToolResult({ ok: data.isError !== true, status: data.isError === true ? "failed" : "completed", toolName: input.definition.name, summary, data: resultData }, this.logs);
+        const contextReduction = compacted ? measureContextReduction(JSON.stringify(payload), JSON.stringify(resultData)) : undefined;
+        return optimizeToolResult({ ok: data.isError !== true, status: data.isError === true ? "failed" : "completed", toolName: input.definition.name, summary, data: resultData, contextReduction }, this.logs);
       },
     });
   }
@@ -264,7 +265,7 @@ export class ToolRegistry {
               : (() => {
                 const graph = raw as { relationships: unknown[]; truncated: boolean; [key: string]: unknown };
                 const relationships = graph.relationships.slice(0, 32);
-                return { ...graph, relationships, returnedRelationships: graph.relationships.length, truncated: graph.truncated || graph.relationships.length > relationships.length };
+                return { ...graph, relationships, returnedRelationships: relationships.length, truncated: graph.truncated || graph.relationships.length > relationships.length };
               })();
             return optimizeToolResult({ ok: true, status: "completed", toolName: name, summary: name === "code.search" ? "Code search completed locally; each text match identifies ripgrep or FTS5 as its source." : "Code relationship query completed; inferred links are not semantic proof.", data, durationMs: 0 }, this.logs);
           },
@@ -291,7 +292,9 @@ export class ToolRegistry {
         const start = intInput(input, "start", 0, 0, Number.MAX_SAFE_INTEGER);
         const end = input.end === undefined ? content.length : intInput(input, "end", content.length, start, Number.MAX_SAFE_INTEGER);
         const selected = content.slice(start, end);
-        return optimizeToolResult({ ok: true, status: "completed", toolName: "fs.read", data: { path, start, end, content: compactOutput(selected, 12_000), truncated: selected.length > 12_000 } }, this.logs);
+        const data = { path, start, end, content: compactOutput(selected, 12_000), truncated: selected.length > 12_000 };
+        const contextReduction = measureContextReduction(JSON.stringify({ ...data, content: selected }), JSON.stringify(data));
+        return optimizeToolResult({ ok: true, status: "completed", toolName: "fs.read", data, contextReduction }, this.logs);
       },
     });
     this.tools.set("fs.write", {
@@ -452,6 +455,8 @@ export class ToolRegistry {
     } finally { clearTimeout(timer); }
     if (sensitiveOutput) { stdout = sanitizeGitUrl(stdout); stderr = sanitizeGitUrl(stderr); }
     const raw = `git ${args.join(" ")}\nexitCode: ${exitCode}\n\n--- stdout ---\n${stdout}\n\n--- stderr ---\n${stderr}`;
+    const data = { args, stdout: compactOutput(stdout, 20_000), stderr: compactOutput(stderr, 4_000) };
+    const contextReduction = measureContextReduction(JSON.stringify({ args, stdout, stderr }), JSON.stringify(data));
     return optimizeToolResult({
       ok: exitCode === 0,
       status: exitCode === 0 ? "completed" : "failed",
@@ -459,7 +464,8 @@ export class ToolRegistry {
       exitCode,
       summary: exitCode === 0 ? `Git ${args[0]} completed.` : compactOutput(stderr.trim() || stdout.trim() || `Git exited with code ${exitCode}.`, 2_000),
       diagnostics: stderr ? compactOutput(stderr, 4_000) : undefined,
-      data: { args, stdout: compactOutput(stdout, 20_000), stderr: compactOutput(stderr, 4_000) },
+      data,
+      contextReduction,
       durationMs: Date.now() - startedAt,
     }, this.logs, raw);
   }
@@ -513,7 +519,9 @@ export class ToolRegistry {
     stdout += decoders.stdout.end(); stderr += decoders.stderr.end();
     const raw = `command: ${command}\ncwd: ${cwd}\nexitCode: ${exitCode}\ntimedOut: ${timedOut}\ncancelled: ${cancelled}\noutputLimitExceeded: ${outputLimitExceeded}\n\n--- stdout ---\n${stdout}\n\n--- stderr ---\n${stderr}`;
     const ok = exitCode === 0 && !timedOut && !cancelled && !outputLimitExceeded;
-    return optimizeToolResult({ ok, status: cancelled ? "cancelled" : ok ? "completed" : "failed", toolName: "process.exec", exitCode, summary: cancelled ? "Command and its managed process tree were cancelled." : timedOut ? `Command timed out after ${timeoutMs}ms.` : outputLimitExceeded ? "Command stopped after reaching the output limit." : `Command exited with code ${exitCode}.`, diagnostics: compactOutput(stderr || stdout), data: { command, cwd, timedOut, cancelled, outputLimitExceeded, stdout: compactOutput(stdout), stderr: compactOutput(stderr) } }, this.logs, raw);
+    const data = { command, cwd, timedOut, cancelled, outputLimitExceeded, stdout: compactOutput(stdout), stderr: compactOutput(stderr) };
+    const contextReduction = measureContextReduction(JSON.stringify({ ...data, stdout, stderr }), JSON.stringify(data));
+    return optimizeToolResult({ ok, status: cancelled ? "cancelled" : ok ? "completed" : "failed", toolName: "process.exec", exitCode, summary: cancelled ? "Command and its managed process tree were cancelled." : timedOut ? `Command timed out after ${timeoutMs}ms.` : outputLimitExceeded ? "Command stopped after reaching the output limit." : `Command exited with code ${exitCode}.`, diagnostics: compactOutput(stderr || stdout), data, contextReduction }, this.logs, raw);
   }
 
   private redactInput(toolName: string, input: Record<string, unknown>): Record<string, unknown> {

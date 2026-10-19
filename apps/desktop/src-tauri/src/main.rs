@@ -644,34 +644,38 @@ fn mcp_secret_account(server_id: &str, secret_key: &str) -> Result<String, Strin
 }
 
 #[tauri::command]
-fn workspace_tree(state: State<'_, BrokerState>, directory: Option<String>, show_auxiliary: Option<bool>) -> Result<Vec<WorkspaceEntry>, String> {
+async fn workspace_tree(state: State<'_, BrokerState>, directory: Option<String>, show_auxiliary: Option<bool>) -> Result<Vec<WorkspaceEntry>, String> {
     let root = state.workspace_root.lock().map_err(|_| "No se pudo leer el workspace activo".to_string())?.clone().ok_or_else(|| "Abre un workspace antes de listar sus archivos".to_string())?;
-    let mut entries = Vec::new();
-    if let Some(relative) = directory {
-        let path = PathBuf::from(&relative);
-        if path.components().any(|part| !matches!(part, std::path::Component::Normal(_) | std::path::Component::CurDir)) {
-            return Err("La carpeta debe pertenecer al workspace activo".into());
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut entries = Vec::new();
+        if let Some(relative) = directory {
+            let path = PathBuf::from(&relative);
+            if path.components().any(|part| !matches!(part, std::path::Component::Normal(_) | std::path::Component::CurDir)) {
+                return Err("La carpeta debe pertenecer al workspace activo".into());
+            }
+            let resolved = root.join(path).canonicalize().map_err(|error| format!("No se pudo abrir la carpeta: {error}"))?;
+            if !resolved.starts_with(&root) || !resolved.is_dir() { return Err("La carpeta debe pertenecer al workspace activo".into()); }
+            collect_workspace_entries(&root, &resolved, 0, &mut entries, true, false)?;
+        } else {
+            collect_workspace_entries(&root, &root, 0, &mut entries, show_auxiliary.unwrap_or(false), true)?;
         }
-        let resolved = root.join(path).canonicalize().map_err(|error| format!("No se pudo abrir la carpeta: {error}"))?;
-        if !resolved.starts_with(&root) || !resolved.is_dir() { return Err("La carpeta debe pertenecer al workspace activo".into()); }
-        collect_workspace_entries(&root, &resolved, 0, &mut entries, true, false)?;
-    } else {
-        collect_workspace_entries(&root, &root, 0, &mut entries, show_auxiliary.unwrap_or(false), true)?;
-    }
-    entries.sort_by(|left, right| (left.kind != "directory").cmp(&(right.kind != "directory")).then_with(|| left.path.cmp(&right.path)));
-    entries.truncate(500);
-    Ok(entries)
+        entries.sort_by(|left, right| (left.kind != "directory").cmp(&(right.kind != "directory")).then_with(|| left.path.cmp(&right.path)));
+        entries.truncate(500);
+        Ok(entries)
+    }).await.map_err(|error| format!("No se pudo completar el listado del workspace: {error}"))?
 }
 
 #[tauri::command]
-fn git_status(state: State<'_, BrokerState>) -> Result<String, String> {
+async fn git_status(state: State<'_, BrokerState>) -> Result<String, String> {
     let root = state.workspace_root.lock().map_err(|_| "No se pudo leer el workspace activo".to_string())?.clone().ok_or_else(|| "Abre un workspace antes de consultar Git".to_string())?;
-    let output = Command::new("git").arg("-C").arg(root).args(["status", "--short", "--branch"]).output().map_err(|error| format!("No se pudo consultar Git: {error}"))?;
-    if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if detail.is_empty() { "Git no pudo consultar el estado del workspace".into() } else { detail });
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        let output = Command::new("git").arg("-C").arg(root).args(["status", "--short", "--branch"]).output().map_err(|error| format!("No se pudo consultar Git: {error}"))?;
+        if !output.status.success() {
+            let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(if detail.is_empty() { "Git no pudo consultar el estado del workspace".into() } else { detail });
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }).await.map_err(|error| format!("No se pudo completar el estado de Git: {error}"))?
 }
 
 // Explicit file browsing stays in the native UI and never enters model context or tool logs.

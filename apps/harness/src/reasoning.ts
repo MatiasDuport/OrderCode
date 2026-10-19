@@ -52,6 +52,8 @@ export function validateReasoningEffort(value: unknown, options: readonly string
 
 export function catalogReasoningEfforts(value: { supported_efforts?: unknown; mandatory?: boolean } | undefined): string[] {
   const allowed = value?.supported_efforts;
-  const values = allowed === null ? [...reasoningEffortValues] : Array.isArray(allowed) ? reasoningEffortValues.filter((effort) => allowed.includes(effort)) : [];
+  // Only expose levels explicitly advertised by this exact model. Null/omitted
+  // metadata means "not enumerated"; guessing every level leads to provider 400s.
+  const values = Array.isArray(allowed) ? reasoningEffortValues.filter((effort) => allowed.includes(effort)) : [];
   return value?.mandatory ? values.filter((effort) => effort !== "none") : values;
 }

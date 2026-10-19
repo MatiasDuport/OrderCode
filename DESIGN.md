@@ -107,7 +107,7 @@ Mostrar el isotipo transparente de OrderCode, sin texto ni fondo, Buscar y los c
 ### 4.2. Navegación lateral
 
 - Navegación con nombres siempre visibles: Conversación, Proyecto e Historial. Botón Nueva conversación al inicio; Ajustes al final.
-- Herramientas agrupa Cambios y Git, Terminal, Grafo y código, Agentes, Skills y MCP, Uso y actividad y Publicar proyecto. Se despliega por clic o teclado; no exigir descubrir iconos al pasar el ratón.
+- Herramientas agrupa Cambios y Git, Terminal, Grafo y código, Web y gráficas, Agentes, Skills y MCP, Uso y actividad y Publicar proyecto. Se despliega por clic o teclado; no exigir descubrir iconos al pasar el ratón.
 - Conversación muestra el chat; Proyecto abre o cierra los archivos sin perder la conversación. El panel se cierra desde su control, con Escape o al pulsar fuera en ventanas estrechas.
 - Ancho de referencia 196 px; 174 px en ventanas medianas. En móvil, navegación inferior con etiquetas y herramientas en un desplegable.
 - Ajustes tiene General, Modelos, Seguridad y Actualizaciones; Uso, Conexión local, Editor, Accesibilidad y Datos se agrupan en Avanzado. Las conexiones aparecen antes que la personalización del catálogo.
@@ -208,7 +208,7 @@ El explorador Workspace usa un panel de 248 px, cabecera compacta, proyecto en d
 
 Editor real con pestañas, explorador opcional, navegación de símbolos y diagnósticos. Abrir archivos citados desde el chat. Vista de diff clara con archivos y líneas afectadas, agrupada por ejecución. No mostrar controles para revertir cuando la reversión no sea segura o esté disponible.
 
-Las imágenes raster se muestran como vista previa con ajuste, zoom, dimensiones y tamaño, sin controles de edición de texto. Los archivos binarios y los que superan el límite de vista previa muestran un estado explícito de solo lectura. La lectura manual del explorador permanece en la interfaz nativa y no se incorpora al contexto del modelo. Al abrir un archivo, el editor o visor ocupa el panel completo sin un bloque vacío de cambios encima. En la conversación, cada invocación de herramienta tiene una sola fila que combina inicio y resultado; su estado es independiente del estado de la ejecución y la actividad terminada comienza contraída.
+Las imágenes raster se muestran como vista previa con ajuste, zoom, dimensiones y tamaño, sin controles de edición de texto. Los archivos binarios y los que superan el límite de vista previa muestran un estado explícito de solo lectura. La vista Web admite páginas HTTPS y servidores locales mediante un marco aislado. La vista Gráficas reúne archivos PNG, JPEG, GIF, WebP, AVIF, BMP, SVG y HTML del proyecto, priorizando resultados recientes de tareas. El HTML se muestra en un marco aislado y estático; se bloquean scripts y recursos externos. Para vistas interactivas se abre el servidor local del proyecto en la pestaña Web. La lectura manual del explorador permanece en la interfaz nativa y no se incorpora al contexto del modelo. Al abrir un archivo, el editor o visor ocupa el panel completo sin un bloque vacío de cambios encima. En la conversación, cada invocación de herramienta tiene una sola fila que combina inicio y resultado; su estado es independiente del estado de la ejecución y la actividad terminada comienza contraída.
 
 ### 7.3. Terminal, Process Explorer y logs
 

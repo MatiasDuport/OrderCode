@@ -103,6 +103,8 @@ Subsistema prioritario desde el primer runtime funcional, no una mejora añadida
 
 **Regla:** menos tokens solo constituye una mejora si no deteriora injustificadamente precisión, seguridad o tiempo total.
 
+**Verificación de eficiencia:** medir reducciones contra el contenido original en el punto real de compactación, con metadatos internos; nunca deducir ahorro de marcadores o cifras presentes en archivos, logs o resultados externos. Las cifras por caracteres son estimaciones. El grafo es recuperación opcional: su ahorro depende de las lecturas que sustituya y puede añadir contexto frente a una búsqueda exacta. Los benchmarks locales de índice o transporte no demuestran superioridad de inferencia frente a otros productos; esa comparación exige tareas equivalentes, mismo modelo/proveedor y calidad verificada.
+
 ## 8. Code Intelligence
 
 **Motor propio:** Tree-sitter + LSP + ripgrep + SQLite/FTS5 + grafo estructural.
@@ -139,6 +141,8 @@ La autorización del modelo no sustituye controles nativos. Identificar operacio
 
 **Editor:** Monaco, pestañas, archivos, edición, búsqueda, símbolos, diagnósticos y diffs integrados con el chat.
 
+**Visualizador:** vista Web integrada para direcciones HTTPS y servidores de desarrollo locales, dentro de un marco aislado sin acceso a IPC de OrderCode. La vista Gráficas descubre resultados PNG, JPEG, GIF, WebP, AVIF, BMP, SVG y HTML entre archivos del proyecto y archivos modificados por tareas. El HTML de proyecto se muestra en un marco estático aislado, sin ejecutar scripts ni cargar recursos externos. Para contenido interactivo se usa el servidor local en la vista Web. No enviar estos archivos al modelo por abrirlos en el visualizador.
+
 **Git:** estado, ramas, staging, historial, commits, diffs, conflictos, worktrees y operaciones remotas autorizadas. Preservar cambios preexistentes; worktrees no equivalen a sandbox.
 
 ## 11. Extensiones
@@ -171,7 +175,7 @@ Todas las herramientas externas pasarán por el Permission Engine.
 
 **Flujo:** proyecto → modelo → Plan/Build/Auto → conversación → ejecución → resultado.
 
-**Navegación:** Conversación, Proyecto e Historial; herramientas avanzadas agrupadas en Herramientas y configuración en Ajustes. Release Center sigue siendo un módulo independiente dentro de Herramientas. Inicio guiado: abrir carpeta y conectar modelo. El modo inicial es Auto, con permisos Guiado.
+**Navegación:** Conversación, Proyecto e Historial; herramientas avanzadas agrupadas en Herramientas y configuración en Ajustes. Incluye el visualizador integrado de Web y gráficas. Release Center sigue siendo un módulo independiente dentro de Herramientas. Inicio guiado: abrir carpeta y conectar modelo. El modo inicial es Auto, con permisos Guiado.
 
 **Paneles contextuales:** editor, diffs, terminal, procesos, logs, contexto, Git y Release Center.
 

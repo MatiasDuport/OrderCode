@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { lstat, readFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
-import { ContextBuilder, compactPriorToolResults, estimateCompactedToolResultSavings, estimateTokens, selectRelevantMarkdownSections } from "./context.js";
+import { ContextBuilder, compactPriorToolResults, estimateCompactedToolResultSavings, estimateRequestTokens, estimateTokens, selectRelevantMarkdownSections } from "./context.js";
 import { CodeIntelligence } from "./code.js";
 import { AgentRegistry } from "./agents.js";
 import { HarnessError } from "./errors.js";
@@ -175,7 +175,8 @@ export class HarnessRuntime {
       const runId = typeof payload.runId === "string" ? payload.runId : undefined;
       if (type === "tool.completed" && payload.toolName === "fs.write") {
         const projectPath = this.persistence.getSession(sessionId)?.projectPath;
-        if (projectPath) this.code.invalidate(projectPath);
+        const result = payload.result as { ok?: boolean; data?: { path?: string } } | undefined;
+        if (projectPath && result?.ok) this.code.invalidate(projectPath, result.data?.path);
       }
       this.emit(sessionId, type, payload, runId);
     }, this.code, this.release);
@@ -325,7 +326,7 @@ export class HarnessRuntime {
       let maxOutputTokens = Math.min(session.budget?.maxOutputTokens ?? 8_192, 8_192);
       if (costCeiling !== null && costCeiling !== undefined && selected?.pricing) {
         const pricing = selected.pricing;
-        const remaining = costCeiling - Math.ceil(estimateTokens(JSON.stringify({ messages, tools: [] })) * 1.25) * pricing.inputPerMillionUsd / 1_000_000;
+        const remaining = costCeiling - Math.ceil(estimateRequestTokens({ messages, tools: [] }) * 1.25) * pricing.inputPerMillionUsd / 1_000_000;
         if (remaining < 0 || remaining === 0 && pricing.outputPerMillionUsd > 0) throw new HarnessError("EXECUTION_BUDGET_REACHED", "The estimated agent test would reach the session cost ceiling.");
         if (pricing.outputPerMillionUsd > 0) maxOutputTokens = Math.min(maxOutputTokens, Math.floor(remaining * 1_000_000 / pricing.outputPerMillionUsd));
         if (maxOutputTokens <= 0) throw new HarnessError("EXECUTION_BUDGET_REACHED", "The remaining session cost ceiling does not cover output.");
@@ -341,7 +342,7 @@ export class HarnessRuntime {
         messages,
         tools: [], signal: controller.signal,
       });
-      this.finishUsageCall(usageRecord, turn, estimateTokens(JSON.stringify({ messages, tools: [] })), built.estimatedTokensSaved);
+      this.finishUsageCall(usageRecord, turn, estimateRequestTokens({ messages, tools: [] }), built.estimatedTokensSaved);
       return { content: turn.content, providerId: provider.id, modelId: session.modelId, ...(turn.inputTokens !== undefined ? { inputTokens: turn.inputTokens } : {}), ...(turn.outputTokens !== undefined ? { outputTokens: turn.outputTokens } : {}), durationMs: Date.now() - startedAt, toolCallsIgnored: turn.toolCalls.length > 0 };
     } finally { clearTimeout(timeout); this.finishOperation(sessionId, controller); }
   }
@@ -500,7 +501,7 @@ export class HarnessRuntime {
       }
       checkpoint.toolResults.push(result);
       this.appendToolResult(session, checkpoint, result, checkpoint.pendingCall);
-      checkpoint.providerMessages.push({ role: "tool", content: JSON.stringify({ ok: result.ok, status: result.status, summary: result.summary, data: result.data, logRef: result.logRef }), toolCallId: checkpoint.pendingCall.id, toolName: checkpoint.pendingCall.name });
+      checkpoint.providerMessages.push({ role: "tool", content: JSON.stringify({ ok: result.ok, status: result.status, summary: result.summary, data: result.data, logRef: result.logRef }), toolCallId: checkpoint.pendingCall.id, toolName: checkpoint.pendingCall.name, contextReduction: result.contextReduction });
       checkpoint.phase = "RECOVERY_REQUIRED";
       this.persistence.saveCheckpoint(session.id, checkpoint);
       this.pendingRuns.delete(session.id);
@@ -597,7 +598,7 @@ export class HarnessRuntime {
           const pricing = checkpoint.pricing;
           if (!pricing || checkpoint.usage.costKind === "unknown") return this.waitForBudget(checkpoint, session, "Cost usage or verified model pricing is unavailable; no additional model call was sent.");
           const reservedCost = checkpoint.usage.costUsd ?? 0;
-          const inputEstimate = Math.ceil(estimateTokens(JSON.stringify({ messages: requestContext.messages, tools: availableTools })) * 1.25);
+          const inputEstimate = Math.ceil(estimateRequestTokens({ messages: requestContext.messages, tools: availableTools }) * 1.25);
           const remainingAfterInput = budget.maxCostUsd - reservedCost - inputEstimate * pricing.inputPerMillionUsd / 1_000_000;
           if (remainingAfterInput < 0 || remainingAfterInput === 0 && pricing.outputPerMillionUsd > 0) return this.waitForBudget(checkpoint, session, "The estimated input cost would reach the configured ceiling; no additional model call was sent.");
           costBoundOutputTokens = pricing.outputPerMillionUsd > 0 ? Math.floor(remainingAfterInput * 1_000_000 / pricing.outputPerMillionUsd) : 8_192;
@@ -606,7 +607,7 @@ export class HarnessRuntime {
         }
         const maxOutputTokens = [remainingOutputTokens, costBoundOutputTokens].filter((value): value is number => value !== undefined).reduce<number | undefined>((limit, value) => limit === undefined ? value : Math.min(limit, value), undefined);
         checkpoint.usage.providerCalls += 1;
-        const estimatedSentTokens = estimateTokens(JSON.stringify({ messages: requestContext.messages, tools: availableTools }));
+        const estimatedSentTokens = estimateRequestTokens({ messages: requestContext.messages, tools: availableTools });
         const estimatedSavedTokens = (checkpoint.contextSavingsEstimate ?? 0) + estimateCompactedToolResultSavings(requestContext.messages);
         const usageRecord = this.prepareUsageCall(session, checkpoint.runId, checkpoint.providerId, checkpoint.modelId);
         this.persistence.recordUsageCall(usageRecord);
@@ -713,7 +714,7 @@ export class HarnessRuntime {
                 return { runId: checkpoint.runId, session: this.getSession(session.id), state: "WAITING_APPROVAL", toolResults: checkpoint.toolResults, pendingPermission: permissionRequest as RunResult["pendingPermission"], usage: checkpoint.usage };
               }
               this.appendToolResult(session, checkpoint as PendingRunCheckpoint, result, groupedCall);
-              checkpoint.providerMessages.push({ role: "tool", content: JSON.stringify({ ok: result.ok, status: result.status, summary: result.summary, data: result.data, logRef: result.logRef }), toolCallId: groupedCall.id, toolName: groupedCall.name });
+              checkpoint.providerMessages.push({ role: "tool", content: JSON.stringify({ ok: result.ok, status: result.status, summary: result.summary, data: result.data, logRef: result.logRef }), toolCallId: groupedCall.id, toolName: groupedCall.name, contextReduction: result.contextReduction });
             }
             callIndex = groupEnd - 1;
             continue;
@@ -738,7 +739,7 @@ export class HarnessRuntime {
           const result = await this.delegate(checkpoint, provider, call, signal, remaining);
           checkpoint.toolResults.push(result);
           this.appendToolResult(session, checkpoint as PendingRunCheckpoint, result, call);
-          checkpoint.providerMessages.push({ role: "tool", content: JSON.stringify({ ok: result.ok, status: result.status, summary: result.summary, data: result.data }), toolCallId: call.id, toolName: call.name });
+          checkpoint.providerMessages.push({ role: "tool", content: JSON.stringify({ ok: result.ok, status: result.status, summary: result.summary, data: result.data }), toolCallId: call.id, toolName: call.name, contextReduction: result.contextReduction });
           if (budget?.maxCostUsd !== null && budget?.maxCostUsd !== undefined && this.costCeilingReached(checkpoint.usage, budget.maxCostUsd, checkpoint.pricing)) return this.waitForBudget(checkpoint, session, "The specialist reached the configured cost ceiling; remaining actions were stopped.");
           if ((budget?.maxInputTokens !== null && budget?.maxInputTokens !== undefined && (checkpoint.usage.inputTokens ?? 0) > budget.maxInputTokens) || (budget?.maxOutputTokens !== null && budget?.maxOutputTokens !== undefined && (checkpoint.usage.outputTokens ?? 0) >= budget.maxOutputTokens)) return this.waitForBudget(checkpoint, session, "The specialist used the remaining token budget; no additional model call was sent.");
           continue;
@@ -760,7 +761,7 @@ export class HarnessRuntime {
           return { runId: checkpoint.runId, session: this.getSession(session.id), state: "WAITING_APPROVAL", toolResults: checkpoint.toolResults, pendingPermission: permissionRequest as RunResult["pendingPermission"], usage: checkpoint.usage };
         }
         this.appendToolResult(session, checkpoint as PendingRunCheckpoint, result, call);
-        checkpoint.providerMessages.push({ role: "tool", content: JSON.stringify({ ok: result.ok, status: result.status, summary: result.summary, data: result.data, logRef: result.logRef }), toolCallId: call.id, toolName: call.name });
+        checkpoint.providerMessages.push({ role: "tool", content: JSON.stringify({ ok: result.ok, status: result.status, summary: result.summary, data: result.data, logRef: result.logRef }), toolCallId: call.id, toolName: call.name, contextReduction: result.contextReduction });
         if (result.ok && result.toolName === "fs.write") repeatedCalls.clear();
       }
     }
@@ -827,14 +828,14 @@ export class HarnessRuntime {
       if (budget?.maxCostUsd !== null && budget?.maxCostUsd !== undefined) {
         const pricing = checkpoint.pricing;
         if (!pricing || checkpoint.usage.costKind === "unknown") throw new HarnessError("COST_BUDGET_UNAVAILABLE", "The specialist was not called because verified cost usage or model pricing is unavailable.");
-        const inputEstimate = Math.ceil(estimateTokens(JSON.stringify({ messages, tools: [] })) * 1.25);
+        const inputEstimate = Math.ceil(estimateRequestTokens({ messages, tools: [] }) * 1.25);
         const remainingAfterInput = budget.maxCostUsd - (checkpoint.usage.costUsd ?? 0) - inputEstimate * pricing.inputPerMillionUsd / 1_000_000;
         if (remainingAfterInput < 0 || remainingAfterInput === 0 && pricing.outputPerMillionUsd > 0) throw new HarnessError("COST_BUDGET_REACHED", "The specialist was not called because the estimated input would reach the configured cost ceiling.");
         const costOutputLimit = pricing.outputPerMillionUsd > 0 ? Math.min(8_192, Math.floor(remainingAfterInput * 1_000_000 / pricing.outputPerMillionUsd)) : 8_192;
         specialistOutputLimit = specialistOutputLimit === undefined ? costOutputLimit : Math.min(specialistOutputLimit, costOutputLimit);
         if (specialistOutputLimit <= 0) throw new HarnessError("COST_BUDGET_REACHED", "The specialist was not called because the remaining ceiling does not cover output.");
       }
-      const estimatedSentTokens = estimateTokens(JSON.stringify({ messages, tools: [] }));
+      const estimatedSentTokens = estimateRequestTokens({ messages, tools: [] });
       const documentSavings = projectDocs.reduce((total, document) => total + (document.estimatedTokensSaved ?? 0), 0);
       const usageRecord = this.prepareUsageCall(session, checkpoint.runId, checkpoint.providerId, checkpoint.modelId);
       checkpoint.usage.providerCalls += 1;

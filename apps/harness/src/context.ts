@@ -1,8 +1,13 @@
 import type { BuiltContext, ContextInput, MessageRecord, ProviderRequest, ToolResult } from "./types.js";
-import { compactOutput } from "./logging.js";
+import { compactOutput, measureContextReduction, readContextReduction } from "./logging.js";
 
 export function estimateTokens(text: string): number {
   return Math.max(1, Math.ceil(text.length / 4));
+}
+
+/** Internal accounting does not form part of a provider's request payload. */
+export function estimateRequestTokens(request: Pick<ProviderRequest, "messages" | "tools">): number {
+  return estimateTokens(JSON.stringify({ ...request, messages: request.messages.map(({ contextReduction: _reduction, ...message }) => message) }));
 }
 
 export function selectRelevantMarkdownSections(
@@ -56,51 +61,29 @@ export function selectRelevantMarkdownSections(
 }
 
 export function compactPriorToolResults(messages: ProviderRequest["messages"], retainRecent = 4, maxChars = 1_600): { messages: ProviderRequest["messages"]; compacted: boolean } {
+  const budget = Math.max(128, Math.floor(maxChars));
   const toolIndexes = messages.flatMap((message, index) => message.role === "tool" ? [index] : []);
   const older = new Set(toolIndexes.slice(0, Math.max(0, toolIndexes.length - retainRecent)));
   let compacted = false;
   const next = messages.map((message, index) => {
-    if (!older.has(index) || message.content.length <= maxChars * 1.25) return message;
+    if (!older.has(index) || message.content.length <= budget * 1.25) return message;
     compacted = true;
-    const priorSavings = estimateToolContentSavings(message.content);
-    return { ...message, content: JSON.stringify({ compacted: true, originalChars: message.content.length, ...(priorSavings ? { originalSavingsTokens: priorSavings } : {}), preview: compactOutput(message.content, maxChars) }) };
+    let previewBudget = Math.max(0, budget - 80);
+    const render = () => JSON.stringify({ compacted: true, originalChars: message.content.length, preview: compactOutput(message.content, previewBudget) });
+    let content = render();
+    // JSON escaping can expand a preview. Bound the serialized result too, so unchanged
+    // tool messages are not rewritten on every call and needlessly invalidate a cache prefix.
+    while (content.length > budget && previewBudget > 0) {
+      previewBudget = Math.max(0, Math.floor(previewBudget * budget / content.length) - 1);
+      content = render();
+    }
+    return { ...message, content, contextReduction: measureContextReduction(message.content, content, message.contextReduction) };
   });
   return { messages: next, compacted };
 }
 
-function estimateCompactedValueSavings(value: unknown, depth = 0): number {
-  if (depth > 12 || !value || typeof value !== "object") return 0;
-  if (Array.isArray(value)) return value.slice(0, 500).reduce((total, item) => total + estimateCompactedValueSavings(item, depth + 1), 0);
-  const item = value as Record<string, unknown>;
-  if (item.compacted === true && typeof item.originalChars === "number" && Number.isSafeInteger(item.originalChars) && item.originalChars >= 0) {
-    const prior = typeof item.originalSavingsTokens === "number" && Number.isSafeInteger(item.originalSavingsTokens) && item.originalSavingsTokens > 0 ? item.originalSavingsTokens : 0;
-    return Math.max(0, Math.ceil(item.originalChars / 4) - estimateTokens(JSON.stringify(item))) + prior;
-  }
-  let savedTokens = 0;
-  const compactOutputMarker = /…\s*\[(\d+) chars omitted\]\s*…/gu;
-  for (const [key, nested] of Object.entries(item).slice(0, 500)) {
-    if (typeof nested === "string" && ["content", "stdout", "stderr", "preview"].includes(key)) {
-      const matches = [...nested.matchAll(compactOutputMarker)];
-      for (const match of matches) {
-        const omittedChars = Number(match[1]);
-        if (Number.isSafeInteger(omittedChars) && omittedChars > 0) {
-          savedTokens += Math.max(0, Math.ceil((nested.length + omittedChars) / 4) - estimateTokens(nested));
-        }
-      }
-    } else {
-      savedTokens += estimateCompactedValueSavings(nested, depth + 1);
-    }
-  }
-  return savedTokens;
-}
-
-function estimateToolContentSavings(content: string): number {
-  try { return estimateCompactedValueSavings(JSON.parse(content) as unknown); }
-  catch { return 0; }
-}
-
 export function estimateCompactedToolResultSavings(messages: ProviderRequest["messages"]): number {
-  return messages.reduce((total, message) => message.role === "tool" ? total + estimateToolContentSavings(message.content) : total, 0);
+  return messages.reduce((total, message) => message.role === "tool" ? Math.min(Number.MAX_SAFE_INTEGER, total + readContextReduction(message.contextReduction)) : total, 0);
 }
 
 export class ContextBuilder {
@@ -159,8 +142,9 @@ function fitContent(content: string, limit: number): string {
 export class ToolResultOptimizer {
   compact(result: ToolResult, maxChars = 8_000): ToolResult {
     const dataText = result.data === undefined ? undefined : JSON.stringify(result.data);
-    const data = dataText && dataText.length > maxChars ? { compacted: compactOutput(dataText, maxChars), originalChars: dataText.length } : result.data;
-    return { ...result, ...(data === undefined ? {} : { data }), diagnostics: result.diagnostics ? compactOutput(result.diagnostics, 4_000) : result.diagnostics };
+    const data = dataText && dataText.length > maxChars * 1.25 ? { compacted: compactOutput(dataText, maxChars), originalChars: dataText.length } : result.data;
+    const contextReduction = dataText && data !== result.data ? measureContextReduction(dataText, JSON.stringify(data), result.contextReduction) : result.contextReduction;
+    return { ...result, ...(data === undefined ? {} : { data }), ...(contextReduction ? { contextReduction } : {}), diagnostics: result.diagnostics ? compactOutput(result.diagnostics, 4_000) : result.diagnostics };
   }
 }
 

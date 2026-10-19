@@ -390,7 +390,7 @@ export function executeAllowed(command: string, cwd?: string): Promise<{ code: n
 }
 
 export type ProviderInfo = { id: string; label: string; baseUrl: string; configured: boolean; custom?: boolean };
-export type ProviderModel = { id: string; providerId: string; label: string; capabilities: string[]; available: boolean; availabilityReason?: string; reasoningEfforts?: string[]; priceKind: 'free' | 'paid' | 'unknown' | 'local' | 'subscription'; pricing?: { inputPerMillionUsd: number; outputPerMillionUsd: number; updatedAt: string } };
+export type ProviderModel = { id: string; providerId: string; label: string; capabilities: string[]; available: boolean; availabilityReason?: string; reasoningEfforts?: string[]; catalogRank?: number; priceKind: 'free' | 'paid' | 'unknown' | 'local' | 'subscription'; pricing?: { inputPerMillionUsd: number; outputPerMillionUsd: number; updatedAt: string } };
 export function listProviders(): Promise<ProviderInfo[]> { return rpc('providers.list'); }
 export function listProviderModels(providerId: string): Promise<ProviderModel[]> { return rpc('provider.models', { providerId }); }
 export function providerKeysStatus(providerIds: string[] = []): Promise<Record<string, boolean>> { return call('provider_keys_status', { providerIds }, {}); }

@@ -21,7 +21,7 @@ const categories = [
 ] as const;
 
 type CategoryId = typeof categories[number]['id'];
-const primaryCategoryIds: readonly CategoryId[] = ['general', 'models', 'permissions', 'updates'];
+const primaryCategoryIds: readonly CategoryId[] = ['general', 'models', 'usage', 'permissions', 'updates'];
 type Provider = { id: string; label: string; baseUrl: string; configured: boolean; custom?: boolean };
 
 function SectionHeading({ title, description }: { title: string; description: string }) {

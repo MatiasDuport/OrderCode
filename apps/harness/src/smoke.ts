@@ -9,6 +9,7 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { CodeIntelligence } from "./code.js";
 import { compactPriorToolResults, estimateCompactedToolResultSavings, selectRelevantMarkdownSections } from "./context.js";
+import { measureContextReduction } from "./logging.js";
 import { createHarnessRuntime } from "./orchestrator.js";
 import { ReleaseCenter } from "./release.js";
 import { OpenAICompatibleProvider, type ProviderAdapter } from "./providers.js";
@@ -47,7 +48,9 @@ if (!compactedHistory.compacted || !compactedHistory.messages[0] || compactedHis
 if (compactPriorToolResults(compactedHistory.messages).compacted) throw new Error("A previously compacted tool result was repeatedly compacted on later model calls.");
 if (estimateCompactedToolResultSavings(compactedHistory.messages) <= 0) throw new Error("Estimated context savings were not calculated for a compacted tool result.");
 const reducedToolOutput: ProviderRequest["messages"] = [{ role: "tool", content: JSON.stringify({ data: { content: `${"visible ".repeat(20)}\n… [12000 chars omitted] …\n`, truncated: true } }), toolCallId: "reduced-output", toolName: "fs.read" }];
-if (estimateCompactedToolResultSavings(reducedToolOutput) <= 0) throw new Error("Estimated savings did not recognize a tool result reduced before entering conversation history.");
+if (estimateCompactedToolResultSavings(reducedToolOutput) !== 0) throw new Error("Untrusted output markers were counted as evidence of context savings.");
+reducedToolOutput[0]!.contextReduction = measureContextReduction("x".repeat(12_000), reducedToolOutput[0]!.content);
+if (estimateCompactedToolResultSavings(reducedToolOutput) <= 0) throw new Error("Runtime-owned context savings metadata was not preserved.");
 const selectedDocs = selectRelevantMarkdownSections("# Project\nIntro\n## Seguridad e integridad\nPermisos de archivos y validación.\n## Modelos y caché\nOptimizar el prefijo del proveedor reduce latencia.\n## Release Center\nPublicar un despliegue.", "optimizar caché del proveedor para menor latencia", { maxChars: 2_000, pinnedHeadings: ["Seguridad e integridad"], relevantSections: 1 });
 if (!selectedDocs.includes("## Seguridad e integridad") || !selectedDocs.includes("## Modelos y caché") || selectedDocs.includes("## Release Center") || selectedDocs.length > 2_000) throw new Error("Project-document retrieval did not preserve pinned safety rules and the most relevant section within its budget.");
 
@@ -410,12 +413,13 @@ try {
   let openRouterUsageRequested = false;
   const openRouterServer = createServer((request, response) => {
     let body = "";
+    const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
     request.setEncoding("utf8");
     request.on("data", (chunk: string) => { body += chunk; });
     request.on("end", () => {
       response.setHeader("content-type", "application/json");
-      if (request.url === "/v1/models") response.end(JSON.stringify({ data: [{ id: "fixture-priced-model", pricing: { prompt: "0.000001", completion: "0.000002" } }] }));
-      else if (request.url === "/v1/chat/completions") {
+      if (pathname === "/v1/models") response.end(JSON.stringify({ data: [{ id: "fixture-priced-model", architecture: { input_modalities: ["text"], output_modalities: ["text"] }, supported_parameters: ["tools"], pricing: { prompt: "0.000001", completion: "0.000002" } }] }));
+      else if (pathname === "/v1/chat/completions") {
         const payload = JSON.parse(body) as { stream_options?: { include_usage?: boolean } };
         openRouterUsageRequested = payload.stream_options?.include_usage === true;
         response.setHeader("content-type", "text/event-stream");

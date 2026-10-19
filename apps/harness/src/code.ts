@@ -28,7 +28,7 @@ export interface CodeIntelligenceOptions { ripgrepCommand?: string | null; ripgr
 export class CodeIntelligence {
   private readonly indexing = new Map<string, Promise<{ projectPath: string; files: number; symbols: number; updatedFiles: number }>>();
   private readonly indexes = new Map<string, CodeIndexedFile[]>();
-  private readonly invalidated = new Set<string>();
+  private readonly invalidated = new Map<string, Set<string> | null>();
 
   private readonly ripgrepCommand: string | null;
   private readonly ripgrepTimeoutMs: number;
@@ -38,10 +38,16 @@ export class CodeIntelligence {
     this.ripgrepTimeoutMs = Math.max(100, Math.min(options.ripgrepTimeoutMs ?? RIPGREP_TIMEOUT_MS, 60_000));
   }
 
-  invalidate(projectPath: string): void {
+  invalidate(projectPath: string, path?: string): void {
     const root = resolve(projectPath);
-    this.indexes.delete(root);
-    this.invalidated.add(root);
+    if (path === undefined) {
+      this.invalidated.set(root, null);
+      return;
+    }
+    if (this.invalidated.has(root) && this.invalidated.get(root) === null) return;
+    const paths = this.invalidated.get(root) ?? new Set<string>();
+    paths.add(relative(root, resolve(root, path)).replaceAll("\\", "/"));
+    this.invalidated.set(root, paths);
   }
 
   async index(projectPath: string): Promise<{ projectPath: string; files: number; symbols: number; updatedFiles: number }> {
@@ -56,14 +62,16 @@ export class CodeIntelligence {
   private async indexProject(root: string): Promise<{ projectPath: string; files: number; symbols: number; updatedFiles: number }> {
     const candidates = await this.collect(root);
     if (candidates.length > MAX_FILES) throw new Error(`The project contains more than ${MAX_FILES} supported source files; narrow the workspace before indexing.`);
-    const previous = new Map(this.persistence.listCodeIndexFiles(root).map((file) => [file.path, file]));
-    const forceRefresh = this.invalidated.delete(root);
+    const previous = new Map((this.indexes.get(root) ?? this.persistence.listCodeIndexFiles(root)).map((file) => [file.path, file]));
+    const invalidated = this.invalidated.get(root);
+    this.invalidated.delete(root);
+    const forceRefresh = invalidated === null;
     const indexed: CodeIndexedFile[] = [];
     let updatedFiles = 0;
 
     for (const candidate of candidates) {
       const current = previous.get(candidate.path);
-      if (!forceRefresh && current && current.size === candidate.size && current.mtimeMs === candidate.mtimeMs) {
+      if (!forceRefresh && !invalidated?.has(candidate.path) && current && current.size === candidate.size && current.mtimeMs === candidate.mtimeMs) {
         indexed.push(current);
         previous.delete(candidate.path);
         continue;
@@ -126,20 +134,32 @@ export class CodeIntelligence {
       ...(!relationship.targetPath && relationship.kind !== "IMPORTS" && symbolFiles.get(relationship.targetName)?.length === 1 ? { targetPath: symbolFiles.get(relationship.targetName)![0] } : {}),
     })));
     const direct = new Set<string>();
+    const isPathQuery = queryText.includes("/") || /\.[a-z0-9]+$/i.test(queryText);
     if (needle) {
       const matchingNames = new Set(symbols.filter((symbol) => symbol.name.toLowerCase().includes(needle)).map((symbol) => symbol.name));
-      const isPathQuery = queryText.includes("/") || /\.[a-z0-9]+$/i.test(queryText);
       const matchingPaths = isPathQuery ? new Set([...filePaths].filter((path) => path.toLowerCase().includes(needle))) : new Set<string>();
       const matchingSymbolPaths = new Set(symbols.filter((symbol) => matchingNames.has(symbol.name)).map((symbol) => symbol.path));
+      const relatedSourcePaths = new Set(matchingSymbolPaths);
+      for (const edge of all) {
+        if (edge.kind !== "IMPORTS" && ((edge.sourceName !== undefined && matchingNames.has(edge.sourceName)) || matchingNames.has(edge.targetName))) relatedSourcePaths.add(edge.sourcePath);
+      }
       for (const edge of all) {
         const matchesPath = matchingPaths.has(edge.sourcePath) || (edge.targetPath !== undefined && matchingPaths.has(edge.targetPath));
         const matchesSymbol = (edge.sourceName !== undefined && matchingNames.has(edge.sourceName))
           || matchingNames.has(edge.targetName)
-          || (edge.targetPath !== undefined && matchingSymbolPaths.has(edge.targetPath));
+          || (edge.kind === "IMPORTS" && relatedSourcePaths.has(edge.sourcePath));
         if (matchesPath || matchesSymbol || [edge.sourceName, edge.targetName].some((value) => value?.toLowerCase().includes(needle))) direct.add(edgeKey(edge));
       }
     }
-    const relationships = (needle ? all.filter((edge) => direct.has(edgeKey(edge))) : all).slice(0, 250);
+    const matched = needle ? all.filter((edge) => direct.has(edgeKey(edge))) : all;
+    if (needle && !isPathQuery) {
+      const relevance = (edge: CodeRelationship): number => {
+        if (edge.kind === "IMPORTS") return 0;
+        return edge.sourceName?.toLowerCase() === needle || edge.targetName.toLowerCase() === needle ? 2 : 1;
+      };
+      matched.sort((left, right) => relevance(right) - relevance(left));
+    }
+    const relationships = matched.slice(0, 250);
     return { query: queryText, files: files.length, symbols: symbols.length, relationships, truncated: relationships.length < (needle ? direct.size : all.length) };
   }
 
@@ -332,7 +352,8 @@ function resolveImportPath(relationship: CodeRelationship, filePaths: Set<string
   if ([".ts", ".tsx", ".js", ".jsx"].includes(sourceExt) && target.startsWith(".")) {
     const base = posix.resolve("/", source, "..");
     const joined = posix.resolve(base, target).replace(/^\//, "");
-    const candidates = [joined, ...[".ts", ".tsx", ".js", ".jsx"].map((extension) => `${joined}${extension}`), ...[".ts", ".tsx", ".js", ".jsx"].map((extension) => `${joined}/index${extension}`)];
+    const sourceVariants = /\.jsx?$/i.test(joined) ? [joined.replace(/\.jsx?$/i, ".ts"), joined.replace(/\.jsx?$/i, ".tsx")] : [];
+    const candidates = [joined, ...sourceVariants, ...[".ts", ".tsx", ".js", ".jsx"].map((extension) => `${joined}${extension}`), ...[".ts", ".tsx", ".js", ".jsx"].map((extension) => `${joined}/index${extension}`)];
     return candidates.find((candidate) => filePaths.has(candidate));
   }
   if (sourceExt === ".py") {
