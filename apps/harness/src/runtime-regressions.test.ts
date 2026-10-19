@@ -221,6 +221,14 @@ test("command output preserves UTF-8 split across process chunks", { timeout: 15
   assert.equal(result.status, "completed"); assert.equal((result.data as { stdout: string }).stdout, "sí 🚀");
 });
 
+test("Windows process commands use PowerShell syntax", { skip: process.platform !== "win32", timeout: 15_000 }, async (t) => {
+  const env = await fixture(t, provider(async () => done()));
+  const session = env.runtime.createSession({ ...config(env.project), permissionProfile: "advanced" });
+  const result = await env.runtime.invokeTool(session.id, "process.exec", { command: "Get-ChildItem -Name source.txt | Select-Object -First 1" });
+  assert.equal(result.status, "completed", result.summary);
+  assert.equal((result.data as { stdout: string }).stdout.trim(), "source.txt");
+});
+
 test("runaway command output is bounded and stops the managed process", { timeout: 15_000 }, async (t) => {
   const env = await fixture(t, provider(async () => done()));
   await writeFile(join(env.project, "output.cjs"), 'process.stdout.write("x".repeat(2_100_000)); setInterval(()=>{},1000);');

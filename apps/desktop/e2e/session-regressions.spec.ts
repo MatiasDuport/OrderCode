@@ -128,6 +128,46 @@ test('toggles Workspace from the rail, closes it explicitly and keeps chrome com
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
+test('expands navigation without covering Workspace and keeps tool navigation in sync with window resizing', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/');
+  const nav = page.getByRole('navigation', { name: 'Navegación principal' });
+  const workspace = nav.getByRole('button', { name: 'Proyecto', exact: true });
+  const panel = page.getByRole('complementary', { name: 'Proyecto' });
+  const workStack = page.locator('.work-stack');
+
+  expect(await nav.evaluate((element) => getComputedStyle(element).transitionProperty)).toContain('flex-basis');
+  await page.mouse.move(18, 100);
+  await expect.poll(() => nav.evaluate((element) => Math.round(element.getBoundingClientRect().width))).toBe(196);
+  let navBounds = (await nav.boundingBox())!;
+  let workBounds = (await workStack.boundingBox())!;
+  expect(workBounds.x).toBeGreaterThanOrEqual(navBounds.x + navBounds.width - 1);
+
+  await workspace.click();
+  await expect(panel).toBeVisible();
+  navBounds = (await nav.boundingBox())!;
+  let panelBounds = (await panel.boundingBox())!;
+  expect(panelBounds.x).toBeGreaterThanOrEqual(navBounds.x + navBounds.width - 1);
+
+  await page.setViewportSize({ width: 900, height: 700 });
+  await workspace.click();
+  await expect(panel).toBeVisible();
+  await page.mouse.move(18, 100);
+  await expect.poll(() => nav.evaluate((element) => Math.round(element.getBoundingClientRect().width))).toBe(56);
+  navBounds = (await nav.boundingBox())!;
+  panelBounds = (await panel.boundingBox())!;
+  expect(panelBounds.x).toBeGreaterThanOrEqual(navBounds.x + navBounds.width - 1);
+
+  await panel.getByRole('button', { name: 'Cerrar proyecto', exact: true }).click();
+  await nav.getByRole('button', { name: 'Herramientas', exact: true }).click();
+  await nav.getByRole('button', { name: 'Cambios y Git', exact: true }).click();
+  await expect(nav.getByRole('button', { name: 'Cambios y Git', exact: true })).toBeVisible();
+  await page.setViewportSize({ width: 500, height: 700 });
+  await expect(nav.getByRole('button', { name: 'Cambios y Git', exact: true })).toHaveCount(0);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect(nav.getByRole('button', { name: 'Cambios y Git', exact: true })).toBeVisible();
+});
+
 test('explores a clean folder tree, searches nested files and opens them in both themes', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto('/');
@@ -252,7 +292,7 @@ test('discovers and safely previews SVG graphics and static HTML from the projec
   await expect(page.frameLocator('iframe[title="Gráfica graphs/report.html"]').getByText('Este script no debe ejecutarse')).toHaveCount(0);
 });
 
-test('pairs parallel and legacy tool events without changing the run state', async ({ page }) => {
+test('pairs parallel tools and resolves permission activity without changing the run state', async ({ page }) => {
   await page.goto('/');
   await page.locator('.composer-dropdown--model .dropdown-trigger').click();
   await page.getByRole('option', { name: /Fast local code/ }).click();
@@ -281,14 +321,29 @@ test('pairs parallel and legacy tool events without changing the run state', asy
   await expect(activity.locator('.activity-item').nth(1)).toContainText('Falló');
   await page.evaluate(() => {
     const fixture = (window as unknown as { auditFixture: { customEvents: unknown[]; holdRun: boolean } }).auditFixture;
-    fixture.customEvents.push({ id: 'run-end', sequence: 1508, sessionId: 'new-project', runId: 'activity-run', type: 'run.completed', payload: {} });
+    fixture.customEvents.push(
+      { id: 'permission-request', sequence: 1508, sessionId: 'new-project', runId: 'activity-run', type: 'permission.requested', payload: { request: { id: 'permission-1', toolName: 'process.exec', reason: 'Execute approved command.' } } },
+      { id: 'permission-resolution', sequence: 1509, sessionId: 'new-project', runId: 'activity-run', type: 'permission.resolved', payload: { requestId: 'permission-1', decision: 'once' } },
+      { id: 'run-end', sequence: 1510, sessionId: 'new-project', runId: 'activity-run', type: 'run.completed', payload: {} },
+    );
     fixture.holdRun = false;
   });
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
   await expect(toggle).toContainText('Completado');
   await toggle.click();
-  await expect(activity.locator('.activity-item')).toHaveCount(3);
+  await expect(activity.locator('.activity-item')).toHaveCount(4);
+  await expect(activity.locator('.activity-item').nth(3)).toContainText('Autorización concedida: process.exec');
+  await expect(activity.locator('.activity-item').nth(3)).toContainText('Completado');
+  await expect(activity.locator('.activity-item').nth(3)).not.toContainText('Pendiente de autorización');
   await expect(activity.locator('.activity-item').getByText('En curso', { exact: true })).toHaveCount(0);
+  const pendingPermission = await page.evaluate(async () => {
+    const { useDesktopStore } = await import('/src/lib/store.ts');
+    const current = useDesktopStore.getState();
+    useDesktopStore.setState({ pendingPermission: { id: 'permission-store-test' } });
+    current.addEvent({ id: 'permission-store-resolution', sessionId: current.session!.id, sequence: Math.max(...current.events.map((event) => event.sequence), 0) + 1, state: 'COMPLETED', type: 'permission.resolved', summary: 'Autorización concedida: process.exec', permissionRequestId: 'permission-store-test', permissionDecision: 'once' });
+    return useDesktopStore.getState().pendingPermission;
+  });
+  expect(pendingPermission).toBeNull();
 });
 
 test('selects model-specific effort and chats with a project through the composer', async ({ page }) => {

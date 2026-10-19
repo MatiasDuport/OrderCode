@@ -1,6 +1,6 @@
 [package]
 name = "ordercode-desktop"
-version = "0.3.13"
+version = "0.3.14"
 description = "OrderCode desktop shell and native broker"
 authors = ["OrderCode"]
 edition = "2021"

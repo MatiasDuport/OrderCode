@@ -182,7 +182,8 @@ export const useDesktopStore = create<DesktopState>((set) => ({
     const events = [...state.events.filter((item) => item.id !== event.id), event].sort((left, right) => left.sequence - right.sequence);
     const isLifecycle = /^(run\.(started|completed|failed|cancelled)|session\.state|permission\.requested)$/.test(event.type ?? event.summary);
     const lifecycle = isLifecycle ? events.filter((item) => item.runId && /^(run\.(started|completed|failed|cancelled)|session\.state|permission\.requested)$/.test(item.type ?? item.summary)).at(-1) : undefined;
-    return { events, ...(lifecycle ? { runtimeState: lifecycle.state } : {}), ...(event.permissionRequest ? { pendingPermission: event.permissionRequest } : {}), ...(event.summary === 'provider.chunk' ? { streamingText: state.streamingText + (event.detail ?? '') } : {}) };
+    const resolvedPending = event.type === 'permission.resolved' && state.pendingPermission?.id === event.permissionRequestId;
+    return { events, ...(lifecycle ? { runtimeState: lifecycle.state } : {}), ...(event.permissionRequest ? { pendingPermission: event.permissionRequest } : resolvedPending ? { pendingPermission: null } : {}), ...(event.summary === 'provider.chunk' ? { streamingText: state.streamingText + (event.detail ?? '') } : {}) };
   }),
   resetSession: () => set((state) => ({ session: null, reasoningEffort: undefined, sessionRevision: state.sessionRevision + 1, messages: [], streamingText: '', events: [], runtimeState: 'CREATED', pendingPermission: null, openFile: null, filePreview: null, editorContent: '', editorOriginal: '' })),
 }));

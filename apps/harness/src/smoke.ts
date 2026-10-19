@@ -61,6 +61,7 @@ function fixtureProvider(pricing?: ProviderModel["pricing"]): ProviderAdapter {
     async stream(request: ProviderRequest, onChunk: (chunk: string) => void): Promise<ProviderTurn> {
       if (!request.messages.some((message) => message.role === "system")) throw new Error("The agent request omitted its system context.");
       if (!request.messages[0]?.content.includes("smoke context rule")) throw new Error("The agent request omitted the project AGENTS.md context.");
+      if (!request.messages[0]?.content.includes("Never invent URLs, commit hashes, deployment states, or test results.")) throw new Error("The agent system context does not require verifiable claims for external side effects.");
       if (request.messages[0]?.content.includes("## Available tools")) throw new Error("Tool descriptions were duplicated in the system prompt instead of using the provider tool schemas.");
       if (request.tools?.some((tool) => tool.name === "desktop.terminal.open")) throw new Error("The UI-only terminal authorization was exposed to the model.");
       if (request.messages.some((message) => message.role === "user" && message.content.includes("usage-ledger-smoke"))) {

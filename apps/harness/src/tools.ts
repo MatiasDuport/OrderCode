@@ -55,7 +55,7 @@ const definitions: ToolDefinition[] = [
   { name: "release.deploy", description: "Trigger the configured Vercel Deploy Hook for its predefined Git branch. This publishes external code and requires explicit approval.", effects: ["PUBLISH"], cancellable: true, inputSchema: { type: "object", properties: {} } },
   { name: "fs.read", description: "Read a UTF-8 file inside the active project.", effects: ["READ"], cancellable: false, inputSchema: { type: "object", required: ["path"], properties: { path: { type: "string" }, start: { type: "integer" }, end: { type: "integer" } } } },
   { name: "fs.write", description: "Write a UTF-8 file atomically, optionally guarded by an expected hash.", effects: ["WRITE"], cancellable: false, inputSchema: { type: "object", required: ["path", "content"], properties: { path: { type: "string" }, content: { type: "string" }, expectedSha256: { type: "string" } } } },
-  { name: "process.exec", description: "Execute a command in the active project with a bounded timeout.", effects: ["EXECUTE"], cancellable: true, inputSchema: { type: "object", required: ["command"], properties: { command: { type: "string" }, cwd: { type: "string" }, timeoutMs: { type: "integer", minimum: 100, maximum: 600000 } } } },
+  { name: "process.exec", description: "Execute a command in the active project with a bounded timeout. On Windows, commands run in PowerShell.", effects: ["EXECUTE"], cancellable: true, inputSchema: { type: "object", required: ["command"], properties: { command: { type: "string" }, cwd: { type: "string" }, timeoutMs: { type: "integer", minimum: 100, maximum: 600000 } } } },
   { name: "desktop.terminal.open", description: "Authorize opening an interactive terminal in the active workspace.", effects: ["EXECUTE"], cancellable: false, inputSchema: { type: "object", properties: { shell: { type: "string", enum: ["default", "powershell", "cmd", "bash", "zsh"] } } } },
   { name: "git.status", description: "Read the current Git branch and working-tree status.", effects: ["READ"], cancellable: false, inputSchema: { type: "object", properties: {} } },
   { name: "git.diff", description: "Read unstaged or staged Git changes. An optional path must be inside the project.", effects: ["READ"], cancellable: false, inputSchema: { type: "object", properties: { staged: { type: "boolean" }, path: { type: "string" } } } },
@@ -484,7 +484,7 @@ export class ToolRegistry {
     let terminating = false;
     let forceTimer: ReturnType<typeof setTimeout> | undefined;
     context.signal?.throwIfAborted();
-    const child = spawn(command, { cwd, shell: true, windowsHide: true, detached: process.platform !== "win32" });
+    const child = spawn(command, { cwd, shell: process.platform === "win32" ? "powershell.exe" : true, windowsHide: true, detached: process.platform !== "win32" });
     const terminate = () => {
       if (terminating || !child.pid) return;
       terminating = true;

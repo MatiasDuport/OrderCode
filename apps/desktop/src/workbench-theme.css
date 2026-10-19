@@ -658,8 +658,8 @@ kbd { background: var(--surface-raised); border-color: var(--border); box-shadow
 /* Aurora workspace: clear navigation and light behind the work. */
 .topbar-search { display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 9px; border: 0; background: transparent; color: var(--slate); font-size: 12px; cursor: pointer; border-radius: 6px; }
 .topbar-search:hover { color: var(--frost); background: var(--surface-raised); }
-.simple-navigation { position: relative; width: var(--rail-width); flex: 0 0 var(--rail-width); z-index: 25; }
-.simple-navigation-content { position: absolute; inset: 0 auto 0 0; display: flex; width: var(--rail-width); flex-direction: column; gap: 18px; padding: 16px 10px 12px; overflow-x: hidden; overflow-y: auto; border-right: 1px solid var(--border); background: var(--surface); transition: width 220ms cubic-bezier(.2,.7,.2,1), box-shadow 220ms ease; }
+.simple-navigation { position: relative; width: var(--rail-width); flex: 0 0 var(--rail-width); z-index: 25; transition: flex-basis 260ms cubic-bezier(.2,.8,.2,1); }
+.simple-navigation-content { position: absolute; inset: 0 auto 0 0; display: flex; width: var(--rail-width); flex-direction: column; gap: 18px; padding: 16px 10px 12px; overflow-x: hidden; overflow-y: auto; border-right: 1px solid var(--border); background: var(--surface); transition: width 260ms cubic-bezier(.2,.8,.2,1), box-shadow 260ms ease; }
 .new-conversation-button { position: relative; isolation: isolate; overflow: hidden; display: flex; align-items: center; justify-content: center; gap: 7px; flex-shrink: 0; min-height: 36px; width: 100%; padding: 8px; border: 0; border-radius: 8px; color: #0b0f14; background: var(--spectrum); font-size: 12px; font-weight: 700; cursor: pointer; box-shadow: 0 4px 18px #83aaff12; transition: transform 180ms, box-shadow 180ms; }
 .new-conversation-button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 7px 24px #83aaff24; }
 .new-conversation-button:active:not(:disabled) { transform: scale(.98); }
@@ -689,17 +689,15 @@ kbd { background: var(--surface-raised); border-color: var(--border); box-shadow
   .simple-navigation .tools-disclosure > svg:last-child { display: none; }
   .simple-navigation .simple-nav-tools { width: 40px; align-self: center; align-items: center; margin: 0; padding: 2px 0 8px; border-left: 0; }
   .simple-navigation .simple-nav-tools .simple-nav-link { width: 40px; padding: 7px 0; justify-content: center; }
-  .simple-navigation:not(.simple-navigation--settings):is(:hover, :focus-within) .simple-navigation-content { width: var(--rail-expanded-width); box-shadow: 14px 0 34px #0004; }
-  /* The expanded rail is an overlay: leave empty areas click-through so it cannot block the work surface. */
-  .simple-navigation:not(.simple-navigation--settings):is(:hover, :focus-within) .simple-navigation-content { pointer-events: none; }
-  .simple-navigation .new-conversation-button, .simple-navigation .simple-nav-link { pointer-events: auto; }
-  .simple-navigation:not(.simple-navigation--settings):is(:hover, :focus-within) .simple-nav-primary, .simple-navigation:not(.simple-navigation--settings):is(:hover, :focus-within) .simple-nav-bottom { align-items: stretch; }
-  .simple-navigation:not(.simple-navigation--settings):is(:hover, :focus-within) .new-conversation-button { width: 100%; align-self: stretch; gap: 7px; padding: 8px; }
-  .simple-navigation:not(.simple-navigation--settings):is(:hover, :focus-within) .new-conversation-button > span, .simple-navigation:not(.simple-navigation--settings):is(:hover, :focus-within) .simple-nav-link > span:not(.simple-nav-highlight) { max-width: 160px; opacity: 1; visibility: visible; transition-delay: 70ms; }
-  .simple-navigation:not(.simple-navigation--settings):is(:hover, :focus-within) .simple-nav-link { width: 100%; justify-content: flex-start; gap: 11px; padding: 9px 12px; }
-  .simple-navigation:not(.simple-navigation--settings):is(:hover, :focus-within) .tools-disclosure > svg:last-child { display: block; }
-  .simple-navigation:not(.simple-navigation--settings):is(:hover, :focus-within) .simple-nav-tools { width: auto; align-self: stretch; align-items: stretch; margin-left: 10px; padding: 2px 0 8px 9px; border-left: 1px solid var(--border); }
-  .simple-navigation:not(.simple-navigation--settings):is(:hover, :focus-within) .simple-nav-tools .simple-nav-link { width: 100%; justify-content: flex-start; padding: 7px 8px; }
+  .simple-navigation:not(.simple-navigation--settings):not(.simple-navigation--workspace-open):is(:hover, :focus-within) { flex-basis: var(--rail-expanded-width); }
+  .simple-navigation:not(.simple-navigation--settings):not(.simple-navigation--workspace-open):is(:hover, :focus-within) .simple-navigation-content { width: var(--rail-expanded-width); box-shadow: 14px 0 34px #0004; }
+  .simple-navigation:not(.simple-navigation--settings):not(.simple-navigation--workspace-open):is(:hover, :focus-within) .simple-nav-primary, .simple-navigation:not(.simple-navigation--settings):not(.simple-navigation--workspace-open):is(:hover, :focus-within) .simple-nav-bottom { align-items: stretch; }
+  .simple-navigation:not(.simple-navigation--settings):not(.simple-navigation--workspace-open):is(:hover, :focus-within) .new-conversation-button { width: 100%; align-self: stretch; gap: 7px; padding: 8px; }
+  .simple-navigation:not(.simple-navigation--settings):not(.simple-navigation--workspace-open):is(:hover, :focus-within) .new-conversation-button > span, .simple-navigation:not(.simple-navigation--settings):not(.simple-navigation--workspace-open):is(:hover, :focus-within) .simple-nav-link > span:not(.simple-nav-highlight) { max-width: 160px; opacity: 1; visibility: visible; transition-delay: 70ms; }
+  .simple-navigation:not(.simple-navigation--settings):not(.simple-navigation--workspace-open):is(:hover, :focus-within) .simple-nav-link { width: 100%; justify-content: flex-start; gap: 11px; padding: 9px 12px; }
+  .simple-navigation:not(.simple-navigation--settings):not(.simple-navigation--workspace-open):is(:hover, :focus-within) .tools-disclosure > svg:last-child { display: block; }
+  .simple-navigation:not(.simple-navigation--settings):not(.simple-navigation--workspace-open):is(:hover, :focus-within) .simple-nav-tools { width: auto; align-self: stretch; align-items: stretch; margin-left: 10px; padding: 2px 0 8px 9px; border-left: 1px solid var(--border); }
+  .simple-navigation:not(.simple-navigation--settings):not(.simple-navigation--workspace-open):is(:hover, :focus-within) .simple-nav-tools .simple-nav-link { width: 100%; justify-content: flex-start; padding: 7px 8px; }
 }
 .view-transition { flex-direction: column; }
 .surface-back { flex-shrink: 0; padding: 13px clamp(20px,4.5vw,72px) 0; }

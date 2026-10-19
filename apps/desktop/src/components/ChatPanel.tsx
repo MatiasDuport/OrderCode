@@ -54,6 +54,7 @@ const stateLabels: Record<RuntimeState, string> = { CREATED: 'Listo', PREPARING:
 
 function taskActivity(events: HarnessEvent[], active: boolean): HarnessEvent[] {
   const rows: HarnessEvent[] = [], identities = new Map<string, number>(), pending = new Map<string, number[]>();
+  const resolutions = new Map(events.filter((event) => event.type === 'permission.resolved' && event.permissionRequestId).map((event) => [event.permissionRequestId!, event]));
   const terminalRuns = new Set(events.filter((event) => /^run\.(completed|failed|cancelled)$/.test(event.type ?? event.summary)).map((event) => event.runId));
   for (const event of events) {
     const type = event.type ?? event.summary;
@@ -72,7 +73,10 @@ function taskActivity(events: HarnessEvent[], active: boolean): HarnessEvent[] {
         if (index !== undefined) rows[index] = { ...event, id: rows[index].id, summary: tool };
         else rows.push({ ...event, summary: tool });
       }
-    } else if (['permission.requested', 'run.failed', 'context.compacted', 'recovery.required'].includes(type)) rows.push(event);
+    } else if (type === 'permission.requested') {
+      const resolution = event.permissionRequestId ? resolutions.get(event.permissionRequestId) : undefined;
+      rows.push(resolution ? { ...event, state: resolution.state, summary: `Autorización ${resolution.permissionDecision === 'reject' ? 'rechazada' : 'concedida'}: ${event.toolName ?? event.summary.replace(/^Autorización: /, '')}`, detail: resolution.detail, permissionDecision: resolution.permissionDecision } : event);
+    } else if (['run.failed', 'context.compacted', 'recovery.required'].includes(type)) rows.push(event);
   }
   return rows.map((event) => event.state === 'RUNNING' && (!active || terminalRuns.has(event.runId)) ? { ...event, state: 'RECOVERY_REQUIRED', detail: event.detail ?? 'Sin resultado registrado' } : event);
 }

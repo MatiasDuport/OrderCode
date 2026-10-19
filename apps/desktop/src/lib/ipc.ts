@@ -252,10 +252,13 @@ function toDesktopEvent(event: Record<string, unknown>): HarnessEvent {
   const payload = event.payload && typeof event.payload === 'object' ? event.payload as Record<string, unknown> : {};
   const rawResult = payload.result && typeof payload.result === 'object' ? payload.result as Record<string, unknown> : undefined;
   const toolState = event.type === 'tool.completed' ? ({ completed: 'COMPLETED', failed: 'FAILED', cancelled: 'CANCELLED', rejected: 'FAILED' }[String(rawResult?.status)] ?? 'RECOVERY_REQUIRED') : undefined;
-  const rawState = typeof payload.state === 'string' ? payload.state : toolState ?? (event.type === 'run.completed' ? 'COMPLETED' : event.type === 'run.failed' ? 'FAILED' : event.type === 'run.cancelled' ? 'CANCELLED' : event.type === 'permission.requested' ? 'WAITING_APPROVAL' : 'RUNNING');
   const request = payload.request && typeof payload.request === 'object' ? payload.request as Record<string, unknown> : undefined;
+  const decision = ['reject', 'once', 'session', 'project'].includes(String(payload.decision)) ? payload.decision as PermissionDecision : undefined;
+  const permissionState = event.type === 'permission.resolved' && decision ? decision === 'reject' ? 'CANCELLED' : 'COMPLETED' : undefined;
+  const rawState = typeof payload.state === 'string' ? payload.state : toolState ?? permissionState ?? (event.type === 'run.completed' ? 'COMPLETED' : event.type === 'run.failed' ? 'FAILED' : event.type === 'run.cancelled' ? 'CANCELLED' : event.type === 'permission.requested' ? 'WAITING_APPROVAL' : 'RUNNING');
   const input = payload.input && typeof payload.input === 'object' ? payload.input as Record<string, unknown> : undefined;
-  const toolName = typeof payload.toolName === 'string' ? payload.toolName : undefined;
+  const toolName = typeof payload.toolName === 'string' ? payload.toolName : typeof request?.toolName === 'string' ? request.toolName : undefined;
+  const permissionToolName = toolName ?? String(request?.toolName ?? 'acción');
   const result = payload.result && typeof payload.result === 'object' ? payload.result as Record<string, unknown> : undefined;
   const resultData = result?.data && typeof result.data === 'object' ? result.data as Record<string, unknown> : {};
   const deployment = typeof resultData.jobId === 'string' ? resultData : undefined;
@@ -273,11 +276,15 @@ function toDesktopEvent(event: Record<string, unknown>): HarnessEvent {
     type: String(event.type ?? ''),
     ...(toolName ? { toolName } : {}),
     ...(typeof payload.invocationId === 'string' ? { invocationId: payload.invocationId } : {}),
-    summary: event.type === 'permission.requested' ? `Autorización: ${toolName ?? String(request?.toolName ?? 'acción')}` : toolName ? `${toolName}${result ? ` · ${String(result.status ?? '')}` : ''}` : String(event.type ?? 'Actividad'),
+    summary: event.type === 'permission.requested' ? `Autorización: ${permissionToolName}` : event.type === 'permission.resolved' ? `Autorización ${decision === 'reject' ? 'rechazada' : 'concedida'}: ${permissionToolName}` : toolName ? `${toolName}${result ? ` · ${String(result.status ?? '')}` : ''}` : String(event.type ?? 'Actividad'),
     ...(usageDetail ? { detail: usageDetail } : {}),
     ...(actionDetail ? { detail: actionDetail } : {}),
     ...(event.type === 'tool.started' && toolName === 'agents.delegate' && input ? { detail: `${String(input.role ?? 'specialist')} · ${String(input.task ?? '')}` } : {}),
     ...(request ? { detail: typeof request.reason === 'string' ? request.reason : `${String(request.action ?? '')} · ${String(request.resource ?? '')}`, permissionRequest: request } : {}),
+    ...(event.type === 'permission.requested' && typeof request?.id === 'string' ? { permissionRequestId: request.id } : {}),
+    ...(event.type === 'permission.resolved' && typeof payload.requestId === 'string' ? { permissionRequestId: payload.requestId } : {}),
+    ...(decision ? { permissionDecision: decision } : {}),
+    ...(event.type === 'permission.resolved' ? { detail: decision === 'reject' ? 'La acción no se ejecutó porque se rechazó la autorización.' : 'Autorización confirmada; la acción puede continuar.' } : {}),
     ...(toolName === 'fs.write' && result?.status === 'completed' && typeof resultData.path === 'string' ? { changedFiles: [resultData.path] } : {}),
     ...(typeof resultData.diff === 'string' ? { diff: resultData.diff } : {}),
     ...(typeof resultData.stdout === 'string' || typeof resultData.stderr === 'string' ? { terminalOutput: [resultData.stdout, resultData.stderr].filter((part): part is string => typeof part === 'string' && !!part).join('\n') } : {}),

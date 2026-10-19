@@ -86,6 +86,8 @@ export interface HarnessEvent {
   changedFiles?: string[];
   terminalOutput?: string;
   permissionRequest?: Record<string, unknown>;
+  permissionRequestId?: string;
+  permissionDecision?: PermissionDecision;
   diff?: string;
 }
 
