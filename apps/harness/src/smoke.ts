@@ -79,26 +79,26 @@ function fixtureProvider(pricing?: ProviderModel["pricing"]): ProviderAdapter {
         ] };
       }
       if (request.messages.some((message) => message.role === "user" && message.content.includes("agent-test-smoke"))) {
-        if (request.tools?.length) throw new Error("Agent Studio dry-run exposed executable tools to the model.");
+        if (request.tools?.some((tool) => !tool.effects.every((effect) => effect === "READ")) || !request.tools?.some((tool) => tool.name === "fs.read")) throw new Error("Agent Studio dry-run did not expose only the profile's read-only tools.");
         if (!request.messages[0]?.content.includes("Describe the relevant facts before conclusions.")) throw new Error("Agent Studio dry-run omitted the saved profile instructions.");
         const content = "Agent test response with no tools.";
         onChunk(content);
         return { content, toolCalls: [], finishReason: "stop", inputTokens: 12, outputTokens: 8 };
       }
       if (request.messages.some((message) => message.role === "user" && message.content.includes("Review this security concern"))) {
-        if (request.tools?.length || request.model !== "fixture-model") throw new Error("A delegated specialist did not inherit the selected model with its own tools disabled.");
+        if (request.tools?.some((tool) => !tool.effects.every((effect) => effect === "READ")) || request.model !== "fixture-model") throw new Error("A delegated specialist did not inherit the selected model and read-only tools.");
         return { content: "The supplied context shows a security concern; validate its permission boundary.", toolCalls: [], finishReason: "stop", inputTokens: 9, outputTokens: 11, cachedTokens: 5 };
       }
       if (request.messages.some((message) => message.role === "user" && message.content.includes("delegation-main-smoke")) && !request.messages.some((message) => message.role === "tool")) {
         if (!request.tools?.some((tool) => tool.name === "agents.delegate")) throw new Error("The primary agent was not offered controlled specialist delegation.");
-        return { content: "", finishReason: "tool_calls", toolCalls: [{ id: "fixture-delegate-1", name: "agents.delegate", arguments: { role: "security", task: "Review this security concern", context: "The parent supplied a short code excerpt." } }], cachedTokens: 2 };
+        return { content: "", finishReason: "tool_calls", toolCalls: [{ id: "fixture-delegate-1", name: "agents.delegate", arguments: { agentId: "security", task: "Review this security concern", context: "The parent supplied a short code excerpt." } }], cachedTokens: 2 };
       }
       if (request.messages.some((message) => message.role === "user" && message.content.includes("budget-output-smoke"))) {
         if (request.maxOutputTokens !== 7) throw new Error("The session output-token ceiling was not forwarded to the selected provider.");
         return { content: "Budget checked.", toolCalls: [], finishReason: "stop", inputTokens: 3, outputTokens: 7 };
       }
       if (request.messages.some((message) => message.role === "user" && message.content.includes("cost-delegation-smoke")) && !request.messages.some((message) => message.role === "tool")) {
-        return { content: "", finishReason: "tool_calls", toolCalls: [{ id: "fixture-cost-delegate", name: "agents.delegate", arguments: { role: "security", task: "cost-delegate-specialist-task" } }], inputTokens: 5, outputTokens: 2, costUsd: 0.00001, costKind: "exact" };
+        return { content: "", finishReason: "tool_calls", toolCalls: [{ id: "fixture-cost-delegate", name: "agents.delegate", arguments: { agentId: "security", task: "cost-delegate-specialist-task" } }], inputTokens: 5, outputTokens: 2, costUsd: 0.00001, costKind: "exact" };
       }
       if (request.messages.some((message) => message.role === "user" && message.content.includes("cost-delegate-specialist-task"))) {
         if (!Number.isSafeInteger(request.maxOutputTokens) || Number(request.maxOutputTokens) <= 0) throw new Error("The cost limit was not forwarded to a delegated specialist.");

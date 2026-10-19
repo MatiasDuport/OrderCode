@@ -75,9 +75,13 @@ Los tres comparten un único runtime. Auto no impone secuencias ni cuotas arbitr
 
 **Delegación:** automática cuando aporte valor, con paralelismo únicamente en tareas independientes y coordinación de escrituras. Evitar especialistas redundantes.
 
+**Perfiles personalizados:** selección manual o asignación automática opt-in cuando se usa General; lista limitada de herramientas y Skills activas, instrucciones y resultado esperado; delegación opcional con destinos permitidos, profundidad máxima configurable de cuatro, detección de ciclos y límites globales de tarea. Los especialistas ejecutan herramientas en serie y cada llamada pasa por las autorizaciones de la sesión. Sin autorización, la acción no se ejecuta.
+
 **Herencia:** todos utilizan el modelo de la conversación y permisos iguales o más restrictivos que el agente principal. Prohibidos los cambios silenciosos de modelo.
 
-**Agent Studio:** crear, editar, configurar, probar, activar, importar y exportar agentes; herramientas, instrucciones, capacidades, MCP, Skills y permisos. Sin modelo independiente por agente.
+**Agent Studio:** creador guiado con plantillas, descripción local sin llamadas de modelo, herramientas (incluidos servidores MCP conectados), Skills, asignación, delegación, instrucciones, resultado esperado, activación explícita y prueba real de solo lectura. Las pruebas heredan modelo, esfuerzo y presupuestos, y no guardan ni activan el borrador. Importar y exportar conserva las relaciones entre agentes; los importados quedan desactivados. Sin modelo independiente por agente.
+
+**Visibilidad:** cada agente delegado genera eventos persistentes de inicio, espera de permiso, resultado o fallo, con tarea, agente padre y nivel de anidamiento. El chat agrupa la actividad por agente y anida sus herramientas; el selector del compositor conserva el especialista principal.
 
 ## 7. Context Intelligence — Optimización de tokens
 

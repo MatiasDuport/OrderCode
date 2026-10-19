@@ -331,7 +331,7 @@ test("reasoning effort persists, inherits into tool turns and specialists, reset
   const efforts: Array<string | undefined> = [];
   const adapter = provider(async (request) => {
     efforts.push(request.reasoningEffort);
-    if (efforts.length === 1) return { ...done(), toolCalls: [{ id: "delegate-1", name: "agents.delegate", arguments: { role: "review", task: "Review supplied context", context: "The project has one source file." } }], finishReason: "tool_calls" };
+    if (efforts.length === 1) return { ...done(), toolCalls: [{ id: "delegate-1", name: "agents.delegate", arguments: { agentId: "review", task: "Review supplied context", context: "The project has one source file." } }], finishReason: "tool_calls" };
     return done();
   });
   const list = adapter.listModels;
@@ -354,6 +354,130 @@ test("reasoning effort persists, inherits into tool turns and specialists, reset
   assert.equal(result.state, "WAITING_USER");
   assert.equal(efforts.length, before);
   assert.match(result.reason ?? "", /does not support/);
+});
+
+test("custom agents use configured tools, delegate within depth, inherit the selected model, and report lifecycle", async (t) => {
+  const requests: ProviderRequest[] = [];
+  let customAgentId = "";
+  const adapter = provider(async (request) => {
+    requests.push(request);
+    const user = request.messages.findLast((message) => message.role === "user")?.content ?? "";
+    const toolsUsed = request.messages.filter((message) => message.role === "tool");
+    if (user.includes("nested-agent-smoke-root") && !toolsUsed.length) {
+      const delegate = request.tools?.find((tool) => tool.name === "agents.delegate");
+      const properties = delegate?.inputSchema.properties as { agentId?: { enum?: string[] } } | undefined;
+      assert.ok(properties?.agentId?.enum?.includes(customAgentId));
+      return { ...done(), finishReason: "tool_calls", toolCalls: [{ id: "delegate-custom", name: "agents.delegate", arguments: { agentId: customAgentId, task: "nested-agent-smoke-custom" } }] };
+    }
+    if (user.includes("nested-agent-smoke-custom")) {
+      const customSystem = request.messages.find((message) => message.role === "system")?.content ?? "";
+      assert.match(customSystem, /Research Guide/);
+      assert.doesNotMatch(customSystem, /Unselected Skill/);
+      if (!toolsUsed.length) {
+        assert.ok(request.tools?.some((tool) => tool.name === "fs.read"));
+        assert.ok(request.tools?.some((tool) => tool.name === "agents.delegate"));
+        return { ...done(), finishReason: "tool_calls", toolCalls: [{ id: "custom-read", name: "fs.read", arguments: { path: "source.txt" } }] };
+      }
+      if (!toolsUsed.some((message) => message.toolName === "agents.delegate")) {
+        assert.ok(toolsUsed.some((message) => message.toolName === "fs.read"));
+        return { ...done(), finishReason: "tool_calls", toolCalls: [{ id: "delegate-review", name: "agents.delegate", arguments: { agentId: "review", task: "nested-agent-smoke-review" } }] };
+      }
+      return { ...done(), content: "Custom agent integrated the reviewer evidence." };
+    }
+    if (user.includes("nested-agent-smoke-review")) {
+      assert.equal(request.model, "fixture-model");
+      assert.equal(request.reasoningEffort, "high");
+      assert.ok(request.tools?.some((tool) => tool.name === "fs.read"));
+      assert.ok(request.tools?.every((tool) => tool.effects.every((effect) => effect === "READ")));
+      assert.ok(request.tools?.some((tool) => tool.name === "agents.delegate"), "the configured second delegation level should be available");
+      if (!toolsUsed.length) return { ...done(), finishReason: "tool_calls", toolCalls: [{ id: "delegate-security", name: "agents.delegate", arguments: { agentId: "security", task: "nested-agent-smoke-security" } }] };
+      return { ...done(), content: "Reviewer integrated QA evidence and confirmed the source." };
+    }
+    if (user.includes("nested-agent-smoke-security")) {
+      assert.equal(request.model, "fixture-model");
+      assert.ok(request.tools?.every((tool) => tool.effects.every((effect) => effect === "READ")));
+      assert.ok(!request.tools?.some((tool) => tool.name === "agents.delegate"), "the configured delegation depth must stop at level three");
+      return { ...done(), content: "QA found no issue in the supplied evidence." };
+    }
+    return done();
+  });
+  const list = adapter.listModels;
+  adapter.listModels = async (signal) => (await list(signal)).map((model) => ({ ...model, reasoningEfforts: ["high"] }));
+  const env = await fixture(t, adapter);
+  const selectedSkill = ".agents/skills/research/SKILL.md", otherSkill = ".agents/skills/other/SKILL.md";
+  await mkdir(join(env.project, ".agents/skills/research"), { recursive: true });
+  await mkdir(join(env.project, ".agents/skills/other"), { recursive: true });
+  await writeFile(join(env.project, selectedSkill), "---\nname: Research Guide\n---\nUse project evidence.");
+  await writeFile(join(env.project, otherSkill), "---\nname: Unselected Skill\n---\nDo not include this skill.");
+  await env.runtime.skills.setEnabled(env.project, selectedSkill, true);
+  await env.runtime.skills.setEnabled(env.project, otherSkill, true);
+  const profile = env.runtime.agents.save({ name: "Researcher", description: "Inspect source and verify evidence", instructions: "Read relevant project evidence and report it.", toolAllowlist: ["fs.read"], skillAllowlist: [selectedSkill], enabled: true, templateId: "research", outcome: "Evidence-based result", autoAssign: true, canDelegate: true, delegateAllowlist: ["review"], delegationDepth: 2 });
+  customAgentId = profile.id;
+  const session = env.runtime.createSession({ ...config(env.project), reasoningEffort: "high" });
+  const result = await env.runtime.run({ sessionId: session.id, goal: "nested-agent-smoke-root", agentId: "build" });
+  assert.equal(result.state, "COMPLETED", JSON.stringify({ reason: result.reason, toolResults: result.toolResults.map((item) => ({ status: item.status, summary: item.summary, diagnostics: item.diagnostics, data: item.data })) }));
+  assert.equal(result.usage.providerCalls, 8);
+  assert.equal(result.usage.toolCalls, 4);
+  assert.equal(requests.length, 8);
+  assert.ok(requests.every((request) => request.model === "fixture-model"));
+  const lifecycle = env.runtime.listEvents(session.id).filter((event) => event.type.startsWith("agent."));
+  const started = lifecycle.filter((event) => event.type === "agent.started");
+  assert.equal(started.length, 3);
+  const custom = started.find((event) => event.payload.agentId === profile.id)!;
+  const review = started.find((event) => event.payload.agentId === "review")!;
+  const security = started.find((event) => event.payload.agentId === "security")!;
+  assert.equal(review.payload.parentAgentRunId, custom.payload.agentRunId);
+  assert.equal(review.payload.depth, 2);
+  assert.equal(security.payload.parentAgentRunId, review.payload.agentRunId);
+  assert.equal(security.payload.depth, 3);
+  assert.equal(lifecycle.filter((event) => event.type === "agent.completed" && event.payload.state === "COMPLETED").length, 3);
+  assert.ok(env.runtime.listEvents(session.id).some((event) => event.type === "tool.started" && event.payload.agentId === profile.id && event.payload.agentRunId === custom.payload.agentRunId));
+});
+
+test("the default General selection routes matching tasks to opted-in custom profiles", async (t) => {
+  let selectedTools: string[] = [];
+  const env = await fixture(t, provider(async (request) => {
+    selectedTools = request.tools?.map((tool) => tool.name) ?? [];
+    assert.match(request.messages[0]?.content ?? "", /Regression researcher/);
+    assert.ok(request.tools?.every((tool) => tool.effects.every((effect) => effect === "READ")));
+    return done();
+  }));
+  const profile = env.runtime.agents.save({ name: "Regression researcher", description: "Review source code for regressions", instructions: "Inspect evidence before reporting.", toolAllowlist: ["fs.read"], enabled: true, autoAssign: true, canDelegate: false });
+  const session = env.runtime.createSession(config(env.project));
+  const result = await env.runtime.run({ sessionId: session.id, goal: "Review source code for a regression", agentId: "general" });
+  assert.equal(result.state, "COMPLETED");
+  assert.deepEqual(selectedTools, ["fs.read"]);
+  assert.ok(env.runtime.listEvents(session.id).some((event) => event.type === "session.state" && event.payload.state === "PREPARING" && event.payload.agentId === profile.id));
+});
+
+test("delegated writes wait for the user's permission and resume without a root-run checkpoint", { timeout: 15_000 }, async (t) => {
+  let writerAgentId = "";
+  const adapter = provider(async (request) => {
+    const user = request.messages.findLast((message) => message.role === "user")?.content ?? "";
+    const toolResults = request.messages.filter((message) => message.role === "tool");
+    if (user.includes("delegated-write-root") && !toolResults.length) return { ...done(), finishReason: "tool_calls", toolCalls: [{ id: "delegate-writer", name: "agents.delegate", arguments: { agentId: writerAgentId, task: "delegated-write-child" } }] };
+    if (user.includes("delegated-write-child") && !toolResults.length) return { ...done(), finishReason: "tool_calls", toolCalls: [{ id: "write-from-agent", name: "fs.write", arguments: { path: "delegated.txt", content: "approved by the user" } }] };
+    return done();
+  });
+  const env = await fixture(t, adapter);
+  const profile = env.runtime.agents.save({ name: "Writer", description: "Make requested project changes", instructions: "Write only the requested file.", toolAllowlist: ["fs.write"], enabled: true, autoAssign: true, canDelegate: false });
+  writerAgentId = profile.id;
+  const session = env.runtime.createSession(config(env.project));
+  const running = env.runtime.run({ sessionId: session.id, goal: "delegated-write-root", agentId: "build" });
+  let request: { id: string } | undefined;
+  for (let attempt = 0; attempt < 200 && !request; attempt++) {
+    await delay(10);
+    const event = env.runtime.listEvents(session.id).findLast((item) => item.type === "permission.requested" && item.payload.agentId === writerAgentId);
+    const pending = event?.payload.request;
+    if (pending && typeof pending === "object" && typeof (pending as { id?: unknown }).id === "string") request = pending as { id: string };
+  }
+  assert.ok(request, `delegated file write should request the same session permission as a primary-agent write; events: ${JSON.stringify(env.runtime.listEvents(session.id).map((event) => ({ type: event.type, payload: event.payload })))}`);
+  const resolved = await env.runtime.resolvePermission(request.id, "once");
+  assert.ok("ok" in resolved && resolved.ok);
+  const result = await running;
+  assert.equal(result.state, "COMPLETED");
+  assert.equal(await readFile(join(env.project, "delegated.txt"), "utf8"), "approved by the user");
+  assert.equal(env.runtime.getSession(session.id).state, "COMPLETED");
 });
 
 

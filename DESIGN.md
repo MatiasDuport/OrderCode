@@ -192,7 +192,7 @@ Insertar una solicitud contextual, pequeña y clara: acción, recurso afectado, 
 Agentes oficiales: **General, Explore, Architect, Build, Debug, QA, Security y Review**.
 
 - Mostrar solo los agentes que están actuando; no ocho tarjetas permanentes.
-- Cada subagente activo presenta nombre, tarea, estado y un acceso a su actividad detallada.
+- Cada subagente activo presenta nombre, tarea, estado y nivel; sus herramientas y resultados se agrupan e indentan en la actividad desplegable del chat.
 - Las delegaciones paralelas se agrupan bajo la misma tarea y pueden desplegarse individualmente.
 - Los resultados aparecen como síntesis con enlaces a evidencias, no como conversaciones internas duplicadas.
 - `Agents` permite consultar, crear, editar, activar, desactivar, importar y probar configuraciones sin configurar modelos diferentes para cada uno.

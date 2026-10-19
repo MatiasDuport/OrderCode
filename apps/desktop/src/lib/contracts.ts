@@ -92,6 +92,12 @@ export interface HarnessEvent {
   diff?: string;
   estimatedTokensSaved?: number;
   continueUntilDone?: boolean;
+  agentId?: string;
+  agentName?: string;
+  agentRunId?: string;
+  parentAgentRunId?: string;
+  parentAgentId?: string;
+  delegationDepth?: number;
 }
 
 export type PermissionDecision = 'reject' | 'once' | 'session' | 'project';
@@ -168,6 +174,13 @@ export interface AgentProfile {
   description: string;
   instructions: string;
   toolAllowlist: string[];
+  skillAllowlist?: string[];
+  templateId?: string;
+  outcome?: string;
+  autoAssign?: boolean;
+  canDelegate?: boolean;
+  delegateAllowlist?: string[];
+  delegationDepth?: number;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -187,6 +200,7 @@ export interface AgentTestResult {
   outputTokens?: number;
   durationMs: number;
   toolCallsIgnored: boolean;
+  toolsRun?: string[];
 }
 
 export type McpTransport = 'stdio' | 'streamable-http';

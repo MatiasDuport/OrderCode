@@ -63,9 +63,10 @@ export class SkillRegistry {
     return { id: skillId, content, sha256: createHash("sha256").update(content).digest("hex") };
   }
 
-  async activeInstructions(projectPath: string): Promise<string> {
+  async activeInstructions(projectPath: string, selectedSkillIds?: string[]): Promise<string> {
     const root = await realpath(resolve(projectPath)).catch(() => resolve(projectPath));
-    const enabled = this.persistence.listEnabledSkills(root).filter((id) => this.isSupportedSkillId(id)).slice(0, MAX_ACTIVE_SKILLS);
+    const selected = selectedSkillIds === undefined ? undefined : new Set(selectedSkillIds);
+    const enabled = this.persistence.listEnabledSkills(root).filter((id) => this.isSupportedSkillId(id) && (!selected || selected.has(id))).slice(0, MAX_ACTIVE_SKILLS);
     const active = (await Promise.all(enabled.map(async (id) => {
       const content = await this.readSkillFile(root, id);
       if (content === undefined) return undefined;

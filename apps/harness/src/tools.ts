@@ -21,6 +21,9 @@ interface ReleaseTools {
 export interface ToolInvocationContext {
   sessionId: string;
   runId?: string;
+  agentRunId?: string;
+  parentAgentId?: string;
+  delegationDepth?: number;
   trackActivity?: boolean;
   projectPath: string;
   agentId: string;
@@ -276,8 +279,8 @@ export class ToolRegistry {
     } catch (error) {
       const result: ToolResult = { ok: false, status: "failed", toolName: invocation.name, summary: error instanceof Error ? error.message : String(error), data: { errorCode: "INVALID_TOOL_INPUT" }, durationMs: Date.now() - validationStartedAt };
       if (trackActivity) {
-        this.onEvent?.("tool.started", { sessionId: invocation.context.sessionId, runId: invocation.context.runId, invocationId, toolName: invocation.name, input: this.redactInput(invocation.name, invocation.input) });
-        this.onEvent?.("tool.completed", { sessionId: invocation.context.sessionId, runId: invocation.context.runId, invocationId, toolName: invocation.name, result });
+        this.onEvent?.("tool.started", { sessionId: invocation.context.sessionId, runId: invocation.context.runId, agentId: invocation.context.agentId, agentRunId: invocation.context.agentRunId, parentAgentId: invocation.context.parentAgentId, delegationDepth: invocation.context.delegationDepth, invocationId, toolName: invocation.name, input: this.redactInput(invocation.name, invocation.input) });
+        this.onEvent?.("tool.completed", { sessionId: invocation.context.sessionId, runId: invocation.context.runId, agentId: invocation.context.agentId, agentRunId: invocation.context.agentRunId, parentAgentId: invocation.context.parentAgentId, delegationDepth: invocation.context.delegationDepth, invocationId, toolName: invocation.name, result });
       }
       return result;
     }
@@ -294,16 +297,16 @@ export class ToolRegistry {
     });
     if (check.kind === "reject") {
       const result: ToolResult = { ok: false, status: "rejected", toolName: invocation.name, summary: check.reason, durationMs: 0, data: { errorCode: "PERMISSION_DENIED" } };
-      if (trackActivity) this.onEvent?.("tool.completed", { sessionId: invocation.context.sessionId, runId: invocation.context.runId, invocationId, toolName: invocation.name, result });
+      if (trackActivity) this.onEvent?.("tool.completed", { sessionId: invocation.context.sessionId, runId: invocation.context.runId, agentId: invocation.context.agentId, agentRunId: invocation.context.agentRunId, parentAgentId: invocation.context.parentAgentId, delegationDepth: invocation.context.delegationDepth, invocationId, toolName: invocation.name, result });
       return result;
     }
     if (check.kind === "approval") {
-      this.onEvent?.("permission.requested", { sessionId: invocation.context.sessionId, runId: invocation.context.runId, request: check.request });
+      this.onEvent?.("permission.requested", { sessionId: invocation.context.sessionId, runId: invocation.context.runId, agentId: invocation.context.agentId, agentRunId: invocation.context.agentRunId, parentAgentId: invocation.context.parentAgentId, delegationDepth: invocation.context.delegationDepth, request: check.request });
       return { ok: false, status: "rejected", toolName: invocation.name, summary: "Approval required before this tool can run.", durationMs: 0, data: { permissionRequest: check.request } };
     }
     if (invocation.context.signal?.aborted) return { ok: false, status: "cancelled", toolName: invocation.name, summary: "Tool invocation cancelled before start.", durationMs: 0 };
     const startedAt = Date.now();
-    if (trackActivity) this.onEvent?.("tool.started", { sessionId: invocation.context.sessionId, runId: invocation.context.runId, invocationId, toolName: invocation.name, input: this.redactInput(invocation.name, invocation.input) });
+    if (trackActivity) this.onEvent?.("tool.started", { sessionId: invocation.context.sessionId, runId: invocation.context.runId, agentId: invocation.context.agentId, agentRunId: invocation.context.agentRunId, parentAgentId: invocation.context.parentAgentId, delegationDepth: invocation.context.delegationDepth, invocationId, toolName: invocation.name, input: this.redactInput(invocation.name, invocation.input) });
     let result: ToolResult;
     try {
       result = await tool.invoke(invocation.input, invocation.context);
@@ -312,7 +315,7 @@ export class ToolRegistry {
     }
     result.durationMs = Date.now() - startedAt;
     const visibleData = invocation.name === "fs.write" || invocation.name === "process.exec" ? result.data : undefined;
-    if (trackActivity) this.onEvent?.("tool.completed", { sessionId: invocation.context.sessionId, runId: invocation.context.runId, invocationId, toolName: invocation.name, result: { ...result, data: visibleData } });
+    if (trackActivity) this.onEvent?.("tool.completed", { sessionId: invocation.context.sessionId, runId: invocation.context.runId, agentId: invocation.context.agentId, agentRunId: invocation.context.agentRunId, parentAgentId: invocation.context.parentAgentId, delegationDepth: invocation.context.delegationDepth, invocationId, toolName: invocation.name, result: { ...result, data: visibleData } });
     return result;
   }
 

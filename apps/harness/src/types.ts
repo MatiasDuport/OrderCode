@@ -23,6 +23,13 @@ export interface AgentProfile {
   description: string;
   instructions: string;
   toolAllowlist: string[];
+  skillAllowlist?: string[];
+  templateId?: string;
+  outcome?: string;
+  autoAssign?: boolean;
+  canDelegate?: boolean;
+  delegateAllowlist?: string[];
+  delegationDepth?: number;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -33,6 +40,13 @@ export interface AgentProfileDraft {
   description: string;
   instructions: string;
   toolAllowlist: string[];
+  skillAllowlist?: string[];
+  templateId?: string;
+  outcome?: string;
+  autoAssign?: boolean;
+  canDelegate?: boolean;
+  delegateAllowlist?: string[];
+  delegationDepth?: number;
   enabled: boolean;
 }
 
@@ -236,6 +250,9 @@ export interface HarnessEvent {
     | "permission.resolved"
     | "tool.started"
     | "tool.completed"
+    | "agent.started"
+    | "agent.state"
+    | "agent.completed"
     | "provider.chunk"
     | "context.compacted"
     | "checkpoint.created";

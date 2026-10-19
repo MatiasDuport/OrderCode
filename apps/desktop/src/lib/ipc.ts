@@ -35,12 +35,12 @@ type HarnessSession = { id: string; projectPath: string; title: string; modelId?
 
 export async function listCustomAgents(): Promise<AgentProfile[]> { return rpc<AgentProfile[]>('agents.list'); }
 export async function listAvailableAgentTools(sessionId?: string): Promise<AgentToolChoice[]> { return rpc<AgentToolChoice[]>('tools.list', sessionId ? { sessionId } : {}); }
-export async function saveCustomAgent(profile: { id?: string; name: string; description: string; instructions: string; toolAllowlist: string[]; enabled: boolean }): Promise<AgentProfile> {
+export async function saveCustomAgent(profile: { id?: string; name: string; description: string; instructions: string; toolAllowlist: string[]; skillAllowlist?: string[]; templateId?: string; outcome?: string; autoAssign?: boolean; canDelegate?: boolean; delegateAllowlist?: string[]; delegationDepth?: number; enabled: boolean }): Promise<AgentProfile> {
   return rpc<AgentProfile>('agents.save', { profile });
 }
 export async function deleteCustomAgent(agentId: string): Promise<boolean> { return rpc<boolean>('agents.delete', { agentId }); }
-export async function testCustomAgent(sessionId: string, agentId: string, prompt: string): Promise<AgentTestResult> {
-  return rpc<AgentTestResult>('agents.test', { sessionId, agentId, prompt });
+export async function testCustomAgent(sessionId: string, profile: Parameters<typeof saveCustomAgent>[0], prompt: string): Promise<AgentTestResult> {
+  return rpc<AgentTestResult>('agents.test', { sessionId, profile, prompt });
 }
 
 export async function listMcpServers(sessionId: string): Promise<McpServerStatus[]> { return rpc<McpServerStatus[]>('mcp.list', { sessionId }); }
@@ -282,19 +282,31 @@ function toDesktopEvent(event: Record<string, unknown>): HarnessEvent {
   const cachedTokens = Number(usage?.cachedTokens ?? 0);
   const usageDetail = usage ? `${Number(usage.inputTokens ?? 0).toLocaleString()} tokens entrada${cachedTokens > 0 ? ` · ${cachedTokens.toLocaleString()} en caché` : ''} · ${Number(usage.outputTokens ?? 0).toLocaleString()} salida · ${Number(usage.providerCalls ?? 0)} llamadas · ${Number(usage.durationMs ?? 0)} ms · ${cost}` : undefined;
   const resultSummary = typeof result?.summary === 'string' ? result.summary : undefined;
-  const delegatedRole = typeof resultData.role === 'string' ? resultData.role : undefined;
+  const delegatedRole = typeof resultData.agentName === 'string' ? resultData.agentName : typeof resultData.agentId === 'string' ? resultData.agentId : typeof resultData.role === 'string' ? resultData.role : undefined;
   const actionDetail = resultSummary ? `${delegatedRole ? `${delegatedRole} · ` : ''}${resultSummary}` : undefined;
+  const agentName = typeof payload.agentName === 'string' ? payload.agentName : typeof payload.agentId === 'string' ? payload.agentId : undefined;
+  const agentResult = payload.result && typeof payload.result === 'object' ? payload.result as Record<string, unknown> : undefined;
+  const agentResultSummary = typeof agentResult?.summary === 'string' ? agentResult.summary : typeof agentResult?.content === 'string' ? agentResult.content : undefined;
   return {
     id: String(event.id ?? crypto.randomUUID()), sessionId: String(event.sessionId ?? ''), sequence: Number(event.sequence ?? 0), state: rawState as HarnessEvent['state'],
     type: String(event.type ?? ''),
     ...(toolName ? { toolName } : {}),
     ...(typeof payload.invocationId === 'string' ? { invocationId: payload.invocationId } : {}),
+    ...(typeof payload.agentId === 'string' ? { agentId: payload.agentId } : {}),
+    ...(agentName ? { agentName } : {}),
+    ...(typeof payload.agentRunId === 'string' ? { agentRunId: payload.agentRunId } : {}),
+    ...(typeof payload.parentAgentRunId === 'string' ? { parentAgentRunId: payload.parentAgentRunId } : {}),
+    ...(typeof payload.parentAgentId === 'string' ? { parentAgentId: payload.parentAgentId } : {}),
+    ...(typeof payload.delegationDepth === 'number' ? { delegationDepth: payload.delegationDepth } : {}),
     summary: event.type === 'permission.requested' ? `Autorización: ${permissionToolName}` : event.type === 'permission.resolved' ? `Autorización ${decision === 'reject' ? 'rechazada' : 'concedida'}: ${permissionToolName}` : event.type === 'context.compacted' ? (payload.automatic === true ? 'Compactación automática del contexto' : 'Contexto de conversación compactado') : toolName ? `${toolName}${result ? ` · ${String(result.status ?? '')}` : ''}` : String(event.type ?? 'Actividad'),
+    ...(['agent.started', 'agent.state', 'agent.completed'].includes(String(event.type)) ? { summary: agentName ?? 'Especialista' } : {}),
+    ...(['agent.started', 'agent.state', 'agent.completed'].includes(String(event.type)) && typeof payload.task === 'string' ? { detail: payload.task } : {}),
+    ...(event.type === 'agent.completed' && agentResultSummary ? { detail: (typeof agentResult?.content === 'string' ? agentResult.content : agentResultSummary).slice(0, 1_000) } : {}),
     ...(event.type === 'context.compacted' && typeof payload.estimatedTokensSaved === 'number' ? { estimatedTokensSaved: payload.estimatedTokensSaved } : {}),
     ...(event.type === 'context.compacted' ? { detail: `${Number(payload.compactedMessages ?? 1)} mensajes · ${Number(payload.estimatedTokensSaved ?? 0).toLocaleString()} tokens estimados ahorrados${payload.automatic === true ? ' en resultados de herramientas' : ''}` } : {}),
     ...(usageDetail ? { detail: usageDetail } : {}),
     ...(actionDetail ? { detail: actionDetail } : {}),
-    ...(event.type === 'tool.started' && toolName === 'agents.delegate' && input ? { detail: `${String(input.role ?? 'specialist')} · ${String(input.task ?? '')}` } : {}),
+    ...(event.type === 'tool.started' && toolName === 'agents.delegate' && input ? { detail: `${String(input.agentId ?? input.role ?? 'specialist')} · ${String(input.task ?? '')}` } : {}),
     ...(request ? { detail: typeof request.reason === 'string' ? request.reason : `${String(request.action ?? '')} · ${String(request.resource ?? '')}`, permissionRequest: request } : {}),
     ...(event.type === 'permission.requested' && typeof request?.id === 'string' ? { permissionRequestId: request.id } : {}),
     ...(event.type === 'permission.resolved' && typeof payload.requestId === 'string' ? { permissionRequestId: payload.requestId } : {}),

@@ -77,15 +77,26 @@ function Message({ message, onLinkError }: { message: ChatMessage; onLinkError: 
 const stateLabels: Record<RuntimeState, string> = { CREATED: 'Listo', PREPARING: 'Preparando', RUNNING: 'En curso', WAITING_APPROVAL: 'Pendiente de autorización', WAITING_USER: 'Esperando respuesta', PAUSING: 'Pausando', PAUSED: 'En pausa', COMPLETED: 'Completado', FAILED: 'Falló', CANCELLED: 'Cancelado', RECOVERY_REQUIRED: 'Sin resultado registrado' };
 
 function taskActivity(events: HarnessEvent[], active: boolean): HarnessEvent[] {
-  const rows: HarnessEvent[] = [], identities = new Map<string, number>(), pending = new Map<string, number[]>();
+  const rows: HarnessEvent[] = [], identities = new Map<string, number>(), pending = new Map<string, number[]>(), agents = new Map<string, number>();
   const resolutions = new Map(events.filter((event) => event.type === 'permission.resolved' && event.permissionRequestId).map((event) => [event.permissionRequestId!, event]));
   const terminalRuns = new Set(events.filter((event) => /^run\.(completed|failed|cancelled)$/.test(event.type ?? event.summary)).map((event) => event.runId));
   for (const event of events) {
     const type = event.type ?? event.summary;
-    if (type === 'tool.started' || type === 'tool.completed') {
+    if (type === 'agent.started' || type === 'agent.state' || type === 'agent.completed') {
+      const identity = event.agentRunId;
+      const index = identity ? agents.get(identity) : undefined;
+      if (index !== undefined) rows[index] = { ...rows[index], ...event, summary: event.agentName ?? event.summary };
+      else {
+        if (identity) agents.set(identity, rows.length);
+        rows.push({ ...event, summary: event.agentName ?? event.summary });
+      }
+    } else if (type === 'tool.started' || type === 'tool.completed') {
       const tool = event.toolName ?? event.summary.split(' · ')[0];
+      // Delegation is represented by the richer agent lifecycle rows below.
+      if (tool === 'agents.delegate' && type === 'tool.started') continue;
+      if (tool === 'agents.delegate' && event.state === 'COMPLETED') continue;
       if (!event.runId && ['git.status', 'git.diff', 'git.branches', 'git.remotes', 'git.history', 'git.tags'].includes(tool)) continue;
-      const group = `${event.runId ?? 'manual'}:${tool}`, identity = event.invocationId ? `${group}:${event.invocationId}` : undefined;
+      const group = `${event.agentRunId ?? event.runId ?? 'manual'}:${tool}`, identity = event.invocationId ? `${group}:${event.invocationId}` : undefined;
       const queue = pending.get(group) ?? [];
       if (type === 'tool.started') {
         if (identity) identities.set(identity, rows.length);
@@ -112,12 +123,13 @@ function ActivityGroup() {
   const active = ['RUNNING', 'PREPARING', 'WAITING_APPROVAL'].includes(runtimeState);
   const useful = useMemo(() => taskActivity(events, active), [events, active]);
   const latestRun = events.at(-1)?.runId;
+  const primaryAgent = [...events].reverse().find((event) => event.runId === latestRun && event.agentName && !event.agentRunId)?.agentName;
   useEffect(() => { setExpanded(null); }, [latestRun]);
   if (!useful.length) return null;
   const open = expanded ?? active;
   const failed = runtimeState === 'FAILED' || runtimeState === 'CANCELLED';
-  return <Localized><section className="activity-group" aria-label="Ejecución de tareas"><button type="button" className={`activity-heading ${open ? 'is-open' : ''}`} aria-label="Mostrar actividad de tareas" aria-expanded={open} onClick={() => setExpanded(!open)}><ChevronDown size={13} />{active ? <CircleDashed className="activity-ring is-running" size={16} /> : failed ? <X className="activity-ring is-failed" size={15} /> : <Check className="activity-ring" size={15} />}<strong>Actividad de tareas</strong><span className="activity-task-count">{useful.length}</span><span className="panel-title-spacer" /><span className="muted">{stateLabels[runtimeState]}</span></button>
-    {open && <div className="activity-items">{useful.slice(-30).map((event) => <div className="activity-item" key={event.id}><div className={`activity-status activity-status--${event.state.toLowerCase()}`}>{event.state === 'COMPLETED' ? <Check size={11} /> : event.state === 'FAILED' || event.state === 'CANCELLED' ? <X size={11} /> : <span />}</div><div className="activity-copy"><strong>{event.summary}</strong><small>{event.detail ?? stateLabels[event.state]}</small></div><span className="activity-result">{stateLabels[event.state]}</span></div>)}</div>}
+  return <Localized><section className="activity-group" aria-label="Ejecución de tareas"><button type="button" className={`activity-heading ${open ? 'is-open' : ''}`} aria-label="Mostrar actividad de tareas" aria-expanded={open} onClick={() => setExpanded(!open)}><ChevronDown size={13} />{active ? <CircleDashed className="activity-ring is-running" size={16} /> : failed ? <X className="activity-ring is-failed" size={15} /> : <Check className="activity-ring" size={15} />}<strong>Actividad de tareas</strong><span className="activity-task-count">{useful.length}</span>{primaryAgent && <span className="activity-primary-agent">{primaryAgent}</span>}<span className="panel-title-spacer" /><span className="muted">{stateLabels[runtimeState]}</span></button>
+    {open && <div className="activity-items">{useful.slice(-30).map((event) => <div className={`activity-item${event.agentRunId ? ' activity-item--agent' : ''}`} key={event.id} style={event.agentRunId ? { paddingLeft: `${Math.min(event.delegationDepth ?? 1, 4) * 12}px` } : undefined}><div className={`activity-status activity-status--${event.state.toLowerCase()}`}>{event.state === 'COMPLETED' ? <Check size={11} /> : event.state === 'FAILED' || event.state === 'CANCELLED' ? <X size={11} /> : <span />}</div><div className="activity-copy"><strong>{event.agentRunId ? `↳ ${event.summary}` : event.summary}</strong><small>{event.detail ?? stateLabels[event.state]}</small></div><span className="activity-result">{stateLabels[event.state]}</span></div>)}</div>}
   </section></Localized>;
 }
 

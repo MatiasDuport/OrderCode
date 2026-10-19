@@ -141,8 +141,10 @@ export class JsonRpcServer {
         return this.runtime.agents.save(object.profile as AgentProfileDraft);
       }
       case "agents.test": {
-        if (typeof object.sessionId !== "string" || typeof object.agentId !== "string" || typeof object.prompt !== "string") throw new Error("A session, agent, and test prompt are required.");
-        return this.runtime.testAgent(object.sessionId, object.agentId, object.prompt);
+        if (typeof object.sessionId !== "string" || typeof object.prompt !== "string") throw new Error("A session, agent draft or profile, and test prompt are required.");
+        if (typeof object.agentId === "string") return this.runtime.testAgent(object.sessionId, object.agentId, object.prompt);
+        if (!object.profile || typeof object.profile !== "object" || Array.isArray(object.profile)) throw new Error("A custom agent draft or profile is required.");
+        return this.runtime.testAgent(object.sessionId, object.profile as AgentProfileDraft, object.prompt);
       }
       case "agents.delete": {
         if (typeof object.agentId !== "string") throw new Error("An agent id is required.");
