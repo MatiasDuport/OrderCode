@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { Activity, BookOpen, Bot, Code2, FolderOpen, GitBranch, Moon, Puzzle, Server, Sun } from 'lucide-react';
+import { Activity, BookOpen, Bot, Code2, FolderOpen, GitBranch, ArrowLeft, Puzzle, Server } from 'lucide-react';
 import { ChatPanel } from './components/ChatPanel';
 import { listen } from '@tauri-apps/api/event';
 const CodeGraphView = lazy(() => import('./components/CodeGraphView').then((module) => ({ default: module.CodeGraphView })));
@@ -10,12 +10,12 @@ const SkillsManager = lazy(() => import('./components/SkillsManager').then((modu
 const CommandPalette = lazy(() => import('./components/Overlays').then((module) => ({ default: module.CommandPalette })));
 const ApprovalDialog = lazy(() => import('./components/Overlays').then((module) => ({ default: module.ApprovalDialog })));
 import { NavRail } from './components/NavRail';
-import { StatusBar } from './components/StatusBar';
+import { WorkbenchAmbience } from './components/WorkbenchAmbience';
 const ReviewPanel = lazy(() => import('./components/ReviewPanel').then((module) => ({ default: module.ReviewPanel })));
 const TerminalPanel = lazy(() => import('./components/ReviewPanel').then((module) => ({ default: module.TerminalPanel })));
 import { TopBar } from './components/TopBar';
 import { WorkspaceSidebar } from './components/WorkspaceSidebar';
-import { activateSession, cancelSession, configureVercelDeployHook, invokeHarnessTool, isDesktopApp, listSessions, loadSession, openNativeTerminal, readWorkspaceFile, removeVercelDeployHook, resolvePermission, searchCode, searchCodeGraph, startHarness, vercelDeployHookStatus } from './lib/ipc';
+import { activateSession, cancelSession, createSession, configureVercelDeployHook, invokeHarnessTool, isDesktopApp, listSessions, loadSession, openNativeTerminal, readWorkspaceFile, removeVercelDeployHook, resolvePermission, searchCode, searchCodeGraph, startHarness, vercelDeployHookStatus } from './lib/ipc';
 import { useDesktopStore } from './lib/store';
 import { followSessionOperation, watchSessionExecution } from './lib/sessionExecution';
 import { checkForUpdates, downloadUpdate, initializeUpdater, installUpdate, reportUpdateProgress } from './lib/updater';
@@ -388,7 +388,7 @@ function Surface({ view, onSelectSession, onOpenSettings }: { view: string; onSe
   const { sessions, session, set, events } = useDesktopStore();
   const [activityTab, setActivityTab] = useState<'usage' | 'events'>('usage');
   const usageRefreshKey = events.slice().reverse().find((event) => event.summary === 'run.completed' || event.summary === 'run.failed' || event.state === 'CANCELLED')?.id;
-  if (view === 'Sessions') return <Localized><div className="surface-page"><div className="surface-heading"><Activity size={18} /><div><h2>Sesiones</h2><p>Sesiones guardadas en la base local del Harness.</p></div></div>{sessions.length ? <div className="surface-list">{sessions.map((item) => <button type="button" className={`surface-row surface-row--button ${item.id === session?.id ? 'is-active' : ''}`} key={item.id} onClick={() => onSelectSession(item)}><strong>{item.projectPath.split(/[\\/]/).filter(Boolean).at(-1) ?? 'Sesión'}</strong><span>{item.mode} · {item.state.toLowerCase()}</span><small>{timeLabel(item.updatedAt ?? item.createdAt)}</small></button>)}</div> : <div className="surface-empty">No hay sesiones guardadas. Conecta un workspace para empezar.</div>}</div></Localized>;
+  if (view === 'Sessions') return <Localized><div className="surface-page"><div className="surface-heading"><Activity size={18} /><div><h2>Historial</h2><p>Retoma una conversación donde la dejaste.</p></div></div>{sessions.length ? <div className="surface-list">{sessions.map((item) => <button type="button" className={`surface-row surface-row--button ${item.id === session?.id ? 'is-active' : ''}`} key={item.id} onClick={() => onSelectSession(item)}><strong>{item.projectPath.split(/[\\/]/).filter(Boolean).at(-1) ?? 'Sesión'}</strong><span>{item.mode} · {item.state.toLowerCase()}</span><small>{timeLabel(item.updatedAt ?? item.createdAt)}</small></button>)}</div> : <div className="surface-empty">Tus conversaciones aparecerán aquí cuando abras un proyecto.</div>}</div></Localized>;
   if (view === 'Agents') return <Suspense fallback={<div className="surface-empty" role="status">Cargando agentes…</div>}><AgentStudio officialAgents={agents} /></Suspense>;
   if (view === 'Extensions') return <ExtensionsSurface />;
   if (view === 'Settings') return <Suspense fallback={<div className="surface-empty" role="status">Cargando ajustes…</div>}><SettingsView onOpenWorkspace={onOpenSettings} /></Suspense>;
@@ -407,12 +407,14 @@ export default function App() {
   const executing = runtimeState === 'RUNNING' || runtimeState === 'PREPARING';
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [bootstrapError, setBootstrapError] = useState('');
+  const [creatingConversation, setCreatingConversation] = useState(false);
+  const creatingConversationRef = useRef(false);
   const openingSession = useRef(0);
   const resolvingPermission = useRef<string | null>(null);
   useEffect(() => {
-    if (!session || !executing) return;
+    if (!session || !executing || creatingConversation) return;
     return watchSessionExecution(session.id, sessionRevision);
-  }, [session?.id, sessionRevision, executing]);
+  }, [session?.id, sessionRevision, executing, creatingConversation]);
   useEffect(() => {
     const root = document.documentElement;
     root.dataset.theme = theme;
@@ -420,6 +422,13 @@ export default function App() {
     root.dataset.reducedMotion = String(reducedMotion);
     root.lang = language === 'system' ? (navigator.language.toLowerCase().startsWith('en') ? 'en' : 'es') : language;
   }, [theme, density, reducedMotion, language]);
+  useEffect(() => {
+    const root = document.documentElement;
+    const syncVisibility = () => { root.dataset.pageVisibility = document.hidden ? 'hidden' : 'visible'; };
+    syncVisibility();
+    document.addEventListener('visibilitychange', syncVisibility);
+    return () => { document.removeEventListener('visibilitychange', syncVisibility); delete root.dataset.pageVisibility; };
+  }, []);
   useEffect(() => {
     if (themePreference !== 'system') return;
     const media = window.matchMedia('(prefers-color-scheme: light)');
@@ -479,6 +488,8 @@ export default function App() {
   }, [sidebarOpen, set]);
 
   const navigateTo = (view: string) => {
+    if (view === 'Chat') { set('currentView', 'Workspace'); set('sidebarOpen', false); return; }
+    if (view === 'Terminal') { set('terminalOpen', !useDesktopStore.getState().terminalOpen); return; }
     if (view === 'Workspace') {
       const current = useDesktopStore.getState();
       set('currentView', 'Workspace');
@@ -489,6 +500,26 @@ export default function App() {
     set('sidebarOpen', false);
   };
 
+  const newConversation = async () => {
+    const active = useDesktopStore.getState();
+    if (creatingConversationRef.current || ['PREPARING', 'RUNNING', 'WAITING_APPROVAL', 'PAUSING'].includes(active.runtimeState)) return;
+    if (active.editorContent !== active.editorOriginal) { setBootstrapError('Guarda o descarta los cambios del editor antes de iniciar otra conversación.'); return; }
+    if (!active.session) { navigateTo('Chat'); document.querySelector<HTMLTextAreaElement>('[aria-label="Mensaje para OrderCode"]')?.focus(); return; }
+    creatingConversationRef.current = true;
+    const request = ++openingSession.current;
+    const revision = active.sessionRevision;
+    setCreatingConversation(true); set('runtimeState', 'PREPARING');
+    try {
+      const next = await createSession({ projectPath: active.session.projectPath, model: active.model, reasoningEffort: active.reasoningEffort, mode: active.mode, permission: active.permission, freeOnly: active.freeOnly, budget: active.session.budget });
+      if (request !== openingSession.current) return;
+      useDesktopStore.getState().resetSession();
+      set('session', next); set('runtimeState', next.state); set('agentId', 'general');
+      set('sessions', [next, ...useDesktopStore.getState().sessions.filter((item) => item.id !== next.id)]);
+      set('reviewOpen', false); navigateTo('Chat');
+    } catch (cause) { if (useDesktopStore.getState().sessionRevision === revision) { set('runtimeState', active.runtimeState); setBootstrapError(cause instanceof Error ? cause.message : String(cause)); } }
+    finally { creatingConversationRef.current = false; setCreatingConversation(false); }
+  };
+
   const handleUpdateAction = () => {
     const update = useDesktopStore.getState().updateView;
     if (update.phase === 'available') void downloadUpdate().catch(() => undefined);
@@ -497,6 +528,7 @@ export default function App() {
   };
 
   const openSession = async (item: SessionRecord) => {
+    if (creatingConversationRef.current) return;
     try {
       const active = useDesktopStore.getState();
       if (active.session?.id !== item.id && active.editorContent !== active.editorOriginal) {
@@ -589,10 +621,10 @@ export default function App() {
   const systemReducedMotion = useReducedMotion();
   const motionDisabled = reducedMotion || systemReducedMotion;
   const isApproval = runtimeState === 'WAITING_APPROVAL' && !!pendingPermission;
-  return <MotionConfig reducedMotion={motionDisabled ? 'always' : 'never'} transition={{ duration: motionDisabled ? 0 : .2, ease: [.2, .7, .2, 1] }}><div className="app-shell"><TopBar onToggleTerminal={() => set('terminalOpen', !terminalOpen)} onCommandPalette={() => setCommandPaletteOpen(true)} onSettings={() => navigateTo('Settings')} onUpdateAction={handleUpdateAction} /><div className="app-body"><NavRail active={currentView} workspaceOpen={sidebarOpen} onSelect={navigateTo} />{sidebarOpen && <button type="button" className="workspace-panel-backdrop" aria-label="Cerrar Workspace" onClick={() => set('sidebarOpen', false)} />}<AnimatePresence initial={false}>{sidebarOpen && <motion.div id="workspace-panel" className="sidebar-motion" initial={motionDisabled ? false : { width: 0, opacity: 0 }} animate={{ width: 248, opacity: 1 }} exit={{ width: 0, opacity: 0 }}><WorkspaceSidebar onClose={() => set('sidebarOpen', false)} /></motion.div>}</AnimatePresence><div className="work-stack"><section className={`work-area ${reviewOpen ? 'has-review' : ''}`}>
+  return <MotionConfig reducedMotion={motionDisabled ? 'always' : 'never'} transition={{ duration: motionDisabled ? 0 : .2, ease: [.2, .7, .2, 1] }}><div className="app-shell"><TopBar onCommandPalette={() => setCommandPaletteOpen(true)} onUpdateAction={handleUpdateAction} /><div className="app-body" inert={creatingConversation} aria-busy={creatingConversation}><NavRail active={currentView} workspaceOpen={sidebarOpen} onSelect={navigateTo} onNewConversation={() => void newConversation()} busy={creatingConversation || ['RUNNING', 'PREPARING', 'WAITING_APPROVAL', 'PAUSING'].includes(runtimeState)} motionDisabled={Boolean(motionDisabled)} />{sidebarOpen && <button type="button" className="workspace-panel-backdrop" aria-label="Cerrar proyecto" onClick={() => set('sidebarOpen', false)} />}<AnimatePresence initial={false}>{sidebarOpen && <motion.div id="workspace-panel" className="sidebar-motion" initial={motionDisabled ? false : { width: 0, opacity: 0 }} animate={{ width: 248, opacity: 1 }} exit={{ width: 0, opacity: 0 }}><WorkspaceSidebar onClose={() => set('sidebarOpen', false)} /></motion.div>}</AnimatePresence><div className="work-stack"><WorkbenchAmbience /><section className={`work-area ${reviewOpen ? 'has-review' : ''}`}>
     <motion.div className="view-transition" key={currentView} initial={motionDisabled ? false : { opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}>
-    {currentView === 'Workspace' ? <ChatPanel onOpenReview={() => set('reviewOpen', true)} onOpenSettings={() => navigateTo('Settings')} /> : <Surface view={currentView} onSelectSession={openSession} onOpenSettings={() => navigateTo('Workspace')} />}
+    {currentView === 'Workspace' ? <ChatPanel onOpenReview={() => set('reviewOpen', true)} onOpenSettings={() => { set('settingsSection', 'models'); navigateTo('Settings'); }} /> : <><Localized><div className="surface-back"><button type="button" onClick={() => navigateTo('Chat')}><ArrowLeft size={14} />Volver a la conversación</button></div></Localized><Surface view={currentView} onSelectSession={openSession} onOpenSettings={() => navigateTo('Workspace')} /></>}
     </motion.div>
     {reviewOpen && <Suspense fallback={<div className="surface-empty" role="status">Cargando revisión…</div>}><ReviewPanel onClose={() => set('reviewOpen', false)} /></Suspense>}
-  </section><div className={`terminal-dock ${terminalOpen ? '' : 'is-closed'}`}>{(terminalOpen || terminalSessions.length > 0) && <Suspense fallback={null}><TerminalPanel /></Suspense>}</div></div></div><StatusBar />{bootstrapError && <div className="bootstrap-alert" role="status"><span>{bootstrapError}</span><button type="button" onClick={() => setBootstrapError('')}>Cerrar</button></div>}<Localized><div className="theme-switch"><button type="button" className={theme === 'dark' ? 'is-active' : ''} onClick={() => set('theme', 'dark')} aria-label="Tema oscuro"><Moon size={13} /></button><button type="button" className={theme === 'light' ? 'is-active' : ''} onClick={() => set('theme', 'light')} aria-label="Tema claro"><Sun size={13} /></button></div></Localized>{commandPaletteOpen && <Suspense fallback={null}><CommandPalette open onClose={() => setCommandPaletteOpen(false)} onAction={(action) => { setCommandPaletteOpen(false); if (action === 'Workspace') navigateTo('Workspace'); else if (action === 'Review') set('reviewOpen', true); else if (action === 'Terminal') set('terminalOpen', true); else navigateTo(action); }} /></Suspense>}{isApproval && <Suspense fallback={null}><ApprovalDialog request={pendingPermission} onReject={() => void approvePermission('reject')} onApprove={(decision) => void approvePermission(decision)} /></Suspense>}</div></MotionConfig>;
+  </section><div className={`terminal-dock ${terminalOpen ? '' : 'is-closed'}`}>{(terminalOpen || terminalSessions.length > 0) && <Suspense fallback={null}><TerminalPanel /></Suspense>}</div></div></div>{creatingConversation && <Localized><div className="conversation-creating" role="status">Creando conversación…</div></Localized>}{bootstrapError && <div className="bootstrap-alert" role="status"><span>{bootstrapError}</span><button type="button" onClick={() => setBootstrapError('')}>Cerrar</button></div>}{commandPaletteOpen && <Suspense fallback={null}><CommandPalette open onClose={() => setCommandPaletteOpen(false)} onAction={(action) => { setCommandPaletteOpen(false); if (action === 'Workspace') navigateTo('Workspace'); else if (action === 'Review') set('reviewOpen', true); else if (action === 'Terminal') set('terminalOpen', true); else navigateTo(action); }} /></Suspense>}{isApproval && <Suspense fallback={null}><ApprovalDialog request={pendingPermission} onReject={() => void approvePermission('reject')} onApprove={(decision) => void approvePermission(decision)} /></Suspense>}</div></MotionConfig>;
 }

@@ -1,17 +1,19 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 
 // Controlled native transport: regression checks, without paid calls or a user account.
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('ordercode.desktop.preferences.v1', JSON.stringify({ language: 'es', autoCheckUpdates: false }));
-    const fixture = { ready: false, slowResolved: false, modelRequests: 0, polls: 0, maxPolls: 0, cursors: [] as number[], runRequests: 0, completeEvents: false, graphFailure: true, folderResult: 'C:/fixtures/new-project' as string | null, requests: [] as Array<{ method: string; params: Record<string, unknown> }> };
+    const fixture = { sessionsCreated: 0, ready: false, slowResolved: false, modelRequests: 0, polls: 0, maxPolls: 0, cursors: [] as number[], runRequests: 0, completeEvents: false, graphFailure: true, folderResult: 'C:/fixtures/new-project' as string | null, requests: [] as Array<{ method: string; params: Record<string, unknown> }> };
     const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
     const rawSession = (id: string) => ({ id, projectPath: `C:/fixtures/${id}`, title: id, modelId: 'local-code', providerId: 'ollama', mode: 'build', permissionProfile: 'guided', state: 'COMPLETED', createdAt: new Date().toISOString(), sequence: 1500 });
     Object.assign(window, { auditFixture: fixture, __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: () => undefined }, __TAURI_INTERNALS__: {
+      metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main' } },
       transformCallback: () => 1,
       unregisterCallback: () => undefined,
       invoke: async (command: string, args: Record<string, unknown>) => {
+        if (command === 'plugin:window|is_maximized') return false;
         if (command === 'harness_start') { await pause(150); fixture.ready = true; return { ok: true, harnessConnected: true, version: 'fixture', platform: 'windows' }; }
         if (command === 'workspace_open') return args.projectPath;
         if (command === 'workspace_read_file') {
@@ -57,7 +59,7 @@ test.beforeEach(async ({ page }) => {
           if (params.providerId === 'lmstudio') { await pause(2500); fixture.slowResolved = true; }
           result = [{ id: 'local-code', providerId: params.providerId, label: params.providerId === 'ollama' ? 'Fast local code' : 'Slow local code', available: true, priceKind: 'local', reasoningEfforts: params.providerId === 'ollama' ? ['low', 'high'] : [] }];
         } else if (method === 'session.list') result = [];
-        else if (method === 'session.create') result = { ...rawSession('new-project'), ...params };
+        else if (method === 'session.create') { while ((fixture as unknown as { holdCreate?: boolean }).holdCreate) await pause(25); fixture.sessionsCreated += 1; result = { ...rawSession(fixture.sessionsCreated === 1 ? 'new-project' : 'new-project-' + fixture.sessionsCreated), ...params }; }
         else if (method === 'session.update') result = true;
         else if (method === 'session.get') result = rawSession(String(params.sessionId));
         else if (method === 'session.messages') result = [{ id: 'answer', role: 'assistant', content: 'Persisted final answer', createdAt: new Date().toISOString() }];
@@ -85,16 +87,20 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+async function setTestTheme(page: Page, theme: 'light' | 'dark') {
+  await page.evaluate(async (value) => { const path = '/src/lib/store.ts'; const { useDesktopStore } = await import(path); useDesktopStore.getState().set('theme', value); }, theme);
+}
+
 test('toggles Workspace from the rail, closes it explicitly and keeps chrome compact in both themes', async ({ page }) => {
   await page.addInitScript(() => { const key = 'ordercode.desktop.preferences.v1'; localStorage.setItem(key, JSON.stringify({ ...JSON.parse(localStorage.getItem(key) ?? '{}'), reducedMotion: true })); });
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto('/');
-  const workspace = page.getByRole('button', { name: 'Workspace', exact: true });
-  const panel = page.getByRole('complementary', { name: 'Workspace' });
+  const workspace = page.getByRole('button', { name: 'Proyecto', exact: true });
+  const panel = page.getByRole('complementary', { name: 'Proyecto' });
   await workspace.click(); await expect(panel).toBeVisible();
   await expect(workspace).toHaveAttribute('aria-expanded', 'true');
   await workspace.click(); await expect(panel).toBeHidden();
-  await workspace.click(); await page.getByRole('button', { name: 'Cerrar Workspace', exact: true }).click();
+  await workspace.click(); await page.getByRole('button', { name: 'Cerrar proyecto', exact: true }).click();
   await expect(panel).toBeHidden();
   await workspace.click(); await page.keyboard.press('Escape'); await expect(panel).toBeHidden();
   await workspace.click(); await page.getByRole('button', { name: 'Ajustes', exact: true }).click(); await expect(panel).toBeHidden();
@@ -102,12 +108,12 @@ test('toggles Workspace from the rail, closes it explicitly and keeps chrome com
   expect((await chrome.boundingBox())!.height).toBe(38);
   await expect(chrome.locator('.project-selector')).toHaveCount(0);
   await expect(chrome.locator('img')).toHaveAttribute('src', /LogoSinFondo/);
-  await page.getByRole('button', { name: 'Tema claro' }).click();
+  await setTestTheme(page, 'light');
   await expect(chrome.locator('.brand-lockup')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
   await workspace.click();
   await expect(panel).toHaveCSS('width', '248px');
   if (process.env.TEMP) await page.screenshot({ path: `${process.env.TEMP}/ordercode-chrome-light.png`, animations: 'disabled' });
-  await page.getByRole('button', { name: 'Tema oscuro' }).click();
+  await setTestTheme(page, 'dark');
   if (process.env.TEMP) await page.screenshot({ path: `${process.env.TEMP}/ordercode-chrome-dark.png`, animations: 'disabled' });
   await page.setViewportSize({ width: 479, height: 700 });
   await expect(panel).toBeHidden();
@@ -120,9 +126,9 @@ test('toggles Workspace from the rail, closes it explicitly and keeps chrome com
 test('explores a clean folder tree, searches nested files and opens them in both themes', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto('/');
-  await page.getByRole('button', { name: 'Workspace', exact: true }).click();
-  await page.getByRole('button', { name: 'Añadir workspace' }).click();
-  const panel = page.getByRole('complementary', { name: 'Workspace' });
+  await page.getByRole('button', { name: 'Proyecto', exact: true }).click();
+  await page.getByRole('button', { name: 'Añadir proyecto' }).click();
+  const panel = page.getByRole('complementary', { name: 'Proyecto' });
   const src = panel.getByRole('treeitem', { name: 'src', exact: true });
   await expect(src).toHaveAttribute('aria-expanded', 'false');
   await expect(panel.getByRole('treeitem', { name: /console-/ })).toHaveCount(0);
@@ -165,7 +171,7 @@ test('explores a clean folder tree, searches nested files and opens them in both
   await expect(page.locator('.editor-toolbar code')).toBeVisible();
   expect(await panel.locator('.workspace-tree-scroll').evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
   if (process.env.TEMP) await panel.screenshot({ path: `${process.env.TEMP}/ordercode-workspace-dark.png`, animations: 'disabled' });
-  await page.getByRole('button', { name: 'Tema claro' }).click();
+  await setTestTheme(page, 'light');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
   await expect(panel.getByRole('treeitem', { name: 'App.tsx', exact: true })).toHaveCSS('color', await page.locator('html').evaluate((element) => getComputedStyle(element).color));
   if (process.env.TEMP) await panel.screenshot({ path: `${process.env.TEMP}/ordercode-workspace-light.png`, animations: 'disabled' });
@@ -173,7 +179,7 @@ test('explores a clean folder tree, searches nested files and opens them in both
   await expect(src).toHaveAttribute('aria-expanded', 'false');
   await page.setViewportSize({ width: 320, height: 720 });
   await expect(panel).toBeHidden();
-  await page.getByRole('button', { name: 'Workspace', exact: true }).click();
+  await page.getByRole('button', { name: 'Proyecto', exact: true }).click();
   await expect(panel).toBeVisible();
   await expect(page.locator('.theme-switch')).toBeHidden();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -186,9 +192,9 @@ test('previews images safely, protects binary files and keeps the full text edit
   await page.goto('/');
   const dataUrl = `data:image/png;base64,${(await readFile(new URL('../../../brand/LogoSinFondo.png', import.meta.url))).toString('base64')}`;
   await page.evaluate((imageData) => Object.assign((window as unknown as { auditFixture: object }).auditFixture, { imageData }), dataUrl);
-  await page.getByRole('button', { name: 'Workspace', exact: true }).click();
-  await page.getByRole('button', { name: 'Añadir workspace' }).click();
-  const panel = page.getByRole('complementary', { name: 'Workspace' });
+  await page.getByRole('button', { name: 'Proyecto', exact: true }).click();
+  await page.getByRole('button', { name: 'Añadir proyecto' }).click();
+  const panel = page.getByRole('complementary', { name: 'Proyecto' });
   await panel.getByRole('treeitem', { name: 'img', exact: true }).click();
   await panel.getByRole('treeitem', { name: 'campo.jpg', exact: true }).click();
   const preview = page.getByRole('region', { name: 'Vista previa: img/campo.jpg', exact: true });
@@ -283,7 +289,8 @@ test('recovers from a code graph error, inspects relationships and opens the rea
   await page.getByRole('textbox', { name: 'Mensaje para OrderCode' }).fill('Hola');
   await page.getByRole('button', { name: 'Enviar mensaje' }).click();
   await expect(page.getByText('Persisted final answer', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Inteligencia de código', exact: true }).click();
+  await page.getByRole('button', { name: 'Herramientas', exact: true }).click();
+  await page.getByRole('button', { name: 'Grafo y código', exact: true }).click();
   await expect(page.getByRole('textbox', { name: 'Buscar símbolos' })).toBeEnabled();
   await page.getByRole('button', { name: 'Abrir grafo' }).click();
   await expect(page.getByRole('alert')).toContainText('No se pudo cargar el grafo');
@@ -430,4 +437,27 @@ test('resumes live event tracking when opening a session that is already executi
   });
   await expect(page.getByText('Persisted final answer', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Detener ejecución' })).toHaveCount(0);
+});
+
+
+test('starts a new conversation in the same project and preserves previous history', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('.composer-dropdown--model .dropdown-trigger').click();
+  await page.getByRole('option', { name: /Fast local code/ }).click();
+  await page.getByRole('textbox', { name: 'Mensaje para OrderCode' }).fill('Hola');
+  await page.getByRole('button', { name: 'Enviar mensaje' }).click();
+  await expect(page.getByText('Persisted final answer', { exact: true })).toBeVisible();
+  await page.evaluate(() => { Object.assign((window as unknown as { auditFixture: object }).auditFixture, { holdCreate: true }); });
+  await page.getByRole('button', { name: 'Nueva conversación', exact: true }).click();
+  await expect(page.locator('.app-body')).toHaveAttribute('inert');
+  await expect(page.getByRole('status')).toHaveText('Creando conversación…');
+  await page.evaluate(() => { Object.assign((window as unknown as { auditFixture: object }).auditFixture, { holdCreate: false }); });
+  await expect(page.getByText('Persisted final answer', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('¿Qué quieres crear?', { exact: true })).toBeVisible();
+  const result = await page.evaluate(async () => { const path = '/src/lib/store.ts'; const { useDesktopStore } = await import(path); const state = useDesktopStore.getState(); return { session: state.session, sessions: state.sessions, model: state.model, mode: state.mode, permission: state.permission }; });
+  expect(result.sessions).toHaveLength(2);
+  expect(result.session.id).toBe('new-project-2');
+  expect(result.session.projectPath).toBe('C:/fixtures/new-project');
+  expect(result.model).toBe('ollama::local-code');
+  expect(result.mode).toBe('Auto'); expect(result.permission).toBe('Guiado');
 });

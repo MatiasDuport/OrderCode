@@ -138,7 +138,7 @@ export const useDesktopStore = create<DesktopState>((set) => ({
   reasoningEffort: undefined,
   freeOnly: false,
   agentId: 'general',
-  mode: 'Build',
+  mode: 'Auto',
   permission: 'Guiado',
   runtimeState: 'CREATED',
   pendingPermission: null,

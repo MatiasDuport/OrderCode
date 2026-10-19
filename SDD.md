@@ -171,7 +171,7 @@ Todas las herramientas externas pasarán por el Permission Engine.
 
 **Flujo:** proyecto → modelo → Plan/Build/Auto → conversación → ejecución → resultado.
 
-**Navegación:** Workspace, Sessions, Agents, Code Intelligence, Extensions, Activity y Settings.
+**Navegación:** Conversación, Proyecto e Historial; herramientas avanzadas agrupadas en Herramientas y configuración en Ajustes. Release Center sigue siendo un módulo independiente dentro de Herramientas. Inicio guiado: abrir carpeta y conectar modelo. El modo inicial es Auto, con permisos Guiado.
 
 **Paneles contextuales:** editor, diffs, terminal, procesos, logs, contexto, Git y Release Center.
 

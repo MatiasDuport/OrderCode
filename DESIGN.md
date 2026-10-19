@@ -67,7 +67,7 @@ Aplicación de la paleta:
 - **Dark por defecto.** Superficies predominantemente neutras; el verde, azul y violeta se usan con moderación.
 - **Light completo.** Fondo `#F7F8F5`, superficies blancas y acento verde `#426626`, texto oscuro con contraste suficiente, bordes neutros; ajustar los tonos de acento usados como texto para cumplir contraste. No invertir los colores ciegamente.
 - **Semántica adicional:** error, advertencia y éxito deben diferenciarse también por icono y texto, nunca solo por color. Definir tokens semánticos accesibles en implementación.
-- **Degradados Ion Spectrum:** usar verde → azul → violeta en bordes, selección, controles primarios y títulos puntuales. Aplicar halos radiales suaves de azul y violeta detrás del compositor, con superficies oscuras legibles. El tema claro conserva la misma paleta con texto de acento más oscuro.
+- **Degradados Ion Spectrum:** usar verde → azul → violeta en bordes, selección, controles primarios y títulos puntuales. El fondo utiliza iluminación difusa de baja saturación junto a los bordes, con tres focos amplios que se desplazan en ciclos independientes. Mantener el centro de lectura limpio, sin ondas, trazos ni figuras decorativas. Durante la conversación y los ajustes la iluminación es aún más discreta. El compositor tiene superficie opaca y borde de espectro; el tema claro conserva tonos oscuros en el texto.
 - **Regla de contención:** no más de uno o dos acentos visuales intensos simultáneos en la vista principal.
 - Sin neón generalizado, brillos permanentes, transparencias costosas ni efectos de cristal aplicados por defecto a todos los paneles.
 
@@ -81,7 +81,7 @@ Estas dimensiones son **objetivos de referencia**, no límites rígidos; adaptar
 | Controles de barra / menús | 30-32 px de alto |
 | Área interactiva de iconos | Aproximadamente 28-32 px; ampliar según accesibilidad |
 | Barra superior | 38 px |
-| Rail de navegación | 56 px contraído; etiquetas en una capa de 190 px al pasar el cursor o recibir foco |
+| Navegación | 196 px con nombres visibles; barra inferior en móvil |
 | Sidebar desplegada | 200-240 px, redimensionable |
 | Panel contextual | 280-340 px cuando exista espacio |
 | Terminal expandida | Altura ajustable; oculta inicialmente |
@@ -102,16 +102,15 @@ La interfaz es un **workbench adaptable**, no un dashboard. Solo la conversació
 
 ### 4.1. Barra superior
 
-Mostrar únicamente el isotipo transparente de OrderCode, sin texto ni fondo, y accesos compactos a comandos, terminal, actualizaciones y ajustes. El proyecto se selecciona en Workspace; su nombre aparece en el encabezado de conversación. Evitar duplicar aquí el selector de modelo, el esfuerzo, el modo o los permisos del composer.
+Mostrar el isotipo transparente de OrderCode, sin texto ni fondo, Buscar y los controles de ventana. Mostrar el acceso a actualizaciones únicamente cuando haya una disponible, una descarga o un error; la búsqueda manual permanece en Ajustes. El proyecto se selecciona en Workspace; su nombre aparece en el encabezado de conversación. Evitar duplicar aquí el selector de modelo, el esfuerzo, el modo o los permisos del composer.
 
 ### 4.2. Navegación lateral
 
-- Rail compacto de iconos con nombres accesibles. Al pasar el cursor o navegar por teclado, revelar las etiquetas en una capa superpuesta, sin desplazar el contenido. En táctil los accesos funcionan por pulsación.
-- Secciones: Workspace, Sessions, Agents, Code Intelligence, Extensions, Activity y Settings.
-- Agrupar los accesos menos frecuentes para no presentar siete paneles abiertos a la vez.
-- El explorador empieza contraído. El panel asociado muestra solo el árbol o lista necesaria y se puede contraer por completo.
-- Workspace se abre y se cierra desde el mismo acceso lateral, desde su botón de cierre o con Escape. En ventanas estrechas también se cierra al pulsar fuera. Al navegar a otra sección se contrae.
-- En proyectos con muchas sesiones, búsqueda y elementos recientes antes que listas interminables.
+- Navegación con nombres siempre visibles: Conversación, Proyecto e Historial. Botón Nueva conversación al inicio; Ajustes al final.
+- Herramientas agrupa Cambios y Git, Terminal, Grafo y código, Agentes, Skills y MCP, Uso y actividad y Publicar proyecto. Se despliega por clic o teclado; no exigir descubrir iconos al pasar el ratón.
+- Conversación muestra el chat; Proyecto abre o cierra los archivos sin perder la conversación. El panel se cierra desde su control, con Escape o al pulsar fuera en ventanas estrechas.
+- Ancho de referencia 196 px; 174 px en ventanas medianas. En móvil, navegación inferior con etiquetas y herramientas en un desplegable.
+- Ajustes tiene General, Modelos, Seguridad y Actualizaciones; Uso, Conexión local, Editor, Accesibilidad y Datos se agrupan en Avanzado. Las conexiones aparecen antes que la personalización del catálogo.
 
 ### 4.3. Área central
 
@@ -148,6 +147,8 @@ Oculto por defecto; incluye Terminal, Processes, Logs y Problems como vistas alt
 
 ### 5.2. Composer compacto
 
+Mostrar Modelo, Esfuerzo, Modo (Auto inicialmente) y Opciones. Esfuerzo tiene un selector propio y visible, ofrece Auto y únicamente los niveles admitidos por el modelo; sin niveles configurables explica por qué. Opciones contiene los permisos y el permiso actual permanece visible en el disparador. No presentar niveles de esfuerzo que el modelo no admite. Retirar barras de estado técnicas y el selector flotante de tema; la apariencia se cambia en Ajustes.
+
 El campo de mensaje permanecerá accesible en la parte inferior del chat.
 
 - Altura inicial mínima, adaptada al texto; crecimiento limitado y scroll interno cuando sea necesario.
@@ -176,7 +177,7 @@ El campo de mensaje permanecerá accesible en la parte inferior del chat.
 
 El valor elegido es visible en reposo. Cuando `Auto` está trabajando, una indicación discreta puede informar la fase interna actual.
 
-**No confundir:** `Auto` (modo de trabajo) y `Auto` (perfil de permisos) son ajustes diferentes. El permiso se ubica en un control independiente e identificado como tal.
+**No confundir:** el esfuerzo `Auto`, el modo de trabajo `Auto` y el permiso `Auto` son ajustes independientes. Esfuerzo siempre tiene su propio selector; los permisos tienen una sección dentro de Opciones y el perfil elegido permanece visible en su disparador.
 
 **Release no es un cuarto modo**; se accede al Release Center desde Git o el resultado de una tarea.
 
@@ -251,7 +252,7 @@ Definir componentes reutilizables para:
 - Respetar `prefers-reduced-motion`: reemplazar movimiento no esencial por cambios inmediatos de estado.
 - Objetivo de fluidez: 60 FPS en hardware de referencia, incluyendo streaming, indexación y listas largas mediante virtualización.
 
-Coreografiar transiciones de vista, selección lateral con resorte, menús con profundidad y escala sutil, opciones escalonadas, borde luminoso al enfocar el compositor y elevación de tarjetas. Mantener movimiento reducido del sistema y del ajuste local, también en JavaScript; la excepción ambiental es el desplazamiento muy lento y discreto de degradados de fondo.
+Coreografiar transiciones de vista, selección lateral con resorte, pasos iniciales escalonados, menús con profundidad y escala sutil, barrido de luz al pasar por la acción principal y borde orbital al enfocar el compositor o durante una ejecución real. La iluminación de fondo se anima mediante transform y opacity; no usar bucles de JavaScript por fotograma. Pausar animaciones al ocultar la ventana. Conservar movimiento reducido del sistema y del ajuste local, también en JavaScript: la identidad cromática permanece estática y los controles cambian de estado de inmediato.
 
 Los selectores del compositor se abren al pasar el ratón (120 ms) y cierran con margen de 180 ms al salir; permiten cruzar desde el control al menú. También admiten clic, flechas, Enter, Tab, cierre con Escape y clic exterior. El hover nunca ejecuta acciones ni cambia modelo, modo o permisos. El menú activo se mantiene mientras el usuario escribe o navega dentro.
 
@@ -269,10 +270,13 @@ Los selectores del compositor se abren al pasar el ratón (120 ms) y cierran con
 
 ## 11. Primer uso y continuidad
 
+Inicio guiado por dos pasos: Tu proyecto (Abrir carpeta) y Tu asistente (Conectar modelo). Reflejar el estado real de cada paso y retirarlos al completar ambos. Usar textos cotidianos, sin exigir entender proveedores, runtime o perfiles antes de empezar. Nueva conversación conserva el proyecto y la configuración; respeta ejecuciones activas y cambios sin guardar.
+
 Primer uso: **abrir proyecto -> seleccionar/conectar modelo -> conversar**. Las opciones avanzadas se descubren cuando hagan falta. Mantener estado de proyecto, sesión, paneles y archivos abiertos entre reinicios cuando corresponda, con recuperación visible y sin prometer continuidad falsa.
 
 ## 12. Antipatrones prohibidos
 
+- Navegación que exige adivinar iconos, controles duplicados o información técnica permanente.
 - Chat/composer desproporcionados que consumen la mayor parte de la pantalla sin necesidad.
 - Plan, Build y Auto como tres botones grandes o pestañas siempre presentes.
 - Release como cuarto modo principal.

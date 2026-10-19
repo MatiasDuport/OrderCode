@@ -66,7 +66,7 @@ export function WorkspaceSidebar({ onClose }: { onClose: () => void }) {
   const searchRef = useRef<HTMLInputElement>(null);
   const openingFile = useRef(0);
   const generation = useRef(0);
-  const workspaceName = session?.projectPath?.split(/[\\/]/).filter(Boolean).at(-1) ?? 'Sin workspace';
+  const workspaceName = session?.projectPath?.split(/[\\/]/).filter(Boolean).at(-1) ?? 'Sin proyecto';
   const search = query.trim().toLocaleLowerCase();
   const tree = useMemo(() => makeTree(search ? searchEntries ?? [] : entries, showAuxiliary, search), [entries, searchEntries, showAuxiliary, search]);
   const rows = useMemo(() => {
@@ -189,9 +189,9 @@ export function WorkspaceSidebar({ onClose }: { onClose: () => void }) {
     }
   };
 
-  return <Localized><aside className="workspace-sidebar" aria-label="Workspace">
-    <header className="workspace-heading"><h2>Workspace</h2><div className="workspace-panel-actions"><IconButton icon={Plus} label="Añadir workspace" disabled={busy} onClick={() => void connectWorkspace()} /><IconButton icon={X} label="Cerrar Workspace" onClick={onClose} /></div></header>
-    <button type="button" className="workspace-project" disabled={busy} onClick={() => void connectWorkspace()} title={session?.projectPath} aria-label="Cambiar workspace"><span className="workspace-project-icon"><Code2 size={19} /></span><span className="workspace-project-copy"><strong>{connecting ? 'Conectando…' : workspaceName}</strong><small>{session ? 'Proyecto local' : 'Conecta una carpeta'}</small></span><ChevronDown size={13} className="workspace-project-caret" /></button>
+  return <Localized><aside className="workspace-sidebar" aria-label="Proyecto">
+    <header className="workspace-heading"><h2>Proyecto</h2><div className="workspace-panel-actions"><IconButton icon={Plus} label="Añadir proyecto" disabled={busy} onClick={() => void connectWorkspace()} /><IconButton icon={X} label="Cerrar proyecto" onClick={onClose} /></div></header>
+    <button type="button" className="workspace-project" disabled={busy} onClick={() => void connectWorkspace()} title={session?.projectPath} aria-label="Cambiar proyecto"><span className="workspace-project-icon"><Code2 size={19} /></span><span className="workspace-project-copy"><strong>{connecting ? 'Conectando…' : workspaceName}</strong><small>{session ? 'Proyecto local' : 'Conecta una carpeta'}</small></span><ChevronDown size={13} className="workspace-project-caret" /></button>
     <div className="workspace-search-row"><label className="workspace-search"><Search size={14} /><input ref={searchRef} aria-label="Buscar archivos" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape' && query) { event.preventDefault(); event.stopPropagation(); setQuery(''); } }} placeholder="Buscar archivos" disabled={!session} />{query && <button type="button" onClick={() => { setQuery(''); searchRef.current?.focus(); }} aria-label="Limpiar búsqueda"><X size={12} /></button>}</label><button type="button" className={`workspace-filter ${showAuxiliary ? 'is-active' : ''}`} aria-label="Mostrar carpetas ocultas y auxiliares" title="Mostrar carpetas ocultas y auxiliares" aria-pressed={showAuxiliary} disabled={!session} onClick={() => setShowAuxiliary(!showAuxiliary)}><ListFilter size={15} /></button></div>
     <div className="workspace-files-heading"><span>{search ? 'Resultados' : 'Archivos'}</span>{!loading && session && <small>{search ? rows.filter(({ node }) => node.kind === 'file').length : tree.length}</small>}<span className="panel-title-spacer" />{search ? searching && <LoaderCircle className="workspace-spinner" size={13} /> : <IconButton icon={ChevronsDownUp} label="Contraer carpetas" disabled={!expanded.size} onClick={() => { setExpanded(new Set()); setFocusedPath(''); }} />}<IconButton icon={RefreshCw} label="Actualizar archivos" className={loading ? 'workspace-spinner' : ''} disabled={!session || loading} onClick={() => void reload()} /></div>
     {error && <div className="workspace-error" role="alert"><span>{error}</span><button type="button" aria-label="Cerrar aviso" onClick={() => setError('')}><X size={12} /></button></div>}

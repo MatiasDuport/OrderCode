@@ -1,18 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronDown, CircleDashed, FileCode2, MoreHorizontal, Search, Send, ShieldCheck, Square, FolderOpen, Settings, Star, X } from 'lucide-react';
+import { Check, ChevronDown, CircleDashed, FileCode2, Search, Send, ShieldCheck, Square, FolderOpen, Star, X } from 'lucide-react';
 import { cancelSession, createSession, health, listProviders, listProviderModels, pickWorkspaceFolder, sendSessionMessage, updateSession } from '../lib/ipc';
 import { followSessionOperation } from '../lib/sessionExecution';
 import { useDesktopStore, type ChatMessage } from '../lib/store';
 import type { HarnessEvent, PermissionProfile, RuntimeState, SessionRecord, WorkMode } from '../lib/contracts';
 import type { ProviderInfo, ProviderModel } from '../lib/ipc';
-import { Dropdown, DropdownOption, IconButton, Kbd, StatusDot } from './ui';
+import { Dropdown, DropdownOption, Kbd, StatusDot } from './ui';
 import { Localized } from '../lib/localization';
 import orderCodeMark from '../../../../brand/LogoSinFondo.png';
 
 const modes: Array<{ name: WorkMode; description: string }> = [
-  { name: 'Plan', description: 'Investigar y planificar en modo de solo lectura' },
-  { name: 'Build', description: 'Implementar, ejecutar herramientas y verificar' },
-  { name: 'Auto', description: 'Elegir el siguiente paso según el trabajo' },
+  { name: 'Auto', description: 'OrderCode decide el siguiente paso por ti' },
+  { name: 'Plan', description: 'Preparar un plan antes de cambiar archivos' },
+  { name: 'Build', description: 'Realizar los cambios y comprobar el resultado' },
 ];
 const permissions: Array<{ name: PermissionProfile; description: string }> = [
   { name: 'Lectura', description: 'Solo consultar archivos' },
@@ -98,9 +98,9 @@ function ChangedFiles({ onOpenReview }: { onOpenReview: () => void }) {
   return <Localized><section className="changed-files"><div className="section-heading"><strong>Cambios de esta ejecución</strong><span className="panel-title-spacer" /><span className="delta">{files.length} archivo{files.length === 1 ? '' : 's'}</span></div>{files.map((name) => <div className="changed-file" key={name}><span className="code-badge">{name.split('.').pop()?.toUpperCase() ?? 'FILE'}</span><span>{name}</span></div>)}<button className="review-link" type="button" onClick={onOpenReview}>Revisar cambios <Kbd>Ctrl ⇧ D</Kbd></button></section></Localized>;
 }
 
-function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings }: { onSubmit: (content: string) => Promise<boolean>; onCancel: () => void; onConfigError: (error: string) => void; onOpenSettings: () => void }) {
+function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings, onModelState }: { onSubmit: (content: string) => Promise<boolean>; onCancel: () => void; onConfigError: (error: string) => void; onOpenSettings: () => void; onModelState: (state: { ready: boolean; label: string }) => void }) {
   const [value, setValue] = useState('');
-  const [open, setOpen] = useState<'model' | 'effort' | 'mode' | 'permission' | null>(null);
+  const [open, setOpen] = useState<'model' | 'effort' | 'options' | 'mode' | null>(null);
   const [modelQuery, setModelQuery] = useState('');
   const [models, setModels] = useState<ProviderModel[]>([]);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
@@ -182,9 +182,10 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings }: { onSub
   const efforts = selectedModel?.reasoningEfforts ?? [];
   const modelNeedsCredentials = Boolean(selectedModel && !selectedModel.available);
   const freeOnlyBlocked = freeOnly && (!selectedModel || (selectedModel.priceKind !== 'free' && selectedModel.priceKind !== 'local'));
+  useEffect(() => { onModelState({ ready: Boolean(selectedModel?.available) && !freeOnlyBlocked, label: selectedModel?.label ?? '' }); }, [selectedModel?.available, selectedModel?.label, freeOnlyBlocked, onModelState]);
   const filteredModels = useMemo(() => {
     const query = modelQuery.trim().toLowerCase();
-    const matching = models.filter((item) => !hiddenModelProviders.includes(item.providerId) && (!freeOnly || item.priceKind === 'free' || item.priceKind === 'local') && `${item.label} ${item.providerId}`.toLowerCase().includes(query)).sort((left, right) => compareModelRank(left, right, recentModels, favoriteModels));
+    const matching = models.filter((item) => !hiddenModelProviders.includes(item.providerId) && (advancedCatalog || query || item.available) && (!freeOnly || item.priceKind === 'free' || item.priceKind === 'local') && `${item.label} ${item.providerId}`.toLowerCase().includes(query)).sort((left, right) => compareModelRank(left, right, recentModels, favoriteModels));
     if (advancedCatalog) return matching;
     const pinned = matching.filter((item) => favoriteModels.includes(`${item.providerId}::${item.id}`) || recentModels.includes(`${item.providerId}::${item.id}`));
     const pinnedKeys = new Set(pinned.map((item) => `${item.providerId}::${item.id}`));
@@ -207,7 +208,7 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings }: { onSub
   const hasMoreModels = models.some((item) => !hiddenModelProviders.includes(item.providerId) && (!freeOnly || item.priceKind === 'free' || item.priceKind === 'local')) && models.filter((item) => !hiddenModelProviders.includes(item.providerId) && (!freeOnly || item.priceKind === 'free' || item.priceKind === 'local')).length > filteredModels.length;
   const hasDeferredCatalog = providers.some((provider) => provider.id === 'openrouter' && !hiddenModelProviders.includes(provider.id) && !catalogCache.current.has(provider.id));
   const retryCatalogs = () => { for (const provider of providers) if (failedCatalogs.current.has(provider.id) && !hiddenModelProviders.includes(provider.id)) failedCatalogs.current.delete(provider.id); setCatalogRetry((value) => value + 1); };
-  const submit = async () => { const trimmed = value.trim(); if (!trimmed || ['RUNNING', 'PREPARING', 'WAITING_APPROVAL'].includes(useDesktopStore.getState().runtimeState)) return; if (model && modelSelectionMissing) { onConfigError(catalogBusy ? 'Espera a que termine la búsqueda de modelos y selecciona uno disponible.' : 'El modelo guardado ya no está disponible. Selecciona un modelo del catálogo actual antes de enviar.'); return; } if (modelNeedsCredentials) { onConfigError(selectedModel?.availabilityReason ?? (selectedModel?.providerId === 'openai_chatgpt' ? 'Conecta tu cuenta ChatGPT en Ajustes antes de usar el modelo.' : 'Conecta la clave API de este proveedor en Ajustes antes de usar el modelo.')); return; } if (freeOnlyBlocked) { onConfigError('Free Only necesita un modelo con precio gratuito verificado o inferencia local. No se enviará la solicitud con el modelo actual.'); return; } setValue(''); if (!await onSubmit(trimmed)) setValue((current) => current || trimmed); };
+  const submit = async () => { const trimmed = value.trim(); if (!trimmed || ['RUNNING', 'PREPARING', 'WAITING_APPROVAL'].includes(useDesktopStore.getState().runtimeState)) return; if (modelSelectionMissing) { onConfigError(catalogBusy ? 'Espera a que termine la búsqueda de modelos y selecciona uno disponible.' : (model ? 'El modelo guardado ya no está disponible. Selecciona un modelo del catálogo actual antes de enviar.' : 'Conecta un modelo para empezar.')); return; } if (modelNeedsCredentials) { onConfigError(selectedModel?.availabilityReason ?? (selectedModel?.providerId === 'openai_chatgpt' ? 'Conecta tu cuenta ChatGPT en Ajustes antes de usar el modelo.' : 'Conecta la clave API de este proveedor en Ajustes antes de usar el modelo.')); return; } if (freeOnlyBlocked) { onConfigError('Free Only necesita un modelo con precio gratuito verificado o inferencia local. No se enviará la solicitud con el modelo actual.'); return; } setValue(''); if (!await onSubmit(trimmed)) setValue((current) => current || trimmed); };
   const changeSetting = async (patch: Partial<Pick<SessionRecord, 'mode' | 'permission' | 'model' | 'providerId' | 'freeOnly' | 'reasoningEffort'>>): Promise<void> => {
     const active = useDesktopStore.getState().session;
     if (!active) return;
@@ -231,28 +232,30 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings }: { onSub
     </div>;
   };
 
-  return <Localized><form className="composer" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
-    <textarea value={value} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void submit(); } if (event.key === 'Escape' && runtimeState === 'RUNNING') onCancel(); }} placeholder="Mensaje para OrderCode" aria-label="Mensaje para OrderCode" rows={2} />
+  return <Localized><form className="composer" data-busy={runtimeState === 'RUNNING' || runtimeState === 'PREPARING'} onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+    <span className="composer-aura" aria-hidden="true" />
+    <textarea value={value} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void submit(); } if (event.key === 'Escape' && runtimeState === 'RUNNING') onCancel(); }} placeholder="Describe lo que quieres hacer…" aria-label="Mensaje para OrderCode" rows={2} />
     <div className="composer-controls">
-      <Dropdown label="Modelo" value={selectedModel?.label ?? (model ? model.split('::').at(-1) ?? model : 'Selecciona un modelo')} open={open === 'model'} onOpenChange={(value) => setOpen((current) => value ? 'model' : current === 'model' ? null : current)} className="composer-dropdown composer-dropdown--model">
+      <Dropdown label="Modelo" value={selectedModel?.label ?? (model ? model.split('::').at(-1) ?? model : 'Elegir modelo')} open={open === 'model'} onOpenChange={(value) => setOpen((current) => value ? 'model' : current === 'model' ? null : current)} className="composer-dropdown composer-dropdown--model">
         <label className="dropdown-search"><Search size={13} /><input value={modelQuery} onChange={(event) => setModelQuery(event.target.value)} placeholder="Buscar modelos" aria-label="Buscar modelos" /></label>
-        <button type="button" className={`free-only-toggle ${freeOnly ? 'is-active' : ''}`} aria-pressed={freeOnly} onClick={() => { const enabled = !freeOnly; set('freeOnly', enabled); void changeSetting({ freeOnly: enabled }); }}><span className="free-only-check">{freeOnly ? '✓' : ''}</span><span><strong>Free Only</strong><small>Solo precio verificado gratuito o local</small></span></button>
+        <button type="button" className={`free-only-toggle ${freeOnly ? 'is-active' : ''}`} aria-pressed={freeOnly} onClick={() => { const enabled = !freeOnly; set('freeOnly', enabled); void changeSetting({ freeOnly: enabled }); }}><span className="free-only-check">{freeOnly ? '✓' : ''}</span><span><strong>Solo gratuitos</strong><small>Modelos gratuitos o locales</small></span></button>
         {modelGroups.map(([providerId, items]) => <section className="model-provider-group" key={providerId} role="group" aria-label={modelProviderLabel(providerId)}><div className="model-provider-heading" aria-hidden="true"><span>{modelProviderLabel(providerId)}</span><small>{items.some((item) => item.priceKind === 'free') ? 'GRATUITOS PRIMERO' : items[0]?.priceKind === 'subscription' ? 'PLAN INCLUIDO' : `${items.length} MODELO${items.length === 1 ? '' : 'S'}`}</small></div>{items.map(renderModelOption)}</section>)}
         {(catalogBusy || catalogError || (!advancedCatalog && (hasMoreModels || hasDeferredCatalog))) && <button type="button" className="model-catalog-toggle" disabled={catalogBusy} onClick={() => { if (catalogError) retryCatalogs(); else setShowAllNow(true); }}>{catalogBusy ? 'Cargando catálogo…' : catalogError ? 'Reintentar catálogo' : 'Ver más modelos'}<small>{catalogBusy ? 'Consultando proveedores seleccionados' : catalogError ? 'No se pudo completar la búsqueda' : 'Catálogo completo agrupado por proveedor'}</small></button>}
         {advancedCatalog && (hasMoreModels || showAllNow === true) && <button type="button" className="model-catalog-toggle" onClick={() => { setModelQuery(''); setShowAllNow(false); }}><span>Volver a recomendados</span><small>Lista breve con gratuitos, favoritos y recientes primero</small></button>}
         {!filteredModels.length && <div className="dropdown-empty">{freeOnly ? 'No hay modelos locales o gratuitos con precio verificado. Los modelos con precio desconocido quedan bloqueados.' : discovery || 'No hay resultados.'}<button type="button" onClick={() => { setOpen(null); onOpenSettings(); }}>Abrir Ajustes</button></div>}
+        <button type="button" className="model-connect-action" onClick={() => { setOpen(null); onOpenSettings(); }}>Conectar otro modelo</button>
       </Dropdown>
-      <Dropdown label="Esfuerzo" value={`Esfuerzo: ${reasoningEffort ? effortLabel(reasoningEffort) : 'Auto'}`} open={open === 'effort'} onOpenChange={(value) => setOpen((current) => value ? 'effort' : current === 'effort' ? null : current)} className="composer-dropdown composer-dropdown--effort">
-        <div className="dropdown-search">Esfuerzo del modelo</div>
-        <DropdownOption active={!reasoningEffort} description={efforts.length ? 'Usar el nivel predeterminado del proveedor.' : 'Este modelo no expone niveles de esfuerzo configurables.'} onClick={() => { set('reasoningEffort', undefined); setOpen(null); void changeSetting({ reasoningEffort: undefined }); }}>Automático</DropdownOption>
-        {efforts.map((effort) => <DropdownOption key={effort} active={reasoningEffort === effort} onClick={() => { set('reasoningEffort', effort); setOpen(null); void changeSetting({ reasoningEffort: effort }); }}>{effortLabel(effort)}</DropdownOption>)}
+      <Dropdown label="Esfuerzo" value={reasoningEffort ? effortLabel(reasoningEffort) : 'Auto'} open={open === 'effort'} onOpenChange={(value) => setOpen((current) => value ? 'effort' : current === 'effort' ? null : current)} className="composer-dropdown composer-dropdown--effort">
+        {efforts.length > 0 ? <><div className="dropdown-search">Nivel de razonamiento</div><DropdownOption active={!reasoningEffort} description="Usar el nivel predeterminado del proveedor." onClick={() => { set('reasoningEffort', undefined); setOpen(null); void changeSetting({ reasoningEffort: undefined }); }}>Automático</DropdownOption>{efforts.map((effort) => <DropdownOption key={effort} active={reasoningEffort === effort} onClick={() => { set('reasoningEffort', effort); setOpen(null); void changeSetting({ reasoningEffort: effort }); }}>{effortLabel(effort)}</DropdownOption>)}</> : <div className="dropdown-empty">{selectedModel ? 'Este modelo no expone niveles de esfuerzo configurables.' : 'Selecciona un modelo para ver sus niveles de esfuerzo.'}</div>}
       </Dropdown>
-      <Dropdown label="Modo" value={mode} open={open === 'mode'} onOpenChange={(value) => setOpen((current) => value ? 'mode' : current === 'mode' ? null : current)} className="composer-dropdown"><div className="dropdown-search"><ShieldCheck size={13} /> Modo de trabajo</div>{modes.map((item) => <DropdownOption key={item.name} active={mode === item.name} description={item.description} onClick={() => { set('mode', item.name); setOpen(null); void changeSetting({ mode: item.name }); }}>{item.name}</DropdownOption>)}</Dropdown>
-      <Dropdown label="Permisos" value={permission} open={open === 'permission'} onOpenChange={(value) => setOpen((current) => value ? 'permission' : current === 'permission' ? null : current)} className="composer-dropdown composer-dropdown--permission"><div className="dropdown-search"><ShieldCheck size={13} /> Perfil de permisos</div>{permissions.map((item) => <DropdownOption key={item.name} active={permission === item.name} description={item.description} onClick={() => { set('permission', item.name); setOpen(null); void changeSetting({ permission: item.name }); }}>{item.name}</DropdownOption>)}</Dropdown>
+      <Dropdown label="Modo" value={mode} open={open === 'mode'} onOpenChange={(value) => setOpen((current) => value ? 'mode' : current === 'mode' ? null : current)} className="composer-dropdown composer-dropdown--mode"><div className="dropdown-search">Modo de trabajo</div>{modes.map((item) => <DropdownOption key={item.name} active={mode === item.name} description={item.description} onClick={() => { set('mode', item.name); setOpen(null); void changeSetting({ mode: item.name }); }}>{item.name}</DropdownOption>)}</Dropdown>
+      <Dropdown label="Opciones" value={'Opciones · ' + permission} open={open === 'options'} onOpenChange={(value) => setOpen((current) => value ? 'options' : current === 'options' ? null : current)} className="composer-dropdown composer-dropdown--options">
+        <div role="group" aria-label="Permisos"><div className="dropdown-search"><ShieldCheck size={13} />Permisos</div>{permissions.map((item) => <DropdownOption key={item.name} active={permission === item.name} description={item.description} onClick={() => { set('permission', item.name); setOpen(null); void changeSetting({ permission: item.name }); }}>{item.name}</DropdownOption>)}</div>
+      </Dropdown>
       <span className="control-spacer" />
-      {runtimeState === 'RUNNING' || runtimeState === 'PREPARING' ? <button className="send-button send-button--stop" type="button" aria-label="Detener ejecución" onClick={onCancel}><Square size={12} fill="currentColor" /></button> : <button className="send-button" type="submit" aria-label="Enviar mensaje" disabled={!value.trim() || runtimeState === 'WAITING_APPROVAL' || (Boolean(model) && modelSelectionMissing) || modelNeedsCredentials || freeOnlyBlocked}><Send size={15} /></button>}
+      {runtimeState === 'RUNNING' || runtimeState === 'PREPARING' ? <button className="send-button send-button--stop" type="button" aria-label="Detener ejecución" onClick={onCancel}><Square size={12} fill="currentColor" /></button> : <button className="send-button" type="submit" aria-label="Enviar mensaje" disabled={!value.trim() || runtimeState === 'WAITING_APPROVAL' || modelSelectionMissing || modelNeedsCredentials || freeOnlyBlocked}><Send size={15} /></button>}
     </div>
-    <div className="composer-hint"><span>{modelSelectionMissing ? catalogBusy ? 'Cargando modelos disponibles…' : 'Selecciona un modelo disponible en el catálogo.' : modelNeedsCredentials ? selectedModel?.availabilityReason ?? (selectedModel?.providerId === 'openai_chatgpt' ? 'Conecta tu cuenta ChatGPT en Ajustes para usar estos modelos.' : 'Conecta la clave API del proveedor en Ajustes para usar este catálogo.') : freeOnlyBlocked ? 'Selecciona un modelo gratuito verificado o local para continuar.' : runtimeState === 'RUNNING' ? 'Ejecución real · actividad guardada en la sesión' : 'Enter para enviar · Shift+Enter para nueva línea'}</span><span>{runtimeState === 'RUNNING' ? 'Esc para detener' : session ? mode : 'Conecta un workspace antes de ejecutar'}</span></div>
+    <div className="composer-hint"><span>{modelSelectionMissing ? catalogBusy ? 'Cargando modelos disponibles…' : 'Conecta un modelo para empezar.' : modelNeedsCredentials ? selectedModel?.availabilityReason ?? (selectedModel?.providerId === 'openai_chatgpt' ? 'Conecta tu cuenta ChatGPT en Ajustes para usar estos modelos.' : 'Conecta la clave API del proveedor en Ajustes para usar este catálogo.') : freeOnlyBlocked ? 'Selecciona un modelo gratuito verificado o local para continuar.' : runtimeState === 'RUNNING' ? 'Trabajando en tu proyecto…' : 'Enter para enviar · Shift+Enter para nueva línea'}</span><span>{runtimeState === 'RUNNING' ? 'Esc para detener' : ''}</span></div>
   </form></Localized>;
 }
 
@@ -260,6 +263,8 @@ export function ChatPanel({ onOpenReview, onOpenSettings }: { onOpenReview: () =
   const { messages, streamingText, mode, permission, model, reasoningEffort, freeOnly, session, agentId, runtimeState, addMessage, addEvent, set } = useDesktopStore();
   const [error, setError] = useState<string | null>(null);
   const [openingWorkspace, setOpeningWorkspace] = useState(false);
+  const [modelState, setModelState] = useState({ ready: false, label: '' });
+  useEffect(() => { setError(null); }, [session?.id]);
   const handleSubmit = async (content: string): Promise<boolean> => {
     const initial = useDesktopStore.getState();
     if (['RUNNING', 'PREPARING', 'WAITING_APPROVAL'].includes(initial.runtimeState)) return false;
@@ -311,11 +316,24 @@ export function ChatPanel({ onOpenReview, onOpenSettings }: { onOpenReview: () =
       set('session', next); set('model', next.providerId && next.model ? `${next.providerId}::${next.model}` : next.model); set('freeOnly', next.freeOnly ?? false);
       set('sessions', [next, ...useDesktopStore.getState().sessions.filter((item) => item.id !== next.id)]);
       set('messages', []); set('events', []); set('streamingText', ''); set('pendingPermission', null); set('openFile', null); set('editorContent', ''); set('editorOriginal', '');
-      set('runtimeState', next.state); set('sidebarOpen', true); set('health', await health());
+      set('runtimeState', next.state); set('sidebarOpen', false); set('health', await health());
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setOpeningWorkspace(false); }
   };
   const empty = !messages.length && !streamingText;
   const stateLabel = stateLabels[runtimeState];
-  return <Localized><main className={`chat-panel ${empty ? 'is-empty' : ''}`}><div className="conversation-header"><div><h1>{session ? session.projectPath.split(/[\\/]/).filter(Boolean).at(-1) ?? 'Sesión activa' : 'Nueva sesión'}</h1><p><StatusDot color={runtimeState === 'FAILED' ? 'red' : session ? 'green' : 'muted'} /> {mode} <span>·</span> {error ? 'Error' : stateLabel}</p></div><IconButton icon={MoreHorizontal} label="Más acciones" onClick={onOpenSettings} /></div><div className="conversation-stage"><div className="conversation-scroll">{messages.length ? messages.map((message) => <Message message={message} key={message.id} />) : <div className="conversation-empty"><strong>¿Qué quieres construir?</strong><p>Conecta un workspace, configura un proveedor y elige Plan, Build o Auto.</p></div>}{streamingText && <Message message={{ id: 'assistant-stream', role: 'assistant', content: streamingText, timestamp: 'Ahora' }} />}<ActivityGroup /><ChangedFiles onOpenReview={onOpenReview} />{error && <div className="inline-error" role="alert"><X size={14} /><span>{error}</span></div>}</div><Composer onSubmit={handleSubmit} onCancel={() => { if (session) { const revision = useDesktopStore.getState().sessionRevision; void cancelSession(session.id).then(() => { if (useDesktopStore.getState().sessionRevision === revision) set('runtimeState', 'CANCELLED'); }).catch((cause) => setError(String(cause))); } }} onConfigError={setError} onOpenSettings={onOpenSettings} />{empty && <div className="workspace-start-actions"><button type="button" disabled={openingWorkspace} onClick={() => void openWorkspace()}><FolderOpen size={15} />Abrir workspace</button><button type="button" onClick={onOpenSettings}><Settings size={15} />Abrir Ajustes</button></div>}</div><div className="chat-footer">{session && <button type="button" onClick={onOpenReview}>Abrir revisión de cambios</button>}<span className="panel-title-spacer" /><span>{session ? 'Runtime local · sesión persistente' : 'Sin sesión activa'}</span></div></main></Localized>;
+  const projectName = session?.projectPath.split(/[\\/]/).filter(Boolean).at(-1);
+  const busy = ['RUNNING', 'PREPARING', 'WAITING_APPROVAL', 'PAUSING'].includes(runtimeState);
+  return <Localized><main className={'chat-panel ' + (empty ? 'is-empty' : '')}>
+    <div className="conversation-header"><div><h1>{projectName ?? 'Nueva conversación'}</h1>{(!empty || busy || error) && <p><StatusDot color={error || runtimeState === 'FAILED' ? 'red' : busy ? 'green' : 'muted'} />{error ? 'Error' : stateLabel}</p>}</div></div>
+    <div className="conversation-stage"><div className="conversation-scroll">
+      {messages.length ? messages.map((message) => <Message message={message} key={message.id} />) : <div className="conversation-empty"><strong>¿Qué quieres crear?</strong><p>{session && modelState.ready ? 'Describe el cambio y OrderCode se encarga del siguiente paso.' : 'Abre un proyecto y cuéntanos tu idea.'}</p>
+        {(!session || !modelState.ready) && <ol className="start-steps" aria-label="Primeros pasos">
+          <li className={session ? 'is-complete' : ''}><span className="start-step-number">{session ? <Check size={16} /> : '1'}</span><div><strong>Tu proyecto</strong><p>{projectName ?? 'Elige una carpeta para guardar tu trabajo.'}</p></div><button type="button" disabled={openingWorkspace || busy} onClick={() => void openWorkspace()}>{openingWorkspace ? 'Abriendo…' : session ? 'Cambiar carpeta' : 'Abrir carpeta'}</button></li>
+          <li className={modelState.ready ? 'is-complete' : ''}><span className="start-step-number">{modelState.ready ? <Check size={16} /> : '2'}</span><div><strong>Tu asistente</strong><p>{modelState.ready ? modelState.label : 'Conecta tu cuenta o utiliza un modelo local.'}</p></div>{modelState.ready ? <span className="start-step-ready">Listo</span> : <button type="button" onClick={onOpenSettings}>Conectar modelo</button>}</li>
+        </ol>}
+      </div>}
+      {streamingText && <Message message={{ id: 'assistant-stream', role: 'assistant', content: streamingText, timestamp: 'Ahora' }} />}<ActivityGroup /><ChangedFiles onOpenReview={onOpenReview} />{error && <div className="inline-error" role="alert"><X size={14} /><span>{error}</span></div>}
+    </div><Composer onSubmit={handleSubmit} onCancel={() => { if (session) { const revision = useDesktopStore.getState().sessionRevision; void cancelSession(session.id).then(() => { if (useDesktopStore.getState().sessionRevision === revision) set('runtimeState', 'CANCELLED'); }).catch((cause) => setError(String(cause))); } }} onConfigError={setError} onOpenSettings={onOpenSettings} onModelState={setModelState} /></div>
+  </main></Localized>;
 }

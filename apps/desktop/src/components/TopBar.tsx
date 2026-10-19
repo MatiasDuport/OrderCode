@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { CheckCheck, CloudDownload, Copy, Download, LoaderCircle, Minus, Search, Settings, Square, TerminalSquare, X } from 'lucide-react';
-import { IconButton, Logo } from './ui';
+import { CheckCheck, CloudDownload, Copy, Download, LoaderCircle, Minus, Search, Square, X } from 'lucide-react';
+import { Logo } from './ui';
 import { useDesktopStore } from '../lib/store';
 import { Localized } from '../lib/localization';
 import { isDesktopApp } from '../lib/ipc';
 
-export function TopBar({ onToggleTerminal, onCommandPalette, onSettings, onUpdateAction }: { onToggleTerminal: () => void; onCommandPalette: () => void; onSettings: () => void; onUpdateAction: () => void }) {
+export function TopBar({ onCommandPalette, onUpdateAction }: { onCommandPalette: () => void; onUpdateAction: () => void }) {
   const desktop = isDesktopApp();
   const [maximized, setMaximized] = useState(false);
   const update = useDesktopStore((state) => state.updateView);
@@ -35,10 +35,8 @@ export function TopBar({ onToggleTerminal, onCommandPalette, onSettings, onUpdat
   return <Localized><header className="topbar" data-tauri-drag-region>
     <div className="topbar-brand-drag" data-tauri-drag-region><Logo compact /></div>
     <div className="topbar-spacer" data-tauri-drag-region />
-    <IconButton icon={Search} label="Buscar comandos" title="Buscar comandos (Ctrl / ⌘ P)" onClick={onCommandPalette} />
-    <IconButton icon={TerminalSquare} label="Alternar terminal" onClick={onToggleTerminal} />
-    <button type="button" className={`update-center-button${update.phase === 'available' || update.phase === 'downloaded' ? ' has-update' : ''}${isBusy ? ' is-busy' : ''}`} aria-label={updateLabel} title={updateLabel} onClick={onUpdateAction} disabled={isBusy}><UpdateIcon size={15} strokeWidth={1.9} />{(update.phase === 'available' || update.phase === 'downloaded') && <span className="update-center-dot" aria-hidden="true" />}</button>
-    <IconButton icon={Settings} label="Perfil y ajustes" onClick={onSettings} />
+    <button type="button" className="topbar-search" aria-label="Buscar comandos" title="Buscar comandos (Ctrl / ⌘ P)" onClick={onCommandPalette}><Search size={14} /><span>Buscar</span></button>
+    {!['idle', 'up-to-date', 'checking'].includes(update.phase) && <button type="button" className={`update-center-button${update.phase === 'available' || update.phase === 'downloaded' ? ' has-update' : ''}${isBusy ? ' is-busy' : ''}`} aria-label={updateLabel} title={updateLabel} onClick={onUpdateAction} disabled={isBusy}><UpdateIcon size={15} strokeWidth={1.9} />{(update.phase === 'available' || update.phase === 'downloaded') && <span className="update-center-dot" aria-hidden="true" />}</button>}
     {desktop && <div className="window-controls" role="group" aria-label="Controles de ventana">
       <button type="button" className="window-control" aria-label="Minimizar ventana" title="Minimizar" onClick={() => windowAction('minimize')}><Minus size={13} strokeWidth={1.7} /></button>
       <button type="button" className="window-control" aria-label={maximized ? 'Restaurar ventana' : 'Maximizar ventana'} title={maximized ? 'Restaurar' : 'Maximizar'} onClick={() => windowAction('maximize')}>{maximized ? <Copy size={12} strokeWidth={1.65} /> : <Square size={11} strokeWidth={1.7} />}</button>
