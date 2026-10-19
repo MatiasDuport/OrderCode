@@ -13,6 +13,7 @@ test.beforeEach(async ({ page }) => {
       transformCallback: () => 1,
       unregisterCallback: () => undefined,
       invoke: async (command: string, args: Record<string, unknown>) => {
+        if (command === 'health') return { ok: fixture.ready, harnessConnected: fixture.ready, version: 'fixture', platform: 'windows' };
         if (command === 'plugin:window|is_maximized') return false;
         if (command === 'harness_start') { await pause(150); fixture.ready = true; return { ok: true, harnessConnected: true, version: 'fixture', platform: 'windows' }; }
         if (command === 'workspace_open') return args.projectPath;
@@ -72,6 +73,24 @@ test.beforeEach(async ({ page }) => {
           result = true;
         }
         else if (method === 'agents.list') result = (fixture as unknown as { customAgents?: unknown[] }).customAgents ?? [];
+        else if (method === 'tools.list') result = [
+          { name: 'fs.read', description: 'Lee archivos del proyecto.', effects: ['READ'] },
+          { name: 'fs.write', description: 'Modifica archivos del proyecto.', effects: ['WRITE'] },
+          { name: 'code.search', description: 'Busca símbolos y texto.', effects: ['READ'] },
+          { name: 'process.exec', description: 'Ejecuta comandos en el proyecto.', effects: ['EXECUTE'] },
+          { name: 'git.push', description: 'Publica cambios en el remoto.', effects: ['PUBLISH'] },
+          { name: 'mcp.docs.search', description: 'Consulta documentación conectada.', effects: ['READ'] },
+        ];
+        else if (method === 'skills.list') result = [{ id: 'style-guide', name: 'Guía del proyecto', description: 'Convenciones de interfaz.', enabled: true }];
+        else if (method === 'agents.save') {
+          const agents = fixture as typeof fixture & { customAgents?: Array<Record<string, unknown>>; failAgentSave?: boolean };
+          if (agents.failAgentSave) throw new Error('Controlled agent save failure');
+          const profile = { ...params.profile as Record<string, unknown> };
+          profile.id ??= `custom-${(agents.customAgents?.length ?? 0) + 1}`;
+          agents.customAgents = [...(agents.customAgents ?? []).filter((item) => item.id !== profile.id), profile];
+          result = profile;
+        }
+        else if (method === 'agents.test') result = { content: 'Hallazgos verificados en la prueba controlada.', providerId: 'ollama', modelId: 'local-code', inputTokens: 120, outputTokens: 40, durationMs: 25, toolsRun: ['fs.read'] };
         else if (method === 'usage.analytics') {
           const usage = fixture as unknown as { holdUsage?: boolean; usageResolved?: boolean };
           while (usage.holdUsage) await pause(25);
@@ -668,4 +687,115 @@ test('starts a new conversation in the same project and preserves previous histo
   expect(result.session.projectPath).toBe('C:/fixtures/new-project');
   expect(result.model).toBe('ollama::local-code');
   expect(result.mode).toBe('Auto'); expect(result.permission).toBe('Guiado');
+});
+
+test('agent editor filters capabilities, preserves selections, and saves the complete profile', async ({ page }, testInfo) => {
+  await openChatProject(page);
+  await page.getByRole('button', { name: 'Herramientas', exact: true }).click();
+  await page.getByRole('button', { name: 'Agentes', exact: true }).click();
+  await page.getByRole('button', { name: 'Crear agente', exact: true }).click();
+  const editor = page.locator('.agent-editor');
+  await expect(editor).toBeVisible();
+  await expect(page.locator('.agent-grid')).toHaveCount(0);
+  await editor.getByRole('button', { name: /^Desarrollo/ }).click();
+  await editor.getByLabel(/^Nombre/).fill('Frontend cuidadoso');
+  await editor.getByLabel('Cuándo usarlo', { exact: false }).fill('Cuando hay que mejorar una interfaz.');
+  await editor.locator('.agent-wizard-steps button').filter({ hasText: 'Capacidades' }).click();
+  const publishing = editor.locator('.agent-tool-choice').filter({ hasText: 'git.push' }).getByRole('checkbox');
+  await expect(publishing).not.toBeChecked();
+  await editor.getByRole('textbox', { name: 'Buscar herramientas' }).fill('archivos');
+  await expect(editor.locator('.agent-tool-choice')).toHaveCount(2);
+  await editor.locator('.agent-tool-choice').filter({ hasText: 'fs.write' }).getByRole('checkbox').uncheck();
+  await editor.getByRole('button', { name: 'Limpiar búsqueda de herramientas' }).click();
+  await expect(editor.locator('.agent-tool-choice').filter({ hasText: 'code.search' }).getByRole('checkbox')).toBeChecked();
+  await expect(editor.locator('.agent-tool-choice').filter({ hasText: 'fs.write' }).getByRole('checkbox')).not.toBeChecked();
+  await editor.getByRole('button', { name: 'Solo lectura', exact: true }).click();
+  await editor.getByRole('button', { name: /^Seleccionadas/ }).click();
+  await expect(editor.locator('.agent-tool-choice')).toHaveCount(3);
+  await editor.getByRole('button', { name: /^Seleccionadas/ }).click();
+  await editor.getByRole('textbox', { name: 'Buscar herramientas' }).fill('inexistente');
+  await expect(editor.getByText('No hay herramientas que coincidan con los filtros.')).toBeVisible();
+  await editor.getByRole('button', { name: 'Limpiar búsqueda de herramientas' }).click();
+  await editor.locator('.agent-editor-content').evaluate((element) => Promise.all(element.getAnimations().map((animation) => animation.finished)));
+  await page.screenshot({ path: testInfo.outputPath('agent-capabilities-dark.png') });
+  await editor.locator('.agent-wizard-steps button').filter({ hasText: 'Colaboración' }).click();
+  await editor.getByRole('switch', { name: /^Puede delegar tareas/ }).check();
+  await editor.getByLabel(/^Explore/).check();
+  await editor.locator('.agent-wizard-steps button').filter({ hasText: 'Revisar' }).click();
+  await editor.getByRole('button', { name: 'Probar ahora' }).click();
+  await expect(editor.getByText('Hallazgos verificados en la prueba controlada.')).toBeVisible();
+  await editor.getByRole('button', { name: 'Editar objetivo', exact: true }).click();
+  await editor.getByLabel(/^Nombre/).fill('Frontend verificado');
+  await editor.locator('.agent-wizard-steps button').filter({ hasText: 'Revisar' }).click();
+  await expect(editor.locator('.agent-test-result')).toHaveCount(0);
+  await editor.locator('.agent-editor-content').evaluate((element) => Promise.all(element.getAnimations().map((animation) => animation.finished)));
+  await page.screenshot({ path: testInfo.outputPath('agent-review-dark.png') });
+  await setTestTheme(page, 'light');
+  await page.setViewportSize({ width: 480, height: 720 });
+  await expect(editor.getByRole('button', { name: 'Guardar y activar' })).toBeInViewport({ ratio: 1 });
+  expect(await editor.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
+  await editor.locator('.agent-editor-content').evaluate((element) => Promise.all(element.getAnimations().map((animation) => animation.finished)));
+  await page.screenshot({ path: testInfo.outputPath('agent-review-light-compact.png') });
+  await page.evaluate(async () => {
+    const path = '/src/lib/store.ts';
+    (await import(path)).useDesktopStore.getState().set('language', 'en');
+  });
+  await expect(editor.getByRole('heading', { name: 'Review and save' })).toBeVisible();
+  await editor.getByRole('button', { name: 'Save and activate' }).click();
+  await expect(page.locator('.agent-editor')).toHaveCount(0);
+  const saved = await page.evaluate(async () => {
+    const fixture = (window as unknown as { auditFixture: { requests: Array<{ method: string; params: Record<string, unknown> }> } }).auditFixture;
+    const path = '/src/lib/store.ts';
+    return { profile: fixture.requests.findLast((request) => request.method === 'agents.save')!.params.profile, selected: (await import(path)).useDesktopStore.getState().agentId };
+  });
+  expect(saved.profile).toMatchObject({ name: 'Frontend verificado', enabled: true, canDelegate: true, delegateAllowlist: ['explore'], toolAllowlist: ['fs.read', 'code.search', 'mcp.docs.search'], skillAllowlist: ['style-guide'] });
+  expect(saved.selected).toBe('custom-1');
+});
+
+test('agent editor protects edits, preserves active status, and recovers from a save error', async ({ page }) => {
+  await openChatProject(page);
+  await page.evaluate(() => Object.assign((window as unknown as { auditFixture: object }).auditFixture, {
+    customAgents: [{ id: 'custom-active', name: 'Activo', description: 'Revisa interfaces', instructions: 'Conserva estas instrucciones.', toolAllowlist: ['fs.read'], skillAllowlist: [], templateId: 'review', outcome: 'Hallazgos', autoAssign: false, canDelegate: false, delegateAllowlist: [], delegationDepth: 0, enabled: true }],
+    failAgentSave: true,
+  }));
+  await page.getByRole('button', { name: 'Herramientas', exact: true }).click();
+  await page.getByRole('button', { name: 'Agentes', exact: true }).click();
+  await page.getByRole('button', { name: 'Editar Activo', exact: true }).click();
+  const editor = page.locator('.agent-editor');
+  await editor.getByLabel(/^Instrucciones/).fill('Instrucciones que no deben perderse.');
+  await editor.getByRole('button', { name: 'Volver a agentes' }).click();
+  await expect(editor.getByText('Hay cambios sin guardar')).toBeVisible();
+  await editor.getByRole('button', { name: 'Seguir editando' }).click();
+  await editor.locator('.agent-template-picker > summary').click();
+  await editor.getByRole('button', { name: /^Desarrollo/ }).click();
+  await expect(editor.getByText('¿Aplicar esta plantilla?')).toBeVisible();
+  await editor.getByRole('button', { name: 'Cancelar', exact: true }).click();
+  await expect(editor.getByLabel(/^Instrucciones/)).toHaveValue('Instrucciones que no deben perderse.');
+  await editor.locator('.agent-wizard-steps button').filter({ hasText: 'Revisar' }).click();
+  await expect(editor.getByRole('button', { name: 'Guardar borrador' })).toHaveCount(0);
+  await editor.getByRole('button', { name: 'Guardar cambios', exact: true }).click();
+  await expect(editor.getByRole('alert')).toHaveText('Controlled agent save failure');
+  await expect(editor.getByRole('button', { name: 'Guardar cambios', exact: true })).toBeEnabled();
+  await page.evaluate(() => Object.assign((window as unknown as { auditFixture: object }).auditFixture, { failAgentSave: false }));
+  await editor.getByRole('button', { name: 'Guardar cambios', exact: true }).click();
+  await expect(page.locator('.agent-editor')).toHaveCount(0);
+  const saved = await page.evaluate(async () => {
+    const fixture = (window as unknown as { auditFixture: { customAgents: Array<Record<string, unknown>> } }).auditFixture;
+    const path = '/src/lib/store.ts';
+    return { profile: fixture.customAgents[0], selected: (await import(path)).useDesktopStore.getState().agentId };
+  });
+  expect(saved.profile).toMatchObject({ id: 'custom-active', enabled: true, instructions: 'Instrucciones que no deben perderse.' });
+  expect(saved.selected).toBe('general');
+  await page.locator('.agent-card-select').filter({ hasText: 'Activo' }).click();
+  await page.getByRole('button', { name: 'Editar Activo', exact: true }).click();
+  await editor.locator('.agent-wizard-steps button').filter({ hasText: 'Revisar' }).click();
+  await editor.getByRole('button', { name: 'Guardar y desactivar', exact: true }).click();
+  await expect(page.locator('.agent-editor')).toHaveCount(0);
+  await expect(page.locator('.agent-card-select').filter({ hasText: 'Activo' })).toBeDisabled();
+  expect(await page.evaluate(async () => { const path = '/src/lib/store.ts'; return (await import(path)).useDesktopStore.getState().agentId; })).toBe('general');
+  await page.getByRole('button', { name: 'Crear agente', exact: true }).click();
+  await page.getByRole('region', { name: 'Editor de agente' }).getByLabel(/^Nombre/).fill('Descartar este borrador');
+  await page.getByRole('button', { name: 'Volver a agentes' }).click();
+  await page.getByRole('button', { name: 'Descartar cambios' }).click();
+  await expect(page.locator('.agent-editor')).toHaveCount(0);
 });

@@ -196,6 +196,7 @@ Agentes oficiales: **General, Explore, Architect, Build, Debug, QA, Security y R
 - Las delegaciones paralelas se agrupan bajo la misma tarea y pueden desplegarse individualmente.
 - Los resultados aparecen como síntesis con enlaces a evidencias, no como conversaciones internas duplicadas.
 - `Agents` permite consultar, crear, editar, activar, desactivar, importar y probar configuraciones sin configurar modelos diferentes para cada uno.
+- El editor usa una vista propia con pasos Objetivo, Capacidades, Colaboración y Revisar, navegación y acciones persistentes. Agrupar y buscar herramientas, distinguir lectura de efectos que modifican recursos, confirmar reemplazos de plantilla y cierre con cambios pendientes. Guardar cambios de un agente activo conserva su estado y la selección actual.
 - Los estados deben distinguir running, waiting approval, paused, failed, cancelled y completed.
 
 ## 7. Superficies de trabajo secundarias

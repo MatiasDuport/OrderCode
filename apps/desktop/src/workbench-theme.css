@@ -266,7 +266,7 @@ kbd { background: var(--surface-raised); border-color: var(--border); box-shadow
 .agent-card strong, .agent-card-select strong { font-size: 14px; }
 .agent-card small, .agent-card-select small { font-size: 12px; }
 .agent-mark { color: var(--ion); background: var(--surface-raised); border-radius: 8px; }
-.agent-editor { max-width: 1080px; padding: 24px; background: var(--surface); border-radius: 12px; animation: workbench-enter 220ms both; }
+
 .agent-editor label, .agent-tool-heading strong { font-size: 12px; }
 .agent-editor input:not([type='checkbox']), .agent-editor textarea { padding: 10px 12px; font-size: 13px; border-radius: 8px; }
 .settings-page { gap: 34px; }
@@ -525,7 +525,7 @@ kbd { background: var(--surface-raised); border-color: var(--border); box-shadow
 @keyframes spectrum-edge { 0% { opacity: 0; background-position: 100% 0; } 30% { opacity: .8; } 100% { opacity: 0; background-position: 0 0; } }
 @keyframes spectrum-option { from { opacity: 0; transform: translateX(-5px); } to { opacity: 1; transform: none; } }
 :root[data-density='compact'] .nav-item { min-height: 38px; }
-:root[data-density='compact'] .surface-page { padding-top: 26px; }
+:root[data-density='compact'] .surface-page:not(.agent-studio--editing) { padding-top: 26px; }
 :root[data-density='compact'] .settings-preference-row { min-height: 66px; padding: 12px 0; }
 @media (max-height: 760px) { .nav-item { min-height: 38px; } .is-empty .conversation-stage { padding-bottom: 24px; } }
 @media (max-height: 600px) {
@@ -703,7 +703,7 @@ kbd { background: var(--surface-raised); border-color: var(--border); box-shadow
 .surface-back { flex-shrink: 0; padding: 13px clamp(20px,4.5vw,72px) 0; }
 .surface-back button { display: inline-flex; gap: 7px; align-items: center; color: var(--slate); font-size: 11px; padding: 6px 0; border: 0; background: transparent; cursor: pointer; }
 .surface-back button:hover { color: var(--frost); }
-.surface-back + .surface-page { padding-top: 20px; }
+.surface-back + .surface-page:not(.agent-studio--editing) { padding-top: 20px; }
 .chat-panel::before { display: none; }
 .work-stack { position: relative; isolation: isolate; background: var(--obsidian); }
 .work-area { position: relative; z-index: 1; background: transparent; }

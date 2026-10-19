@@ -1,5 +1,5 @@
-import { Bot, Check, ChevronLeft, ChevronRight, Pencil, Plus, Search, Save, Sparkles, Trash2, X } from 'lucide-react';
-import { useEffect, useState, type ChangeEvent } from 'react';
+import { AlertCircle, ArrowLeft, Bot, Check, ChevronLeft, ChevronRight, Pencil, Plus, Search, Save, ShieldCheck, Sparkles, Trash2, X } from 'lucide-react';
+import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { deleteCustomAgent, listAvailableAgentTools, listCustomAgents, listProjectSkills, saveCustomAgent, testCustomAgent, type ProjectSkill } from '../lib/ipc';
 import type { AgentProfile, AgentTestResult, AgentToolChoice } from '../lib/contracts';
 import type { OfficialAgent } from '../lib/agents';
@@ -19,9 +19,16 @@ const agentTemplates = [
 ] as const;
 
 const initialTestPrompt = 'Investiga cómo localizar una regresión pequeña y qué comprobaciones seguras realizarías.';
+const editorSteps = ['Objetivo', 'Capacidades', 'Colaboración', 'Revisar'];
+const toolGroups: Record<string, string> = { fs: 'Archivos', code: 'Código y búsqueda', git: 'Control de versiones', process: 'Comandos y procesos', release: 'Publicación', mcp: 'Conexiones MCP' };
+const toolLabels: Record<string, string> = { 'fs.read': 'Leer archivos', 'fs.write': 'Editar archivos', 'code.search': 'Buscar en el proyecto', 'code.graph': 'Consultar el grafo de código', 'process.exec': 'Ejecutar comandos', 'git.status': 'Consultar estado', 'git.diff': 'Revisar cambios', 'git.branches': 'Consultar ramas', 'git.history': 'Consultar historial', 'git.remotes': 'Consultar repositorios remotos', 'release.deploy': 'Publicar proyecto' };
+const effectLabels: Record<string, string> = { READ: 'Lectura', WRITE: 'Escritura', EXECUTE: 'Ejecución', GIT_WRITE: 'Cambios en Git', PUBLISH: 'Publicación', NETWORK: 'Red', DELETE: 'Eliminación' };
 
 export function AgentStudio({ officialAgents }: { officialAgents: OfficialAgent[] }) {
-  const { agentId, health, session, set } = useDesktopStore();
+  const agentId = useDesktopStore((state) => state.agentId);
+  const health = useDesktopStore((state) => state.health);
+  const session = useDesktopStore((state) => state.session);
+  const set = useDesktopStore((state) => state.set);
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   const [search, setSearch] = useState('');
   const [tools, setTools] = useState<AgentToolChoice[]>([]);
@@ -36,8 +43,36 @@ export function AgentStudio({ officialAgents }: { officialAgents: OfficialAgent[
   const [testResult, setTestResult] = useState<AgentTestResult | null>(null);
   const [testing, setTesting] = useState(false);
   const [transferring, setTransferring] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [baseline, setBaseline] = useState('');
+  const [confirmClose, setConfirmClose] = useState(false);
+  const [pendingTemplate, setPendingTemplate] = useState<string | null>(null);
+  const [toolSearch, setToolSearch] = useState('');
+  const [selectedOnly, setSelectedOnly] = useState(false);
+  const editorTitle = useRef<HTMLHeadingElement>(null);
+  const testSequence = useRef(0);
+  const editorOpen = draft !== null;
+  const dirty = draft !== null && JSON.stringify(draft) !== baseline;
+  const valid = !!draft?.name.trim() && !!draft.instructions.trim();
+
+  useEffect(() => { if (editorOpen) editorTitle.current?.focus(); }, [editorOpen]);
+  useEffect(() => { testSequence.current += 1; setTestResult(null); }, [draft, testPrompt, session?.id, session?.model, session?.reasoningEffort]);
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [dirty]);
+
+  const openDraft = (next: Draft) => {
+    setDraft(next); setBaseline(JSON.stringify(next)); setStep(0); setTestResult(null);
+    setConfirmClose(false); setPendingTemplate(null); setToolSearch(''); setSelectedOnly(false);
+    setNotice(''); setError('');
+  };
+  const closeEditor = () => { if (busy || testing) return; if (dirty) setConfirmClose(true); else setDraft(null); };
 
   const refresh = async () => {
+    setLoading(true);
     setError('');
     try {
       const [nextProfiles, nextTools, nextSkills] = await Promise.all([listCustomAgents(), listAvailableAgentTools(session?.id), session ? listProjectSkills(session.id) : Promise.resolve([])]);
@@ -45,48 +80,47 @@ export function AgentStudio({ officialAgents }: { officialAgents: OfficialAgent[
       setTools(nextTools.filter((tool) => tool.name !== 'desktop.terminal.open'));
       setSkills(nextSkills);
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setLoading(false); }
   };
 
   useEffect(() => { if (health?.harnessConnected) void refresh(); }, [health?.harnessConnected, session?.id]);
 
   const create = () => {
     const safeDefaults = tools.filter((tool) => tool.effects.every((effect) => effect === 'READ')).map((tool) => tool.name);
-    setDraft({ name: '', description: '', instructions: agentTemplates[0].instructions, toolAllowlist: safeDefaults, skillAllowlist: skills.filter((skill) => skill.enabled).map((skill) => skill.id), templateId: 'custom', outcome: agentTemplates[0].outcome, autoAssign: false, canDelegate: false, delegateAllowlist: [], delegationDepth: 2, enabled: false });
-    setStep(0); setTestResult(null);
-    setNotice(''); setError('');
+    openDraft({ name: '', description: '', instructions: agentTemplates[0].instructions, toolAllowlist: safeDefaults, skillAllowlist: skills.filter((skill) => skill.enabled).map((skill) => skill.id), templateId: 'custom', outcome: agentTemplates[0].outcome, autoAssign: false, canDelegate: false, delegateAllowlist: [], delegationDepth: 2, enabled: false });
   };
   const applyTemplate = (templateId: string, description?: string) => {
     const template = agentTemplates.find((item) => item.id === templateId) ?? agentTemplates[0];
     const safeDefaults = tools.filter((tool) => tool.effects.every((effect) => effect === 'READ')).map((tool) => tool.name);
     const canWrite = ['developer', 'debugger', 'qa'].includes(template.id);
-    const recommended = canWrite ? tools.filter((tool) => !['desktop.terminal.open', 'release.deploy'].includes(tool.name)).map((tool) => tool.name) : safeDefaults;
-    setDraft((previous) => ({ id: previous?.id, name: template.id === 'custom' ? previous?.name ?? '' : template.name, description: description ?? (template.id === 'custom' ? previous?.description ?? '' : template.description), instructions: template.instructions, toolAllowlist: recommended, skillAllowlist: previous?.skillAllowlist ?? skills.filter((skill) => skill.enabled).map((skill) => skill.id), templateId: template.id, outcome: template.outcome, autoAssign: previous?.autoAssign ?? false, canDelegate: previous?.canDelegate ?? false, delegateAllowlist: previous?.delegateAllowlist ?? [], delegationDepth: previous?.delegationDepth ?? 2, enabled: previous?.enabled ?? false }));
-    setTestResult(null);
+    const recommended = canWrite ? tools.filter((tool) => !tool.effects.includes('PUBLISH')).map((tool) => tool.name) : safeDefaults;
+    setDraft((previous) => ({ id: previous?.id, name: previous?.name.trim() || (template.id === 'custom' ? '' : template.name), description: description ?? (previous?.description.trim() || (template.id === 'custom' ? '' : template.description)), instructions: template.instructions, toolAllowlist: recommended, skillAllowlist: previous?.skillAllowlist ?? skills.filter((skill) => skill.enabled).map((skill) => skill.id), templateId: template.id, outcome: template.outcome, autoAssign: previous?.autoAssign ?? false, canDelegate: previous?.canDelegate ?? false, delegateAllowlist: previous?.delegateAllowlist ?? [], delegationDepth: previous?.delegationDepth ?? 2, enabled: previous?.enabled ?? false }));
+    setPendingTemplate(null); setTestResult(null);
   };
   const createFromDescription = () => {
     const request = starterDescription.trim();
     if (!request) return;
     const normalized = request.toLocaleLowerCase();
     const templateId = /prueb|test|qa|verific/.test(normalized) ? 'qa' : /depur|debug|error|fallo|regres/.test(normalized) ? 'debugger' : /código|codigo|implement|desarroll|constru|build/.test(normalized) ? 'developer' : /document/.test(normalized) ? 'documentation' : /revis|seguridad|review/.test(normalized) ? 'review' : 'research';
-    applyTemplate(templateId, request);
-    setDraft((previous) => previous ? { ...previous, instructions: `${previous.instructions}\n\nObjetivo específico:\n${request}` } : previous);
-    setStep(0); setNotice('Borrador preparado en el dispositivo; no se envió ningún prompt ni se consumieron tokens.'); setError('');
+    const template = agentTemplates.find((item) => item.id === templateId)!;
+    const canWrite = ['developer', 'debugger', 'qa'].includes(template.id);
+    const recommended = tools.filter((tool) => canWrite ? !tool.effects.includes('PUBLISH') : tool.effects.every((effect) => effect === 'READ')).map((tool) => tool.name);
+    openDraft({ name: template.name, description: request, instructions: `${template.instructions}\n\nObjetivo específico:\n${request}`, outcome: template.outcome, templateId, toolAllowlist: recommended, skillAllowlist: skills.filter((skill) => skill.enabled).map((skill) => skill.id), autoAssign: false, canDelegate: false, delegateAllowlist: [], delegationDepth: 2, enabled: false });
+    setNotice('Borrador preparado en el dispositivo; no se envió ningún prompt ni se consumieron tokens.');
   };
   const edit = (profile: AgentProfile) => {
-    setDraft({ id: profile.id, name: profile.name, description: profile.description, instructions: profile.instructions, toolAllowlist: [...profile.toolAllowlist], skillAllowlist: profile.skillAllowlist ?? skills.filter((skill) => skill.enabled).map((skill) => skill.id), templateId: profile.templateId ?? 'custom', outcome: profile.outcome ?? '', autoAssign: profile.autoAssign === true, canDelegate: profile.canDelegate === true, delegateAllowlist: profile.delegateAllowlist ?? [], delegationDepth: profile.delegationDepth ?? 2, enabled: profile.enabled });
-    setStep(0); setTestResult(null);
-    setNotice(''); setError('');
+    openDraft({ id: profile.id, name: profile.name, description: profile.description, instructions: profile.instructions, toolAllowlist: [...profile.toolAllowlist], skillAllowlist: profile.skillAllowlist ?? skills.filter((skill) => skill.enabled).map((skill) => skill.id), templateId: profile.templateId ?? 'custom', outcome: profile.outcome ?? '', autoAssign: profile.autoAssign === true, canDelegate: profile.canDelegate === true, delegateAllowlist: profile.delegateAllowlist ?? [], delegationDepth: profile.delegationDepth ?? 2, enabled: profile.enabled });
   };
   const save = async (activate: boolean) => {
-    if (!draft || busy) return;
+    if (!draft || busy || testing || !valid) return;
     setBusy(true); setError(''); setNotice('');
     try {
       const profile = await saveCustomAgent({ ...draft, enabled: activate });
       await refresh();
-      if (activate) set('agentId', profile.id);
+      if (activate && (!draft.enabled || agentId === profile.id)) set('agentId', profile.id);
       else if (agentId === profile.id) set('agentId', 'general');
       setDraft(null);
-      setNotice(activate ? `“${profile.name}” quedó activado y seleccionado. Hereda el modelo y los permisos de la conversación.` : `“${profile.name}” quedó guardado como borrador. No se seleccionó ni se activó.`);
+      setNotice(activate ? draft.enabled ? `Cambios de “${profile.name}” guardados. El agente sigue activo.` : `“${profile.name}” quedó activado y seleccionado. Hereda el modelo y los permisos de la conversación.` : draft.enabled ? `“${profile.name}” quedó desactivado.` : `“${profile.name}” quedó guardado como borrador. No se seleccionó ni se activó.`);
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setBusy(false); }
   };
@@ -104,11 +138,12 @@ export function AgentStudio({ officialAgents }: { officialAgents: OfficialAgent[
   };
   const test = async () => {
     if (!draft || !session || testing) return;
+    const attempt = ++testSequence.current;
     setTesting(true); setError(''); setTestResult(null);
     try {
       const result = await testCustomAgent(session.id, { ...draft, enabled: true }, testPrompt);
-      setTestResult(result);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+      if (attempt === testSequence.current) setTestResult(result);
+    } catch (cause) { if (attempt === testSequence.current) setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setTesting(false); }
   };
   const exportProfiles = () => {
@@ -164,24 +199,139 @@ export function AgentStudio({ officialAgents }: { officialAgents: OfficialAgent[
     finally { setTransferring(false); }
   };
 
+  const availableSkills = skills.filter((skill) => skill.enabled);
+  const delegates = [...officialAgents.map((agent) => ({ id: agent.id, name: agent.name, description: agent.detail })),
+    ...profiles.filter((profile) => profile.enabled && profile.id !== draft?.id).map((profile) => ({ id: profile.id, name: profile.name, description: profile.description }))];
+  const filteredTools = tools.filter((tool) =>
+    (!selectedOnly || draft?.toolAllowlist.includes(tool.name)) &&
+    [tool.name, toolLabels[tool.name] ?? '', tool.description, toolGroups[tool.name.split('.')[0]] ?? ''].join(' ').toLocaleLowerCase().includes(toolSearch.toLocaleLowerCase()));
+  const groupedTools = Object.entries(filteredTools.reduce<Record<string, AgentToolChoice[]>>((groups, tool) => {
+    const group = toolGroups[tool.name.split('.')[0]] ?? 'Otras herramientas';
+    (groups[group] ??= []).push(tool);
+    return groups;
+  }, {}));
+  const unavailableTools = draft?.toolAllowlist.filter((name) => !tools.some((tool) => tool.name === name)) ?? [];
+  const unavailableDelegates = draft?.delegateAllowlist.filter((id) => !delegates.some((agent) => agent.id === id)) ?? [];
+  const toggleTools = (names: string[], checked: boolean) => {
+    if (!draft) return;
+    setDraft({ ...draft, toolAllowlist: checked ? [...new Set([...draft.toolAllowlist, ...names])] : draft.toolAllowlist.filter((name) => !names.includes(name)) });
+  };
+
+  if (draft) return <Localized><div className="surface-page agent-studio agent-studio--editing">
+    <section className="agent-editor" aria-label="Editor de agente" aria-busy={busy || testing}>
+      <header className="agent-editor-header">
+        <button type="button" className="agent-close" onClick={closeEditor} disabled={busy || testing} aria-label="Volver a agentes"><ArrowLeft size={16} /></button>
+        <div><h2 ref={editorTitle} tabIndex={-1}>{draft.id ? 'Editar agente' : 'Crear agente'}</h2><small>{draft.name || 'Un especialista para tu forma de trabajar'}</small></div>
+        <span className="panel-title-spacer" /><span className="agent-draft-status">{dirty ? 'Cambios sin guardar' : draft.enabled ? 'Activo' : 'Borrador'}</span>
+      </header>
+      {confirmClose && <div className="agent-inline-confirm" role="alert">
+        <span><strong>Hay cambios sin guardar</strong><small>Si sales ahora, se perderán los cambios de este formulario.</small></span>
+        <button type="button" className="agent-cancel" onClick={() => setConfirmClose(false)}>Seguir editando</button>
+        <button type="button" className="agent-discard" onClick={() => { setDraft(null); setConfirmClose(false); }}>Descartar cambios</button>
+      </div>}
+      <fieldset className="agent-editor-fields" disabled={busy || testing}>
+        <nav className="agent-wizard-steps" aria-label="Pasos para configurar el agente">
+          {editorSteps.map((label, index) => <button type="button" key={label} className={step === index ? 'is-active' : ''} aria-current={step === index ? 'step' : undefined} onClick={() => setStep(index)}><span>{index === 0 && valid ? <Check size={12} /> : index + 1}</span>{label}</button>)}
+        </nav>
+        <div className="agent-editor-content" key={step}>
+          {step === 0 && <div className="agent-wizard-page">
+            <div className="agent-section-heading"><h3>Dale un propósito</h3><p>Define su especialidad y cómo reconocer un buen resultado.</p></div>
+            <details className="agent-template-picker" open={draft.templateId === 'custom' && !draft.name}>
+              <summary><Sparkles size={14} /><span>Empezar con una plantilla</span><small>{agentTemplates.find((item) => item.id === draft.templateId)?.name}</small></summary>
+              <div className="agent-template-grid">{agentTemplates.map((template) => <button type="button" key={template.id} aria-pressed={draft.templateId === template.id} className={draft.templateId === template.id ? 'is-active' : ''} onClick={() => {
+                if (template.id === draft.templateId) return;
+                if (dirty || draft.id) setPendingTemplate(template.id); else applyTemplate(template.id);
+              }}><strong>{template.name}</strong><small>{template.description}</small></button>)}</div>
+            </details>
+            {pendingTemplate && <div className="agent-inline-confirm" role="alert"><span><strong>¿Aplicar esta plantilla?</strong><small>Reemplaza las instrucciones, el resultado esperado y las herramientas. Conserva el nombre y la colaboración.</small></span><button type="button" className="agent-cancel" onClick={() => setPendingTemplate(null)}>Cancelar</button><button type="button" className="agent-save" onClick={() => applyTemplate(pendingTemplate)}>Aplicar plantilla</button></div>}
+            <div className="agent-form-grid">
+              <label>Nombre <span className="agent-required">Obligatorio</span><input value={draft.name} maxLength={80} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="Ej.: Revisión de accesibilidad" autoComplete="off" /></label>
+              <label>Cuándo usarlo<input value={draft.description} maxLength={500} onChange={(event) => setDraft({ ...draft, description: event.target.value })} placeholder="Ej.: al revisar una interfaz web" /><small>Ayuda al agente principal a saber cuándo convocarlo.</small></label>
+            </div>
+            <label className="agent-instructions">Instrucciones <span className="agent-required">Obligatorio</span><textarea rows={7} value={draft.instructions} maxLength={20_000} onChange={(event) => setDraft({ ...draft, instructions: event.target.value })} placeholder="El enfoque y las reglas que seguirá el agente." /><small className="agent-character-count">{draft.instructions.length.toLocaleString()} / 20 000</small></label>
+            <label className="agent-instructions">Resultado esperado<textarea rows={3} value={draft.outcome} maxLength={2_000} onChange={(event) => setDraft({ ...draft, outcome: event.target.value })} placeholder="Describe cómo reconocer que terminó correctamente." /></label>
+          </div>}
+          {step === 1 && <div className="agent-wizard-page">
+            <div className="agent-section-heading"><h3>Elige sus capacidades</h3><p>Activa solo lo que necesita. Las acciones respetan los permisos de la conversación.</p></div>
+            <div className="agent-capability-toolbar">
+              <div className="agent-tool-search"><Search size={14} /><input value={toolSearch} onChange={(event) => setToolSearch(event.target.value)} placeholder="Buscar herramientas" aria-label="Buscar herramientas" />{toolSearch && <button type="button" aria-label="Limpiar búsqueda de herramientas" onClick={() => setToolSearch('')}><X size={12} /></button>}</div>
+              <button type="button" className="agent-filter" aria-pressed={selectedOnly} onClick={() => setSelectedOnly(!selectedOnly)}>Seleccionadas <span>{draft.toolAllowlist.length}</span></button>
+            </div>
+            <div className="agent-capability-actions"><button type="button" onClick={() => setDraft({ ...draft, toolAllowlist: tools.filter((tool) => tool.effects.every((effect) => effect === 'READ')).map((tool) => tool.name) })}>Solo lectura</button><button type="button" onClick={() => setDraft({ ...draft, toolAllowlist: [] })} disabled={!draft.toolAllowlist.length}>Quitar todas</button></div>
+            {unavailableTools.length > 0 && <div className="agent-editor-warning"><AlertCircle size={14} /><span>Hay herramientas guardadas que no están disponibles en este proyecto.</span><button type="button" onClick={() => toggleTools(unavailableTools, false)}>Quitar no disponibles</button></div>}
+            <div className="agent-capability-groups">
+              {groupedTools.map(([group, entries]) => {
+                const groupTools = entries ?? [];
+                const selected = groupTools.filter((tool) => draft.toolAllowlist.includes(tool.name)).length;
+                return <details className="agent-tool-group" key={group} open>
+                  <summary><span>{group}</span><small>{selected} / {groupTools.length}</small></summary>
+                  <div className="agent-group-action"><button type="button" onClick={() => toggleTools(groupTools.map((tool) => tool.name), selected !== groupTools.length)}>{selected === groupTools.length ? 'Quitar grupo' : 'Seleccionar grupo'}</button></div>
+                  {groupTools.map((tool) => <label className="agent-tool-choice" key={tool.name}>
+                    <input type="checkbox" checked={draft.toolAllowlist.includes(tool.name)} onChange={(event) => toggleTools([tool.name], event.target.checked)} />
+                    <span><strong>{toolLabels[tool.name] ?? tool.name}</strong><small title={tool.description}>{tool.description}</small><code>{tool.name}</code></span>
+                    <span className={tool.effects.some((effect) => effect !== 'READ') ? 'agent-effect agent-effect--write' : 'agent-effect'}>{tool.effects.map((effect) => effectLabels[effect] ?? effect).join(' · ') || 'Sin efectos declarados'}</span>
+                  </label>)}
+                </details>;
+              })}
+              {!filteredTools.length && <p className="agent-editor-empty">{tools.length ? 'No hay herramientas que coincidan con los filtros.' : 'No hay herramientas disponibles. Comprueba la conexión con el servicio.'}</p>}
+            </div>
+            <details className="agent-skill-picker"><summary><span>Skills del proyecto</span><small>{draft.skillAllowlist.length} seleccionadas</small></summary><div className="agent-skill-list">{availableSkills.length ? availableSkills.map((skill) => <label key={skill.id}><input type="checkbox" checked={draft.skillAllowlist.includes(skill.id)} onChange={(event) => setDraft({ ...draft, skillAllowlist: event.target.checked ? [...draft.skillAllowlist, skill.id] : draft.skillAllowlist.filter((id) => id !== skill.id) })} /><span><b>{skill.name}</b><small>{skill.description || skill.id}</small></span></label>) : <p>No hay Skills activas. Puedes activarlas desde Herramientas → Skills.</p>}</div></details>
+          </div>}
+          {step === 2 && <div className="agent-wizard-page">
+            <div className="agent-section-heading"><h3>Cómo trabajará con los demás</h3><p>Decide si puede ser elegido automáticamente y recibir ayuda de otros agentes.</p></div>
+            <label className="agent-setting-row"><span><b>Asignar automáticamente</b><small>El agente principal puede elegirlo cuando su descripción coincida con la tarea.</small></span><input type="checkbox" role="switch" checked={draft.autoAssign} onChange={(event) => setDraft({ ...draft, autoAssign: event.target.checked })} /></label>
+            {draft.autoAssign && !draft.description.trim() && <p className="agent-editor-warning"><AlertCircle size={14} />Añade cuándo usarlo en Objetivo para facilitar la asignación automática.</p>}
+            <label className="agent-setting-row"><span><b>Puede delegar tareas</b><small>Permite que solicite ayuda a los especialistas que elijas.</small></span><input type="checkbox" role="switch" checked={draft.canDelegate} onChange={(event) => setDraft({ ...draft, canDelegate: event.target.checked, delegationDepth: event.target.checked ? Math.max(1, draft.delegationDepth) : 0, delegateAllowlist: event.target.checked ? draft.delegateAllowlist : [] })} /></label>
+            {draft.canDelegate && <>
+              <label className="agent-depth">Niveles de delegación<select value={draft.delegationDepth} onChange={(event) => setDraft({ ...draft, delegationDepth: Number(event.target.value) })}>{[1, 2, 3, 4].map((depth) => <option key={depth} value={depth}>{depth}</option>)}</select><small>Con un nivel, sus ayudantes no pueden volver a delegar.</small></label>
+              <div className="agent-delegate-heading"><strong>Quién puede ayudarlo</strong><small>{draft.delegateAllowlist.length} seleccionados</small></div>
+              {(!draft.delegateAllowlist.length || unavailableDelegates.length > 0) && <p className="agent-editor-warning"><AlertCircle size={14} />{!draft.delegateAllowlist.length ? 'Selecciona al menos un agente para que pueda delegar.' : 'Algunos agentes elegidos están desactivados o ya no están disponibles.'}</p>}
+              <div className="agent-delegate-list">{delegates.map((agent) => <label key={agent.id}><input type="checkbox" checked={draft.delegateAllowlist.includes(agent.id)} onChange={(event) => setDraft({ ...draft, delegateAllowlist: event.target.checked ? [...draft.delegateAllowlist, agent.id] : draft.delegateAllowlist.filter((id) => id !== agent.id) })} /><span><b>{agent.name}</b><small>{agent.description}</small></span></label>)}</div>
+            </>}
+            <p className="agent-permission-note"><ShieldCheck size={15} />Todos heredan el modelo, el esfuerzo y los límites de la conversación.</p>
+          </div>}
+          {step === 3 && <div className="agent-wizard-page agent-review">
+            <div className="agent-section-heading"><h3>Revisa y guarda</h3><p>Puedes probar el agente antes de activarlo.</p></div>
+            {!valid && <div className="agent-editor-warning"><AlertCircle size={14} /><span>Completa el nombre y las instrucciones antes de guardar.</span><button type="button" onClick={() => setStep(0)}>Ir a Objetivo</button></div>}
+            <div className="agent-review-card"><span className="agent-mark"><Bot size={20} /></span><span><b>{draft.name || 'Tu nuevo agente'}</b><small>{draft.description || 'Sin descripción de uso'}</small></span><button type="button" className="agent-review-edit" onClick={() => setStep(0)} aria-label="Editar objetivo"><Pencil size={13} /></button></div>
+            <div className="agent-review-section"><div><strong>Resultado esperado</strong><button type="button" onClick={() => setStep(0)}>Editar</button></div><p>{draft.outcome || 'Un resumen de sus hallazgos y acciones verificadas.'}</p></div>
+            <details className="agent-review-instructions"><summary>Ver instrucciones completas</summary><pre>{draft.instructions || 'Sin instrucciones'}</pre></details>
+            <div className="agent-review-facts">
+              <button type="button" onClick={() => setStep(1)}><span>Capacidades</span><strong>{draft.toolAllowlist.length} herramientas · {draft.skillAllowlist.length} Skills</strong><ChevronRight size={14} /></button>
+              <button type="button" onClick={() => setStep(2)}><span>Asignación</span><strong>{draft.autoAssign ? 'Automática o manual' : 'Selección manual'}</strong><ChevronRight size={14} /></button>
+              <button type="button" onClick={() => setStep(2)}><span>Colaboración</span><strong>{draft.canDelegate ? <>{draft.delegateAllowlist.length} {draft.delegateAllowlist.length === 1 ? 'agente' : 'agentes'} · {draft.delegationDepth} {draft.delegationDepth === 1 ? 'nivel' : 'niveles'}</> : 'Sin delegación'}</strong><ChevronRight size={14} /></button>
+            </div>
+            <section className="agent-test-section" aria-label="Probar agente">
+              <h4>Prueba de solo lectura</h4><p>Usa el modelo de tu conversación y puede consumir tokens. No guarda ni activa el agente.</p>
+              <label>Tarea de prueba<textarea rows={2} value={testPrompt} maxLength={4_000} onChange={(event) => setTestPrompt(event.target.value)} /></label>
+              <button type="button" className="agent-test" disabled={!session?.model || !session.providerId || !valid || !testPrompt.trim()} onClick={() => void test()}>{testing ? 'Probando…' : 'Probar ahora'}<ChevronRight size={13} /></button>
+              {(!session?.model || !session.providerId) && <small>Selecciona un modelo en la conversación para probar el agente.</small>}
+              {testResult && <div className="agent-test-result" role="status"><strong>Prueba real · {testResult.providerId} / {testResult.modelId}</strong><pre>{testResult.content || 'El modelo devolvió una respuesta vacía.'}</pre><small>{[testResult.inputTokens !== undefined ? String(testResult.inputTokens) + ' tokens de entrada' : '', testResult.outputTokens !== undefined ? String(testResult.outputTokens) + ' de salida' : '', String(testResult.durationMs) + ' ms', testResult.toolsRun?.length ? 'Herramientas ejecutadas: ' + testResult.toolsRun.join(', ') : 'Sin herramientas ejecutadas', testResult.toolCallsIgnored ? 'Algunas solicitudes no disponibles se omitieron.' : ''].filter(Boolean).join(' · ')}</small></div>}
+            </section>
+          </div>}
+        </div>
+      </fieldset>
+      {error && <p className="inline-error" role="alert">{error}</p>}
+      {notice && <p className="surface-note" role="status">{notice}</p>}
+      <footer className="agent-editor-footer">
+        <span className="agent-footer-progress">Paso {step + 1} de {editorSteps.length}</span><span className="panel-title-spacer" />
+        {step > 0 && <button type="button" className="agent-cancel" disabled={busy || testing} onClick={() => setStep(step - 1)}><ChevronLeft size={13} />Atrás</button>}
+        {step < 3 ? <button type="button" className="agent-save" disabled={busy || testing || (step === 0 && !valid)} onClick={() => setStep(step + 1)}>Continuar<ChevronRight size={13} /></button> : <>
+          <button type="button" className="agent-cancel" disabled={busy || testing || !valid} onClick={() => void save(false)}>{draft.enabled ? 'Guardar y desactivar' : 'Guardar borrador'}</button>
+          <button type="button" className="agent-save" disabled={busy || testing || !valid} onClick={() => void save(true)}><Save size={14} />{busy ? 'Guardando…' : draft.enabled ? 'Guardar cambios' : 'Guardar y activar'}</button>
+        </>}
+      </footer>
+    </section>
+  </div></Localized>;
   return <Localized><div className="surface-page agent-studio">
-    <div className="surface-heading"><Bot size={18} /><div><h2>Agentes</h2><p>Crea especialistas con herramientas, permisos heredados y delegación configurables.</p></div><span className="panel-title-spacer" /><div className="agent-surface-actions"><button type="button" onClick={exportProfiles} disabled={!profiles.length || transferring}>Exportar</button><label className="agent-import-button">{transferring ? 'Importando…' : 'Importar'}<input type="file" accept="application/json,.json" onChange={(event) => void importProfiles(event)} disabled={!health?.harnessConnected || transferring} /></label><button type="button" className="surface-refresh" onClick={create} disabled={!health?.harnessConnected || busy || transferring}><Plus size={13} />Crear agente</button></div></div>
+    <div className="surface-heading"><Bot size={18} /><div><h2>Agentes</h2><p>Crea especialistas con herramientas, permisos heredados y delegación configurables.</p></div><span className="panel-title-spacer" /><div className="agent-surface-actions"><button type="button" onClick={exportProfiles} disabled={!profiles.length || transferring}>Exportar</button><label className="agent-import-button">{transferring ? 'Importando…' : 'Importar'}<input type="file" accept="application/json,.json" onChange={(event) => void importProfiles(event)} disabled={!health?.harnessConnected || transferring} /></label><button type="button" className="surface-refresh" onClick={create} disabled={!health?.harnessConnected || busy || transferring || loading}><Plus size={13} />Crear agente</button></div></div>
     {!health?.harnessConnected && <div className="surface-note">Conecta un workspace para administrar agentes persistentes. Los especialistas oficiales siguen disponibles en esta vista previa.</div>}
-    <section className="agent-description-create"><label><Sparkles size={14} />Descríbelo en una frase<input value={starterDescription} maxLength={500} onChange={(event) => setStarterDescription(event.target.value)} placeholder="Ej.: revisa accesibilidad sin cambiar archivos" /></label><button type="button" onClick={createFromDescription} disabled={!starterDescription.trim() || !health?.harnessConnected}><Sparkles size={12} />Preparar borrador</button><small>Se arma una plantilla en este dispositivo; no llama a un modelo ni consume tokens.</small></section>
+    <section className="agent-description-create"><label><Sparkles size={14} />Descríbelo en una frase<input value={starterDescription} maxLength={500} onChange={(event) => setStarterDescription(event.target.value)} placeholder="Ej.: revisa accesibilidad sin cambiar archivos" /></label><button type="button" onClick={createFromDescription} disabled={!starterDescription.trim() || !health?.harnessConnected || loading}><Sparkles size={12} />Preparar borrador</button><small>Se arma una plantilla en este dispositivo; no llama a un modelo ni consume tokens.</small></section>
     <label className="agent-search"><Search size={13} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar agentes y especialistas" aria-label="Buscar agentes" /><span>{profiles.length + officialAgents.length}</span></label>
     <div className="agent-library-heading"><strong>Especialistas oficiales</strong><small>Elige quién llevará el próximo mensaje</small></div>
     <div className="agent-grid">{officialAgents.filter((agent) => `${agent.name} ${agent.detail}`.toLocaleLowerCase().includes(search.toLocaleLowerCase())).map((agent) => <button type="button" className={`agent-card ${agentId === agent.id ? 'is-active' : ''}`} key={agent.id} aria-pressed={agentId === agent.id} onClick={() => set('agentId', agent.id)}><span className="agent-mark"><Bot size={14} /></span><strong>{agent.name}</strong><small>{agent.detail}</small><span className="agent-card-tag">Oficial · Disponible</span></button>)}</div>
     <div className="agent-library-heading"><strong>Mis agentes</strong><small>{profiles.filter((profile) => profile.enabled).length} activos · {profiles.filter((profile) => !profile.enabled).length} borradores o desactivados</small></div>
     <div className="agent-grid">{profiles.filter((profile) => `${profile.name} ${profile.description}`.toLocaleLowerCase().includes(search.toLocaleLowerCase())).map((profile) => <article className={`agent-card agent-card--custom ${agentId === profile.id ? 'is-active' : ''} ${profile.enabled ? '' : 'is-disabled'}`} key={profile.id}><button type="button" className="agent-card-select" aria-pressed={agentId === profile.id} disabled={!profile.enabled} onClick={() => set('agentId', profile.id)}><span className="agent-mark"><Bot size={14} /></span><strong>{profile.name}</strong><small>{profile.description || 'Agente personalizado'}</small><span className="agent-card-tag">{profile.enabled ? 'Activo · elegible para selección' : 'Borrador o desactivado'} · {profile.toolAllowlist.length} herramientas</span></button><span className="agent-card-actions"><button type="button" aria-label={`Editar ${profile.name}`} title="Editar" onClick={() => edit(profile)}><Pencil size={12} /></button><button type="button" aria-label={`Eliminar ${profile.name}`} title="Eliminar" onClick={() => void remove(profile)} disabled={busy}><Trash2 size={12} /></button></span></article>)}</div>
-    {draft && <section className="agent-editor" aria-label="Creador guiado de agente">
-      <div className="agent-editor-header"><div><strong>{draft.id ? 'Editar agente' : 'Crear agente'}</strong><small>Configuración clara; las opciones avanzadas aparecen cuando las necesitas.</small></div><span className="panel-title-spacer" /><button type="button" className="agent-close" onClick={() => setDraft(null)} aria-label="Cerrar editor"><X size={14} /></button></div>
-      <nav className="agent-wizard-steps" aria-label="Pasos para configurar el agente">{['Objetivo', 'Herramientas', 'Delegación', 'Revisar'].map((label, index) => <button type="button" key={label} className={step === index ? 'is-active' : step > index ? 'is-complete' : ''} aria-current={step === index ? 'step' : undefined} onClick={() => setStep(index)}><span>{index + 1}</span>{label}</button>)}</nav>
-      {step === 0 && <div className="agent-wizard-page"><strong>¿Qué trabajo debe hacer?</strong><div className="agent-template-grid">{agentTemplates.map((template) => <button type="button" key={template.id} className={draft.templateId === template.id ? 'is-active' : ''} onClick={() => applyTemplate(template.id)}><strong>{template.name}</strong><small>{template.description}</small></button>)}</div><div className="agent-form-grid"><label>Nombre<input value={draft.name} maxLength={80} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="Ej.: Revisión de accesibilidad" /></label><label>Cuándo usarlo<input value={draft.description} maxLength={500} onChange={(event) => setDraft({ ...draft, description: event.target.value })} placeholder="Ej.: al revisar una interfaz web" /></label></div><label className="agent-instructions">Instrucciones<textarea value={draft.instructions} maxLength={20_000} onChange={(event) => setDraft({ ...draft, instructions: event.target.value })} placeholder="El enfoque y las reglas que seguirá el agente." /></label><label className="agent-instructions">¿Qué resultado debe entregar?<textarea value={draft.outcome} maxLength={2_000} onChange={(event) => setDraft({ ...draft, outcome: event.target.value })} placeholder="Describe cómo reconocer que terminó correctamente." /></label></div>}
-      {step === 1 && <div className="agent-wizard-page"><div className="agent-wizard-intro"><strong>¿Qué podrá usar?</strong><small>El agente solo recibe las herramientas marcadas. Cada acción sigue las autorizaciones de esta conversación.</small><span>{draft.toolAllowlist.length} seleccionadas</span></div><div className="agent-tool-list">{tools.map((tool) => <label className="agent-tool-choice" key={tool.name}><input type="checkbox" checked={draft.toolAllowlist.includes(tool.name)} onChange={(event) => setDraft({ ...draft, toolAllowlist: event.target.checked ? [...draft.toolAllowlist, tool.name] : draft.toolAllowlist.filter((name) => name !== tool.name) })} /><span><strong>{tool.name}</strong><small>{tool.description}</small></span><small>{tool.effects.join(' · ')}</small></label>)}</div><div className="agent-skill-list"><strong>Skills que puede consultar</strong><small>Solo se usan Skills activas de este workspace. Las herramientas de servidores MCP conectados aparecen en la lista anterior.</small>{skills.filter((skill) => skill.enabled).length ? skills.filter((skill) => skill.enabled).map((skill) => <label key={skill.id}><input type="checkbox" checked={draft.skillAllowlist.includes(skill.id)} onChange={(event) => setDraft({ ...draft, skillAllowlist: event.target.checked ? [...draft.skillAllowlist, skill.id] : draft.skillAllowlist.filter((id) => id !== skill.id) })} /><span><b>{skill.name}</b><small>{skill.description || skill.id}</small></span></label>) : <p>No hay Skills activas. Puedes activarlas desde Herramientas → Skills.</p>}</div><p className="agent-permission-note"><Check size={13} />Los permisos y el modelo se heredan de la conversación; el agente no puede ampliarlos.</p></div>}
-      {step === 2 && <div className="agent-wizard-page"><strong>¿Cuándo se puede utilizar?</strong><label className="agent-setting-row"><span><b>Asignar automáticamente</b><small>El agente principal puede elegirlo cuando su descripción coincida con la tarea.</small></span><input type="checkbox" checked={draft.autoAssign} onChange={(event) => setDraft({ ...draft, autoAssign: event.target.checked })} /></label><label className="agent-setting-row"><span><b>Puede delegar tareas</b><small>Los agentes seleccionados podrán recibir tareas de este agente.</small></span><input type="checkbox" checked={draft.canDelegate} onChange={(event) => setDraft({ ...draft, canDelegate: event.target.checked, delegationDepth: event.target.checked ? Math.max(1, draft.delegationDepth) : 0, delegateAllowlist: event.target.checked ? draft.delegateAllowlist : [] })} /></label>{draft.canDelegate && <><label className="agent-instructions">Hasta cuántos niveles<select value={draft.delegationDepth} onChange={(event) => setDraft({ ...draft, delegationDepth: Number(event.target.value) })}>{[1, 2, 3, 4].map((depth) => <option key={depth} value={depth}>{depth} {depth === 1 ? 'nivel' : 'niveles'}</option>)}</select><small>El motor también detiene ciclos y comparte los límites de la tarea principal.</small></label><div className="agent-delegate-list"><strong>Agentes que puede convocar</strong>{[...officialAgents.map((agent) => ({ id: agent.id, name: agent.name, description: agent.detail })), ...profiles.filter((profile) => profile.enabled && profile.id !== draft.id).map((profile) => ({ id: profile.id, name: profile.name, description: profile.description }))].map((agent) => <label key={agent.id}><input type="checkbox" checked={draft.delegateAllowlist.includes(agent.id)} onChange={(event) => setDraft({ ...draft, delegateAllowlist: event.target.checked ? [...draft.delegateAllowlist, agent.id] : draft.delegateAllowlist.filter((id) => id !== agent.id) })} /><span><b>{agent.name}</b><small>{agent.description}</small></span></label>)}</div></>}</div>}
-      {step === 3 && <div className="agent-wizard-page agent-review"><strong>Así queda tu agente</strong><div className="agent-review-card"><span className="agent-mark"><Bot size={15} /></span><span><b>{draft.name || 'Tu nuevo agente'}</b><small>{draft.description || 'Aún no has descrito cuándo usarlo.'}</small></span><span className="agent-card-tag">{draft.autoAssign ? 'Asignable automáticamente' : 'Selección manual'} · {draft.enabled ? 'Actualmente activo' : 'Se guardará como borrador'}</span></div><p><b>Resultado:</b> {draft.outcome || 'El resultado será el resumen de sus hallazgos y acciones verificadas.'}</p><p><b>Herramientas:</b> {draft.toolAllowlist.length ? `${draft.toolAllowlist.length} permitidas, siempre sujetas a los permisos de la conversación.` : 'No hay herramientas seleccionadas.'}</p><p><b>Delegación:</b> {draft.canDelegate ? `Hasta ${draft.delegationDepth} niveles; ${draft.delegateAllowlist.length} agentes elegidos.` : 'No delega tareas.'}</p><p className="agent-permission-note"><Check size={13} />Modelo, esfuerzo y permisos se heredan. La prueba real usa este perfil sin guardarlo ni activarlo.</p><label className="agent-instructions">Prueba con una tarea<input value={testPrompt} maxLength={4_000} onChange={(event) => setTestPrompt(event.target.value)} /></label><p className="agent-test-notice">La prueba usa el modelo de la sesión y solo las herramientas de lectura seleccionadas. Puede consumir tokens según tu proveedor y límites; no escribe archivos ni ejecuta comandos.</p>{testResult && <div className="agent-test-result" role="status"><strong>Prueba real · {testResult.providerId} / {testResult.modelId}</strong><pre>{testResult.content || 'El modelo devolvió una respuesta vacía.'}</pre><small>{[testResult.inputTokens !== undefined ? `${testResult.inputTokens} tokens de entrada` : '', testResult.outputTokens !== undefined ? `${testResult.outputTokens} de salida` : '', `${testResult.durationMs} ms`, testResult.toolsRun?.length ? `Herramientas ejecutadas: ${testResult.toolsRun.join(', ')}` : 'Sin herramientas ejecutadas', testResult.toolCallsIgnored ? 'Algunas solicitudes no disponibles se omitieron.' : ''].filter(Boolean).join(' · ')}</small></div>}</div>}
-      <div className="agent-editor-footer"><button type="button" className="agent-cancel" onClick={() => setDraft(null)}>Cancelar</button><span className="panel-title-spacer" />{step > 0 && <button type="button" className="agent-cancel" onClick={() => setStep(step - 1)}><ChevronLeft size={12} />Atrás</button>}{step < 3 ? <button type="button" className="agent-save" disabled={step === 0 && (!draft.name.trim() || !draft.instructions.trim())} onClick={() => setStep(step + 1)}>Continuar<ChevronRight size={12} /></button> : <><button type="button" className="agent-test" disabled={testing || !session || !session.model || !session.providerId || !draft.name.trim() || !draft.instructions.trim() || !testPrompt.trim()} onClick={() => void test()}>{testing ? 'Probando…' : 'Probar ahora'}</button><button type="button" className="agent-cancel" disabled={busy || testing || !draft.name.trim() || !draft.instructions.trim()} onClick={() => void save(false)}><Save size={12} />Guardar borrador</button><button type="button" className="agent-save" disabled={busy || testing || !draft.name.trim() || !draft.instructions.trim()} onClick={() => void save(true)}><Save size={13} />{busy ? 'Guardando…' : 'Guardar y activar'}</button></>}</div>
-    </section>}
     {error && <p className="inline-error" role="alert">{error}</p>}{notice && <p className="surface-note" role="status"><Check size={13} />{notice}</p>}
     <p className="surface-note"><span>Seleccionado:</span> {officialAgents.find((agent) => agent.id === agentId)?.name ?? profiles.find((profile) => profile.id === agentId)?.name ?? 'General'}. <span>Los agentes personalizados no pueden cambiar de modelo ni ampliar el perfil de permisos de la sesión.</span></p>
   </div></Localized>;
