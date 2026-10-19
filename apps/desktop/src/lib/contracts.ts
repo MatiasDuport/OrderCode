@@ -57,6 +57,7 @@ export interface UsageAnalytics {
   estimatedSavedTokens: number;
   savingsCalls: number;
   untrackedSavingsCalls: number;
+  latestCall: { occurredAt: string; inputTokens?: number; estimatedSentTokens?: number; estimatedSavedTokens?: number } | null;
   sessions: Array<{ id: string; title: string }>;
   models: string[];
   points: Array<{
@@ -89,6 +90,8 @@ export interface HarnessEvent {
   permissionRequestId?: string;
   permissionDecision?: PermissionDecision;
   diff?: string;
+  estimatedTokensSaved?: number;
+  continueUntilDone?: boolean;
 }
 
 export type PermissionDecision = 'reject' | 'once' | 'session' | 'project';

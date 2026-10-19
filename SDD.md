@@ -49,6 +49,8 @@ Los tres comparten un único runtime. Auto no impone secuencias ni cuotas arbitr
 
 **Control:** presupuestos, cancelación y detección contextual de bucles; sin límites universales arbitrarios de pasos.
 
+**Hasta completar:** activación por tarea desde el chat. La guía del modelo pide criterios verificables y continuación del ciclo de herramientas hasta verificarlos o encontrar un bloqueo. Conserva el modo, especialista, modelo, permisos y presupuestos elegidos. El indicador se recupera de eventos y checkpoints, incluida la espera de autorizaciones; se desactiva para tareas posteriores al finalizar. El puente nativo no impone un corte adicional de 15 minutos a las ejecuciones. La evaluación de cumplimiento depende del modelo y no implica ejecución autónoma después de cerrar la aplicación.
+
 ## 5. Model Hub
 
 **Proveedores:** OpenRouter, OpenAI, OpenCode Console, Anthropic, xAI, Gemini, Ollama, LM Studio y endpoints compatibles; otros mediante adaptadores autorizados. OpenCode Console admite su API con créditos y clave; su nivel gratuito está restringido a su propia aplicación y no puede ofrecerse como disponible en OrderCode. Modelos gratuitos de otros proveedores requieren las credenciales y cuotas que estos establezcan; los modelos locales no requieren una clave API externa.

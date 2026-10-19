@@ -396,7 +396,7 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
       this.id === "opencode_zen" ? openCodeCatalog(this.pricingUrl, signal) : undefined,
     ]);
     if (!response.ok) throw new HarnessError("PROVIDER_ERROR", `Model discovery failed (${response.status}).`, { providerId: this.id, status: response.status });
-    type CatalogModel = { reasoning?: { supported_efforts?: string[] | null; mandatory?: boolean }; id?: string; name?: string; type?: string; capabilities?: { completion_chat?: boolean; function_calling?: boolean }; supported_parameters?: string[]; architecture?: { input_modalities?: string[]; output_modalities?: string[] }; pricing?: { prompt?: string | number; completion?: string | number } };
+    type CatalogModel = { reasoning?: { supported_efforts?: string[] | null; mandatory?: boolean }; context_length?: number; id?: string; name?: string; type?: string; capabilities?: { completion_chat?: boolean; function_calling?: boolean }; supported_parameters?: string[]; architecture?: { input_modalities?: string[]; output_modalities?: string[] }; pricing?: { prompt?: string | number; completion?: string | number } };
     const payload = await response.json() as { data?: CatalogModel[] };
     if (!Array.isArray(payload.data)) throw new HarnessError("INVALID_PROVIDER_RESPONSE", "The model catalog did not contain a models list.");
     const models: ProviderModel[] = payload.data.filter((model): model is CatalogModel & { id: string } => typeof model.id === "string").flatMap((model, catalogRank): ProviderModel[] => {
@@ -428,7 +428,7 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
       const localModel = (this.id === "ollama" || this.id === "lmstudio") && isLoopbackEndpoint(this.baseUrl);
       const toolSupport = model.capabilities?.function_calling ?? (model.supported_parameters ? model.supported_parameters.includes("tools") : this.id !== "openrouter");
       return [{
-        id: model.id, providerId: this.id, label: model.name ?? model.id, ...(this.id === "openrouter" ? { catalogRank } : {}), reasoningEfforts, capabilities: ["chat", "streaming", ...(toolSupport ? ["tool-calling"] : [])], available: this.configured || localModel,
+        id: model.id, providerId: this.id, label: model.name ?? model.id, ...(this.id === "openrouter" ? { catalogRank } : {}), ...(Number.isSafeInteger(model.context_length) && model.context_length! > 0 ? { contextWindowTokens: model.context_length } : {}), reasoningEfforts, capabilities: ["chat", "streaming", ...(toolSupport ? ["tool-calling"] : [])], available: this.configured || localModel,
         priceKind: localModel ? "local" : freeRouterModel || (verifiedPricing && inputPerMillionUsd === 0 && outputPerMillionUsd === 0) ? "free" : verifiedPricing ? "paid" : "unknown",
         ...(!this.configured && this.id === "openrouter" ? { availabilityReason: "Conecta una clave gratuita de OpenRouter. Los modelos marcados Gratis cobran $0 por inferencia y están sujetos a los límites del proveedor." } : {}),
         ...(freeRouterModel ? { pricing: { inputPerMillionUsd: 0, outputPerMillionUsd: 0, updatedAt: new Date().toISOString() } } : verifiedPricing ? { pricing: { inputPerMillionUsd, outputPerMillionUsd, updatedAt: new Date().toISOString() } } : {}),

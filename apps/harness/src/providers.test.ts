@@ -381,10 +381,11 @@ test("reasoning selectors follow each native model and OpenRouter's live per-mod
   assert.deepEqual(models[1]?.reasoningEfforts, ["none", "low", "medium", "high"]);
   assert.deepEqual(models[2]?.reasoningEfforts, ["none", "low", "medium", "high", "xhigh"]);
   assert.deepEqual(models[3]?.reasoningEfforts, ["low", "medium", "high", "xhigh", "max"]);
-  fetchFixture(t, () => json({ data: [openRouterChatModel("routed", { reasoning: { supported_efforts: ["high", "low", "none"], mandatory: true } }), openRouterChatModel("automatic-router"), openRouterChatModel("gateway", { reasoning: { supported_efforts: null } })] }));
+  fetchFixture(t, () => json({ data: [openRouterChatModel("routed", { context_length: 128_000, reasoning: { supported_efforts: ["high", "low", "none"], mandatory: true } }), openRouterChatModel("automatic-router"), openRouterChatModel("gateway", { reasoning: { supported_efforts: null } })] }));
   const router = new OpenAICompatibleProvider("openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "fixture");
   const routed = await router.listModels();
   assert.deepEqual(routed.find((model) => model.id === "routed")?.reasoningEfforts, ["low", "high"]);
+  assert.equal(routed.find((model) => model.id === "routed")?.contextWindowTokens, 128_000);
   assert.deepEqual(routed.find((model) => model.id === "automatic-router")?.reasoningEfforts, []);
   assert.deepEqual(routed.find((model) => model.id === "gateway")?.reasoningEfforts, []);
   let sent = 0;

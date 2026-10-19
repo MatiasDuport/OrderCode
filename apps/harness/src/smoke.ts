@@ -286,7 +286,13 @@ try {
   const secondWrite = await runtime.tools.invoke({ ...requestWrite, input: { path: "answer.txt", content: "changed" } });
   if (secondWrite.status !== "rejected") throw new Error("A single-use permission was reused for different arguments.");
   const autoCommand = await runtime.tools.invoke({ name: "process.exec", input: { command: "node --version" }, context: { ...requestWrite.context, permissionProfile: "auto" } });
-  if (autoCommand.status !== "rejected" || !(autoCommand.data as { permissionRequest?: unknown }).permissionRequest) throw new Error("Auto permissions ran a shell command without approval.");
+  if (autoCommand.status !== "completed" || !/^v?\d/.test((autoCommand.data as { stdout?: string }).stdout ?? "")) throw new Error("Auto permissions did not run a bounded local inspection command.");
+  const gatedCommand = await runtime.tools.invoke({ name: "process.exec", input: { command: 'node -e "process.stdout.write(\'approval required\')"' }, context: { ...requestWrite.context, permissionProfile: "auto" } });
+  const gatedPermission = (gatedCommand.data as { permissionRequest?: { id: string } }).permissionRequest;
+  if (gatedCommand.status !== "rejected" || !gatedPermission) throw new Error("Auto permissions did not ask before arbitrary code execution.");
+  await runtime.resolvePermission(gatedPermission.id, "reject");
+  const autoWrite = await runtime.tools.invoke({ ...requestWrite, input: { path: "auto-write.txt", content: "written" }, context: { ...requestWrite.context, permissionProfile: "auto" } });
+  if (autoWrite.status !== "completed") throw new Error("Auto permissions unnecessarily prompted for a safe workspace write.");
 
   const terminalInvocation = { name: "desktop.terminal.open", input: { shell: "default" }, context: { ...requestWrite.context } };
   const terminalPending = await runtime.tools.invoke(terminalInvocation);

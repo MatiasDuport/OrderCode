@@ -65,7 +65,19 @@ test.beforeEach(async ({ page }) => {
           result = [{ id: 'local-code', providerId: params.providerId, label: params.providerId === 'ollama' ? 'Fast local code' : 'Slow local code', available: true, priceKind: 'local', reasoningEfforts: params.providerId === 'ollama' ? ['low', 'high'] : [] }];
         } else if (method === 'session.list') result = [];
         else if (method === 'session.create') { while ((fixture as unknown as { holdCreate?: boolean }).holdCreate) await pause(25); fixture.sessionsCreated += 1; result = { ...rawSession(fixture.sessionsCreated === 1 ? 'new-project' : 'new-project-' + fixture.sessionsCreated), ...params }; }
-        else if (method === 'session.update') result = true;
+        else if (method === 'session.update') {
+          const update = fixture as unknown as { holdUpdate?: boolean; failUpdate?: boolean; updateRejected?: boolean };
+          while (update.holdUpdate) await pause(25);
+          if (update.failUpdate) { update.updateRejected = true; throw new Error('Controlled late settings failure'); }
+          result = true;
+        }
+        else if (method === 'agents.list') result = (fixture as unknown as { customAgents?: unknown[] }).customAgents ?? [];
+        else if (method === 'usage.analytics') {
+          const usage = fixture as unknown as { holdUsage?: boolean; usageResolved?: boolean };
+          while (usage.holdUsage) await pause(25);
+          usage.usageResolved = true;
+          result = { latestCall: { inputTokens: 12345 }, estimatedSavedTokens: 0 };
+        }
         else if (method === 'session.get') result = rawSession(String(params.sessionId));
         else if (method === 'session.messages') result = [{ id: 'answer', role: 'assistant', content: 'Persisted final answer', createdAt: new Date().toISOString() }];
         else if (method === 'code.graph') {
@@ -95,6 +107,98 @@ test.beforeEach(async ({ page }) => {
 async function setTestTheme(page: Page, theme: 'light' | 'dark') {
   await page.evaluate(async (value) => { const path = '/src/lib/store.ts'; const { useDesktopStore } = await import(path); useDesktopStore.getState().set('theme', value); }, theme);
 }
+
+async function openChatProject(page: Page) {
+  await page.goto('/');
+  await page.locator('.composer-dropdown--model .dropdown-trigger').click();
+  await page.getByRole('option', { name: /Fast local code/ }).click();
+  await page.getByRole('button', { name: 'Proyecto', exact: true }).click();
+  await page.getByRole('button', { name: 'Añadir proyecto' }).click();
+  await expect(page.locator('.conversation-header h1')).toHaveText('new-project');
+  await page.getByRole('button', { name: 'Cerrar proyecto', exact: true }).click();
+}
+
+test('selects enabled specialists and restores the continuous task indicator after navigating away', async ({ page }) => {
+  await openChatProject(page);
+  await page.evaluate(() => Object.assign((window as unknown as { auditFixture: object }).auditFixture, {
+    customAgents: [
+      { id: 'custom-docs', name: 'Docs activo', description: 'Documentación del proyecto', enabled: true },
+      { id: 'custom-disabled', name: 'Perfil desactivado', description: 'No disponible', enabled: false },
+    ],
+    holdRun: true,
+    customEvents: [{ id: 'continuous-start', sessionId: 'new-project', runId: 'run', sequence: 1501, type: 'session.state', payload: { state: 'RUNNING', continueUntilDone: true } }],
+  }));
+  const message = page.getByRole('textbox', { name: 'Mensaje para OrderCode' });
+  await message.fill('/agents'); await page.getByRole('button', { name: 'Enviar mensaje' }).click();
+  await expect(page.locator('.agent-picker-option')).toHaveCount(9);
+  await expect(page.getByRole('button', { name: /Perfil desactivado/ })).toHaveCount(0);
+  await page.getByRole('button', { name: /Docs activo Documentación/ }).click();
+  await page.setViewportSize({ width: 480, height: 580 });
+  await expect(page.getByRole('button', { name: 'Cerrar panel', exact: true })).toBeInViewport({ ratio: 1 });
+  const pickerBounds = (await page.getByRole('region', { name: 'Agentes disponibles' }).boundingBox())!;
+  expect(pickerBounds.y).toBeGreaterThanOrEqual(11);
+  expect(pickerBounds.y + pickerBounds.height).toBeLessThanOrEqual(569);
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.getByRole('button', { name: 'Cerrar panel', exact: true }).click();
+  await page.getByRole('button', { name: 'Activar modo continuo' }).click();
+  await message.fill('Completa y verifica el objetivo');
+  await page.getByRole('button', { name: 'Enviar mensaje' }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { auditFixture: { runRequests: number } }).auditFixture.runRequests)).toBe(1);
+  for (const trigger of await page.locator('.composer .dropdown-trigger').all()) await expect(trigger).toBeDisabled();
+  await page.getByRole('button', { name: 'Ajustes', exact: true }).click();
+  await page.getByRole('button', { name: 'Conversación', exact: true }).click();
+  const continuous = page.locator('.continuous-toggle');
+  await expect(continuous).toHaveAttribute('aria-pressed', 'true');
+  await expect(continuous).toBeDisabled();
+  await message.fill('/mode'); await message.press('Enter');
+  await expect(page.getByText('Termina o detén la tarea antes de cambiar modelo, esfuerzo, modo o permisos.')).toBeVisible();
+  await page.getByRole('button', { name: 'Cerrar panel', exact: true }).click();
+  await page.evaluate(() => {
+    const state = (window as unknown as { auditFixture: { holdRun: boolean; customEvents: unknown[] } }).auditFixture;
+    state.customEvents.push({ id: 'continuous-complete', sessionId: 'new-project', runId: 'run', sequence: 1502, type: 'run.completed', payload: {} });
+    state.holdRun = false;
+  });
+  await expect(page.getByText('Persisted final answer', { exact: true })).toBeVisible();
+  await expect(continuous).toHaveAttribute('aria-pressed', 'false');
+  await expect(continuous).toBeEnabled();
+  await expect(page.locator('.composer-dropdown--model .dropdown-trigger')).toBeEnabled();
+  await message.fill('Una consulta normal'); await page.getByRole('button', { name: 'Enviar mensaje' }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { auditFixture: { runRequests: number } }).auditFixture.runRequests)).toBe(2);
+  const runs = await page.evaluate(() => (window as unknown as { auditFixture: { requests: Array<{ method: string; params: Record<string, unknown> }> } }).auditFixture.requests.filter((request) => request.method === 'run').map((request) => request.params));
+  expect(runs[0]).toMatchObject({ agentId: 'custom-docs', continueUntilDone: true });
+  expect(runs[1]).toMatchObject({ continueUntilDone: false });
+});
+
+test('ignores late settings failures and context results after switching conversations', async ({ page }) => {
+  await openChatProject(page);
+  await page.evaluate(() => Object.assign((window as unknown as { auditFixture: object }).auditFixture, { holdUpdate: true, failUpdate: true }));
+  await page.locator('.composer-dropdown--effort .dropdown-trigger').click();
+  await page.getByRole('option', { name: 'Alto', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { auditFixture: { requests: Array<{ method: string }> } }).auditFixture.requests.filter((request) => request.method === 'session.update').length)).toBeGreaterThan(0);
+  await page.evaluate(async () => {
+    const path = '/src/lib/store.ts'; const { useDesktopStore } = await import(path); const state = useDesktopStore.getState();
+    state.set('session', { ...state.session, id: 'other-project', projectPath: 'C:/fixtures/other-project', providerId: 'lmstudio', reasoningEffort: undefined });
+    state.set('model', 'lmstudio::local-code'); state.set('mode', 'Plan'); state.set('permission', 'Lectura');
+    Object.assign((window as unknown as { auditFixture: object }).auditFixture, { holdUpdate: false });
+  });
+  await expect.poll(() => page.evaluate(() => (window as unknown as { auditFixture: { updateRejected?: boolean } }).auditFixture.updateRejected)).toBe(true);
+  await expect(page.locator('.conversation-header h1')).toHaveText('other-project');
+  await expect(page.locator('.composer-dropdown--mode .dropdown-trigger')).toContainText('Plan');
+  await expect(page.locator('.composer-dropdown--options .dropdown-trigger')).toContainText('Lectura');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await page.evaluate(() => Object.assign((window as unknown as { auditFixture: object }).auditFixture, { holdUsage: true }));
+  const message = page.getByRole('textbox', { name: 'Mensaje para OrderCode' });
+  await message.fill('/context'); await page.getByRole('button', { name: 'Enviar mensaje' }).click();
+  await expect(page.getByText('Consultando el uso de esta conversación…')).toBeVisible();
+  await page.evaluate(async () => {
+    const path = '/src/lib/store.ts'; const { useDesktopStore } = await import(path); const state = useDesktopStore.getState();
+    state.set('session', { ...state.session, id: 'third-project', projectPath: 'C:/fixtures/third-project' });
+    Object.assign((window as unknown as { auditFixture: object }).auditFixture, { holdUsage: false });
+  });
+  await expect.poll(() => page.evaluate(() => (window as unknown as { auditFixture: { usageResolved?: boolean } }).auditFixture.usageResolved)).toBe(true);
+  await expect(page.getByRole('region', { name: 'Uso del contexto' })).toHaveCount(0);
+  await expect(page.locator('.conversation-header h1')).toHaveText('third-project');
+});
 
 test('toggles Workspace from the rail, closes it explicitly and keeps chrome compact in both themes', async ({ page }) => {
   await page.addInitScript(() => { const key = 'ordercode.desktop.preferences.v1'; localStorage.setItem(key, JSON.stringify({ ...JSON.parse(localStorage.getItem(key) ?? '{}'), reducedMotion: true })); });
@@ -350,6 +454,10 @@ test('selects model-specific effort and chats with a project through the compose
   await page.goto('/');
   await page.locator('.composer-dropdown--model .dropdown-trigger').click();
   await page.getByRole('option', { name: /Fast local code/ }).click();
+  const mode = page.locator('.composer-dropdown--mode .dropdown-trigger');
+  await mode.click(); await page.getByRole('option', { name: /^Build/ }).click();
+  const permissions = page.locator('.composer-dropdown--options .dropdown-trigger');
+  await permissions.click(); await page.getByRole('option', { name: /^Auto/ }).click();
   const effort = page.locator('.composer-dropdown--effort .dropdown-trigger');
   await effort.click();
   await expect(page.getByRole('option', { name: 'Medio', exact: true })).toHaveCount(0);
@@ -358,14 +466,28 @@ test('selects model-specific effort and chats with a project through the compose
   await page.getByRole('button', { name: 'Enviar mensaje' }).click();
   await expect(page.getByText('Persisted final answer', { exact: true })).toBeVisible();
   const requests = await page.evaluate(() => (window as unknown as { auditFixture: { requests: Array<{ method: string; params: Record<string, unknown> }> } }).auditFixture.requests);
-  expect(requests.find((request) => request.method === 'session.create')!.params.reasoningEffort).toBe('high');
-  expect(requests.find((request) => request.method === 'run')!.params).toMatchObject({ goal: 'Hola', reasoningEffort: 'high' });
+  expect(requests.find((request) => request.method === 'session.create')!.params).toMatchObject({ mode: 'build', permissionProfile: 'auto', reasoningEffort: 'high' });
+  expect(requests.find((request) => request.method === 'run')!.params).toMatchObject({ goal: 'Hola', mode: 'build', permissionProfile: 'auto', reasoningEffort: 'high' });
   await expect(page.getByRole('alert')).toHaveCount(0);
   await effort.click(); await page.getByRole('option', { name: /^Automático/ }).click();
   await expect.poll(() => page.evaluate(() => {
     const requests = (window as unknown as { auditFixture: { requests: Array<{ method: string; params: { patch?: Record<string, unknown> } }> } }).auditFixture.requests;
     return requests.filter((request) => request.method === 'session.update').at(-1)?.params.patch?.reasoningEffort;
   })).toBeNull();
+  for (const name of ['Auto', 'Plan', 'Build']) {
+    await mode.click(); await page.getByRole('option', { name: new RegExp(`^${name}`) }).click();
+    await expect.poll(() => page.evaluate(() => {
+      const requests = (window as unknown as { auditFixture: { requests: Array<{ method: string; params: { patch?: Record<string, unknown> } }> } }).auditFixture.requests;
+      return requests.filter((request) => request.method === 'session.update').at(-1)?.params.patch?.mode;
+    })).toBe(name.toLowerCase());
+  }
+  for (const name of ['Lectura', 'Guiado', 'Auto', 'Avanzado']) {
+    await permissions.click(); await page.getByRole('option', { name: new RegExp(`^${name}`) }).click();
+    await expect.poll(() => page.evaluate(() => {
+      const requests = (window as unknown as { auditFixture: { requests: Array<{ method: string; params: { patch?: Record<string, unknown> } }> } }).auditFixture.requests;
+      return requests.filter((request) => request.method === 'session.update').at(-1)?.params.patch?.permissionProfile;
+    })).toBe(({ Lectura: 'reading', Guiado: 'guided', Auto: 'auto', Avanzado: 'advanced' } as const)[name as 'Lectura' | 'Guiado' | 'Auto' | 'Avanzado']);
+  }
 });
 
 test('recovers from a code graph error, inspects relationships and opens the real file', async ({ page }) => {

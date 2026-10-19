@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { Activity, BookOpen, Bot, Code2, FolderOpen, GitBranch, ArrowLeft, Puzzle, Server } from 'lucide-react';
 import { ChatPanel } from './components/ChatPanel';
+import { OFFICIAL_AGENTS } from './lib/agents';
 import { listen } from '@tauri-apps/api/event';
 const CodeGraphView = lazy(() => import('./components/CodeGraphView').then((module) => ({ default: module.CodeGraphView })));
 const AgentStudio = lazy(() => import('./components/AgentStudio').then((module) => ({ default: module.AgentStudio })));
@@ -28,16 +29,7 @@ import { AnimatePresence, motion, MotionConfig, useReducedMotion } from 'motion/
 import './styles.css';
 import './workbench-theme.css';
 
-const agents = [
-  { id: 'general', name: 'General', detail: 'Coordina el trabajo y responde consultas generales.' },
-  { id: 'explore', name: 'Explore', detail: 'Investiga el repositorio y reúne evidencias sin modificar archivos.' },
-  { id: 'architect', name: 'Architect', detail: 'Analiza estructura, límites y opciones técnicas.' },
-  { id: 'build', name: 'Build', detail: 'Implementa cambios autorizados y verifica su resultado.' },
-  { id: 'debug', name: 'Debug', detail: 'Reproduce fallos y rastrea sus causas.' },
-  { id: 'qa', name: 'QA', detail: 'Comprueba criterios de aceptación y casos límite.' },
-  { id: 'security', name: 'Security', detail: 'Revisa rutas, permisos, secretos y efectos externos.' },
-  { id: 'review', name: 'Review', detail: 'Revisa diffs, errores y regresiones.' },
-];
+const agents = OFFICIAL_AGENTS;
 
 function timeLabel(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? value : date.toLocaleString(); }
 function isExecutionActive(state: string): boolean { return ['PREPARING', 'RUNNING', 'WAITING_APPROVAL', 'PAUSING'].includes(state); }

@@ -112,6 +112,7 @@ function sanitizeGitUrl(value: string): string {
 }
 
 function validateInput(schema: Record<string, unknown>, input: Record<string, unknown>): void {
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new HarnessError("INVALID_TOOL_INPUT", "Tool arguments must be an object.");
   const required = Array.isArray(schema.required) ? schema.required.filter((item): item is string => typeof item === "string") : [];
   const properties = schema.properties && typeof schema.properties === "object" ? schema.properties as Record<string, Record<string, unknown>> : {};
   for (const key of required) if (!(key in input)) throw new HarnessError("INVALID_TOOL_INPUT", `${key} is required.`);
@@ -135,12 +136,70 @@ function validateInput(schema: Record<string, unknown>, input: Record<string, un
   }
 }
 
+function hasOnlyStaticPipelineSyntax(command: string): string[] | undefined {
+  if (!command.trim() || command.length > 8_000 || /[\r\n;&$<>`{}()]/.test(command)) return undefined;
+  const parts: string[] = [];
+  let quote: "'" | '"' | undefined;
+  let start = 0;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index]!;
+    if (quote) {
+      if (char === quote) {
+        if (quote === "'" && command[index + 1] === "'") { index += 1; continue; }
+        quote = undefined;
+      }
+      continue;
+    }
+    if (char === "'" || char === '"') { quote = char; continue; }
+    if (char === "|") {
+      if (command[index + 1] === "|") return undefined;
+      parts.push(command.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  if (quote) return undefined;
+  parts.push(command.slice(start).trim());
+  return parts.every(Boolean) ? parts : undefined;
+}
+
+function isBoundedReadOnlyCommand(command: string): boolean {
+  const versionQuery = /^(?:node|npm|npx|pnpm|yarn|bun|deno|python|python3|py|rustc|cargo|dotnet|git)\s+(?:--version|-version|-v)\s*$/i;
+  if (versionQuery.test(command.trim())) return true;
+
+  const parts = hasOnlyStaticPipelineSyntax(command);
+  if (!parts) return false;
+  const powershellReads = new Set([
+    "get-childitem", "get-content", "get-item", "get-location", "get-command", "test-path", "resolve-path",
+    "select-string", "select-object", "sort-object", "measure-object", "format-table", "format-list", "out-string",
+  ]);
+  for (const part of parts) {
+    const match = /^([a-z][a-z0-9.-]*)(?:\s|$)(.*)$/i.exec(part);
+    if (!match) return false;
+    const executable = match[1]!.toLowerCase();
+    const args = match[2] ?? "";
+    if (executable === "git") {
+      if (/--(?:ext-diff|textconv|exec-path|config-env|output|no-index)|(?:^|\s)-c(?:\s|$)/i.test(args)) return false;
+      if (!/^\s*(?:status|diff|log|show|ls-files|grep|remote\s+-v|branch(?:\s+--(?:list|show-current))?|rev-parse\s+--show-toplevel)(?:\s|$)/i.test(args)) return false;
+      continue;
+    }
+    if (executable === "rg") {
+      if (/--(?:pre|pre-glob|hostname-bin)(?:=|\s|$)/i.test(args)) return false;
+      if (/(?:^|\s)["']?(?:[a-z]:[\\/]|\\\\|~[\\/]|\.\.(?:[\\/]|$))/i.test(args)) return false;
+      continue;
+    }
+    if (!powershellReads.has(executable)) return false;
+    if (/(?:^|\s)["']?(?:[a-z]:[\\/]|\\\\|~[\\/]|\.\.(?:[\\/]|$))/i.test(args)) return false;
+  }
+  return true;
+}
+
 function classifyCommand(command: string): ToolEffect {
   const value = command.toLowerCase();
-  if (/\b(npm|pnpm|yarn|bun)\s+publish\b|\b(?:gh|git)\s+release\b/.test(value)) return "PUBLISH";
-  if (/\b(git\s+(push|commit|tag|merge|rebase|reset|clean|checkout|switch|branch\s+-[dD]))\b/.test(value)) return "GIT_WRITE";
+  if (/\b(npm|pnpm|yarn|bun)\s+publish\b|\b(?:gh|git)\s+release\b|\bgit\s+push\b/.test(value)) return "PUBLISH";
+  if (/\b(rm\s+-rf|rmdir\s+\/s|del\s+\/s|remove-item\b.*-recurse|format\s+[a-z]:|diskpart|drop\s+(database|table)|terraform\s+apply|kubectl\s+delete|git\s+(reset|clean|checkout|restore))\b/.test(value)) return "DESTRUCTIVE";
+  if (/\b(git\s+(commit|tag|merge|rebase|switch|branch\s+-[dD]|add|stash))\b/.test(value)) return "GIT_WRITE";
   if (/\b(curl|wget|invoke-webrequest|invoke-restmethod|iwr|irm|ssh|scp|ftp|nc|netcat)\b/.test(value)) return "NETWORK";
-  if (/\b(rm\s+-rf|rmdir\s+\/s|del\s+\/s|remove-item\b.*-recurse|format\s+[a-z]:|diskpart|drop\s+(database|table)|terraform\s+apply|kubectl\s+delete)\b/.test(value)) return "DESTRUCTIVE";
+  if (isBoundedReadOnlyCommand(command)) return "READ";
   return "EXECUTE";
 }
 
@@ -210,9 +269,19 @@ export class ToolRegistry {
     const tool = this.tools.get(invocation.name);
     if (!tool) throw new HarnessError("TOOL_NOT_FOUND", `Unknown tool: ${invocation.name}`);
     const trackActivity = invocation.context.trackActivity !== false || !tool.definition.effects.every((effect) => effect === "READ");
-    validateInput(tool.definition.inputSchema, invocation.input);
-    const permission = tool.permission(invocation.input, invocation.context);
     const invocationId = randomUUID();
+    const validationStartedAt = Date.now();
+    try {
+      validateInput(tool.definition.inputSchema, invocation.input);
+    } catch (error) {
+      const result: ToolResult = { ok: false, status: "failed", toolName: invocation.name, summary: error instanceof Error ? error.message : String(error), data: { errorCode: "INVALID_TOOL_INPUT" }, durationMs: Date.now() - validationStartedAt };
+      if (trackActivity) {
+        this.onEvent?.("tool.started", { sessionId: invocation.context.sessionId, runId: invocation.context.runId, invocationId, toolName: invocation.name, input: this.redactInput(invocation.name, invocation.input) });
+        this.onEvent?.("tool.completed", { sessionId: invocation.context.sessionId, runId: invocation.context.runId, invocationId, toolName: invocation.name, result });
+      }
+      return result;
+    }
+    const permission = tool.permission(invocation.input, invocation.context);
     const check = this.permissions.check(invocation.context.permissionProfile, {
       ...permission,
       toolName: invocation.name,

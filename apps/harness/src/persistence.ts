@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
-import type { AgentProfile, CodeIndexedFile, CodeRelationship, CodeSymbol, CustomProviderConfig, HarnessEvent, McpServer, MessageRecord, PermissionRequest, PermissionRule, ProviderToolCall, SessionRecord, UsageAnalytics, UsageAnalyticsQuery, UsageCallRecord } from "./types.js";
+import type { AgentProfile, CodeIndexedFile, CodeRelationship, CodeSymbol, CustomProviderConfig, HarnessEvent, McpServer, MessageRecord, PermissionRequest, PermissionRule, ProviderToolCall, SessionContextSummary, SessionRecord, UsageAnalytics, UsageAnalyticsQuery, UsageCallRecord } from "./types.js";
 
 export function defaultDataDirectory(): string {
   if (process.env.ORDERCODE_DATA_DIR) return process.env.ORDERCODE_DATA_DIR;
@@ -34,6 +34,8 @@ export interface Persistence {
   updateSession(id: string, patch: Partial<Pick<SessionRecord, "title" | "modelId" | "providerId" | "freeOnly" | "budget" | "reasoningEffort" | "mode" | "permissionProfile" | "state">>): SessionRecord;
   listMessages(sessionId: string, limit?: number): MessageRecord[];
   appendMessage(message: MessageRecord): void;
+  getSessionContextSummary(sessionId: string): SessionContextSummary | undefined;
+  saveSessionContextSummary(summary: SessionContextSummary): void;
   appendEvent(event: HarnessEvent): void;
   listEvents(sessionId: string, afterSequence?: number, limit?: number): HarnessEvent[];
   recordUsageCall(record: UsageCallRecord): void;
@@ -100,6 +102,11 @@ export class SqlitePersistence implements Persistence {
         role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL, run_id TEXT, tool_name TEXT
       );
       CREATE INDEX IF NOT EXISTS messages_session_created ON messages(session_id, created_at);
+      CREATE TABLE IF NOT EXISTS session_context_summaries (
+        session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+        through_message_id TEXT NOT NULL, summary TEXT NOT NULL, compacted_messages INTEGER NOT NULL,
+        estimated_tokens_saved INTEGER NOT NULL, updated_at TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS events (
         id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
         sequence INTEGER NOT NULL, created_at TEXT NOT NULL, type TEXT NOT NULL, run_id TEXT, payload TEXT NOT NULL,
@@ -290,6 +297,18 @@ export class SqlitePersistence implements Persistence {
     this.db.prepare("INSERT INTO messages (id, session_id, role, content, created_at, run_id, tool_name, tool_call_id, tool_calls) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(message.id, message.sessionId, message.role, message.content, message.createdAt, message.runId ?? null, message.toolName ?? null, message.toolCallId ?? null, message.toolCalls ? JSON.stringify(message.toolCalls) : null);
   }
 
+  getSessionContextSummary(sessionId: string): SessionContextSummary | undefined {
+    const row = this.db.prepare("SELECT session_id, through_message_id, summary, compacted_messages, estimated_tokens_saved, updated_at FROM session_context_summaries WHERE session_id = ?").get(sessionId) as Record<string, unknown> | undefined;
+    return row ? { sessionId: String(row.session_id), throughMessageId: String(row.through_message_id), summary: String(row.summary), compactedMessages: finiteNumber(row.compacted_messages), estimatedTokensSaved: finiteNumber(row.estimated_tokens_saved), updatedAt: String(row.updated_at) } : undefined;
+  }
+
+  saveSessionContextSummary(summary: SessionContextSummary): void {
+    this.db.prepare(`INSERT INTO session_context_summaries (session_id, through_message_id, summary, compacted_messages, estimated_tokens_saved, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET through_message_id=excluded.through_message_id, summary=excluded.summary,
+      compacted_messages=excluded.compacted_messages, estimated_tokens_saved=excluded.estimated_tokens_saved, updated_at=excluded.updated_at`)
+      .run(summary.sessionId, summary.throughMessageId, summary.summary, summary.compactedMessages, summary.estimatedTokensSaved, summary.updatedAt);
+  }
+
   appendEvent(event: HarnessEvent): void {
     this.db.exec("BEGIN IMMEDIATE");
     try {
@@ -358,6 +377,7 @@ export class SqlitePersistence implements Persistence {
         COALESCE(SUM(CASE WHEN savings_version = 1 AND estimated_saved_tokens IS NOT NULL THEN 0 ELSE provider_calls END), 0) AS untracked_savings_calls
       FROM usage_calls WHERE ${where}
     `).get(...parameters) as Record<string, unknown>;
+    const latest = this.db.prepare(`SELECT occurred_at, input_tokens, estimated_sent_tokens, estimated_saved_tokens FROM usage_calls WHERE ${where} ORDER BY occurred_at DESC, id DESC LIMIT 1`).get(...parameters) as Record<string, unknown> | undefined;
 
     const lifetimeClauses = ["project_path = ?"];
     const lifetimeParams: string[] = [query.projectPath];
@@ -403,6 +423,12 @@ export class SqlitePersistence implements Persistence {
       inputTokenRecords: finiteNumber(summary.input_token_records), outputTokenRecords: finiteNumber(summary.output_token_records), cachedTokenRecords: finiteNumber(summary.cached_token_records),
       estimatedSentTokens: finiteNumber(summary.estimated_sent_tokens), estimatedSavedTokens: finiteNumber(summary.estimated_saved_tokens),
       savingsCalls: finiteNumber(summary.savings_calls), untrackedSavingsCalls: finiteNumber(summary.untracked_savings_calls),
+      latestCall: latest ? {
+        occurredAt: String(latest.occurred_at),
+        ...(latest.input_tokens === null || latest.input_tokens === undefined ? {} : { inputTokens: finiteNumber(latest.input_tokens) }),
+        ...(latest.estimated_sent_tokens === null || latest.estimated_sent_tokens === undefined ? {} : { estimatedSentTokens: finiteNumber(latest.estimated_sent_tokens) }),
+        ...(latest.estimated_saved_tokens === null || latest.estimated_saved_tokens === undefined ? {} : { estimatedSavedTokens: finiteNumber(latest.estimated_saved_tokens) }),
+      } : null,
       sessions, models,
       points: points.map((row) => ({
         day: String(row.day), providerCalls: finiteNumber(row.provider_calls), measuredCalls: finiteNumber(row.measured_calls),

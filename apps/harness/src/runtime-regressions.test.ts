@@ -27,6 +27,41 @@ async function fixture(t: TestContext, adapter: ProviderAdapter) {
 const config = (projectPath: string) => ({ projectPath, mode: "build" as const, permissionProfile: "guided" as const, providerId: "fixture", modelId: "fixture-model" });
 const limits = (patch: Partial<ExecutionBudget>): ExecutionBudget => ({ maxInputTokens: null, maxOutputTokens: null, maxCostUsd: null, maxDurationMs: null, maxToolCalls: null, ...patch });
 
+test("continuous completion guides the model through verification without changing permissions or budgets", async (t) => {
+  let calls = 0;
+  const instructions: string[] = [];
+  const env = await fixture(t, provider(async (request) => {
+    const system = request.messages.find((message) => message.role === "system")?.content;
+    if (typeof system === "string") instructions.push(system);
+    if (calls++ === 0) return { content: "Applying the verified change.", finishReason: "tool_calls", toolCalls: [{ id: "write-result", name: "fs.write", arguments: { path: "result.txt", content: "verified" } }] };
+    return done();
+  }));
+  const session = env.runtime.createSession(config(env.project));
+  const continuous = await env.runtime.run({ sessionId: session.id, goal: "Complete and verify the requested change.", continueUntilDone: true });
+  assert.equal(continuous.state, "WAITING_APPROVAL", "continuous mode must still wait for write approval");
+  assert.ok(continuous.pendingPermission);
+  assert.equal((env.runtime.persistence.getCheckpoint(session.id) as { continueUntilDone?: boolean }).continueUntilDone, true);
+  const resumed = await env.runtime.resolvePermission(continuous.pendingPermission.id, "once");
+  assert.ok("state" in resumed);
+  assert.equal(resumed.state, "COMPLETED");
+  assert.equal(resumed.usage.toolCalls, 1);
+  assert.equal(await readFile(join(env.project, "result.txt"), "utf8"), "verified");
+  assert.equal(instructions.length, 2);
+  assert.ok(instructions.every((text) => text.includes("continuous completion") && text.includes("configured limits")));
+  const resumedStates = env.runtime.listEvents(session.id).filter((event) => event.type === "session.state" && event.payload.state === "RUNNING");
+  assert.ok(resumedStates.some((event) => event.payload.resumedAfterApproval === continuous.pendingPermission!.id));
+  assert.ok(resumedStates.every((event) => event.payload.continueUntilDone === true));
+  assert.equal(env.runtime.getSession(session.id).permissionProfile, "guided");
+  assert.equal(env.runtime.getSession(session.id).budget?.maxDurationMs, null);
+  assert.equal(env.runtime.getSession(session.id).budget?.maxToolCalls, null);
+
+  instructions.length = 0;
+  const standard = await env.runtime.run({ sessionId: session.id, goal: "Answer briefly.", continueUntilDone: false });
+  assert.equal(standard.state, "COMPLETED");
+  assert.equal(instructions.length, 1);
+  assert.ok(!instructions[0]?.includes("continuous completion"));
+});
+
 test("binary files cannot be decoded or overwritten as text and parallel tool events keep identities", async (t) => {
   const env = await fixture(t, provider(async () => done()));
   const session = env.runtime.createSession({ ...config(env.project), permissionProfile: "advanced" });
@@ -47,6 +82,25 @@ test("binary files cannot be decoded or overwritten as text and parallel tool ev
   const starts = events.filter((event) => event.type === 'tool.started');
   assert.equal(new Set(starts.map((event) => event.payload.invocationId)).size, starts.length);
   for (const start of starts) assert.equal(events.filter((event) => event.type === 'tool.completed' && event.payload.invocationId === start.payload.invocationId).length, 1);
+});
+
+test("invalid required tool arguments are reported to the model so it can recover", async (t) => {
+  let calls = 0;
+  const env = await fixture(t, provider(async (request) => {
+    if (calls++ === 0) return { content: "", finishReason: "tool_calls", toolCalls: [{ id: "read-without-path", name: "fs.read", arguments: {} }] };
+    const toolResult = request.messages.find((message) => message.role === "tool");
+    assert.equal(toolResult?.toolCallId, "read-without-path");
+    assert.match(toolResult?.content ?? "", /path is required/);
+    return done();
+  }));
+  const session = env.runtime.createSession(config(env.project));
+  const result = await env.runtime.run({ sessionId: session.id, goal: "Edit a requested phrase." });
+  assert.equal(result.state, "COMPLETED");
+  assert.equal(calls, 2);
+  assert.equal(result.toolResults[0]?.status, "failed");
+  const events = env.runtime.listEvents(session.id).filter((event) => event.type === "tool.started" || event.type === "tool.completed");
+  assert.equal(events.filter((event) => event.type === "tool.started" && event.payload.toolName === "fs.read").length, 1);
+  assert.equal(events.filter((event) => event.type === "tool.completed" && event.payload.toolName === "fs.read").length, 1);
 });
 
 test("multiple approved tools survive restart and finish their batch before the next model call", async (t) => {
@@ -223,10 +277,32 @@ test("command output preserves UTF-8 split across process chunks", { timeout: 15
 
 test("Windows process commands use PowerShell syntax", { skip: process.platform !== "win32", timeout: 15_000 }, async (t) => {
   const env = await fixture(t, provider(async () => done()));
-  const session = env.runtime.createSession({ ...config(env.project), permissionProfile: "advanced" });
+  const session = env.runtime.createSession({ ...config(env.project), permissionProfile: "auto" });
   const result = await env.runtime.invokeTool(session.id, "process.exec", { command: "Get-ChildItem -Name source.txt | Select-Object -First 1" });
   assert.equal(result.status, "completed", result.summary);
   assert.equal((result.data as { stdout: string }).stdout.trim(), "source.txt");
+});
+
+test("Auto permissions run bounded local inspection in Build and Auto, while Plan and risky commands stay gated", async (t) => {
+  const env = await fixture(t, provider(async () => done()));
+  for (const mode of ["build", "auto"] as const) {
+    const session = env.runtime.createSession({ ...config(env.project), mode, permissionProfile: "auto" });
+    const version = await env.runtime.invokeTool(session.id, "process.exec", { command: "node --version" });
+    assert.equal(version.status, "completed", `${mode}: ${version.summary}`);
+    assert.match((version.data as { stdout: string }).stdout, /^v?\d/);
+
+    const write = await env.runtime.invokeTool(session.id, "fs.write", { path: `auto-${mode}.txt`, content: "written without prompt" });
+    assert.equal(write.status, "completed", `${mode}: safe workspace writes should use the Auto profile`);
+
+    const risky = await env.runtime.invokeTool(session.id, "process.exec", { command: 'node -e "process.stdout.write(\'approval required\')"' });
+    assert.equal(risky.status, "rejected", `${mode}: arbitrary code execution must not run under Auto`);
+    assert.ok((risky.data as { permissionRequest?: unknown }).permissionRequest);
+  }
+
+  const plan = env.runtime.createSession({ ...config(env.project), mode: "plan", permissionProfile: "auto" });
+  const blockedWrite = await env.runtime.invokeTool(plan.id, "fs.write", { path: "plan-write.txt", content: "blocked" });
+  assert.equal(blockedWrite.status, "rejected");
+  assert.equal((blockedWrite.data as { permissionRequest?: unknown }).permissionRequest, undefined, "Plan mode must hard-block writes instead of asking for approval");
 });
 
 test("runaway command output is bounded and stops the managed process", { timeout: 15_000 }, async (t) => {

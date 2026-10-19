@@ -90,6 +90,23 @@ test('does not pretend browser-preview messages ran through the Harness', async 
   await expect(page.getByLabel('Mensaje para OrderCode')).toHaveValue('Cambia un archivo y ejecuta las comprobaciones.');
 });
 
+test('chat slash commands open help and context controls without sending a model request', async ({ page }) => {
+  await page.goto('/');
+  const composer = page.getByRole('textbox', { name: 'Mensaje para OrderCode' });
+  await composer.fill('/');
+  await expect(page.getByRole('listbox', { name: 'Comandos disponibles' })).toBeVisible();
+  await composer.fill('/help');
+  await expect(page.getByRole('button', { name: 'Enviar mensaje' })).toBeEnabled();
+  await page.getByRole('button', { name: 'Enviar mensaje' }).click();
+  await expect(page.getByRole('region', { name: 'Comandos de chat' })).toBeVisible();
+  await expect(page.getByText('/compact', { exact: true })).toBeVisible();
+  await composer.fill('/context');
+  await composer.press('Enter');
+  await expect(page.getByRole('region', { name: 'Uso del contexto' })).toBeVisible();
+  await expect(page.getByText('Abre un workspace y ejecuta una tarea para ver el contexto.')).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});
+
 test('keeps product surfaces visible without inventing unavailable runtime state', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'Herramientas', exact: true }).click();

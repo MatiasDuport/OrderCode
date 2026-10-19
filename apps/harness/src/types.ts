@@ -237,6 +237,7 @@ export interface HarnessEvent {
     | "tool.started"
     | "tool.completed"
     | "provider.chunk"
+    | "context.compacted"
     | "checkpoint.created";
   createdAt: string;
   payload: Record<string, unknown>;
@@ -274,6 +275,15 @@ export interface UsageCallRecord {
   sourceEventId?: string;
 }
 
+export interface SessionContextSummary {
+  sessionId: string;
+  throughMessageId: string;
+  summary: string;
+  compactedMessages: number;
+  estimatedTokensSaved: number;
+  updatedAt: string;
+}
+
 export interface UsageAnalyticsQuery {
   projectPath: string;
   days: 7 | 30 | 90 | 0;
@@ -298,6 +308,7 @@ export interface UsageAnalytics {
   estimatedSavedTokens: number;
   savingsCalls: number;
   untrackedSavingsCalls: number;
+  latestCall: { occurredAt: string; inputTokens?: number; estimatedSentTokens?: number; estimatedSavedTokens?: number } | null;
   sessions: Array<{ id: string; title: string }>;
   models: string[];
   points: Array<{
@@ -331,6 +342,7 @@ export interface ContextInput {
   state: RuntimeState;
   systemInstructions?: string;
   decisions?: string[];
+  historySummary?: string;
   history?: Array<Pick<MessageRecord, "role" | "content">>;
   fileFragments?: Array<{ path: string; content: string; startLine?: number; endLine?: number; estimatedTokensSaved?: number }>;
   maxChars?: number;
@@ -354,6 +366,7 @@ export interface ProviderModel {
   catalogRank?: number;
   priceKind: "free" | "paid" | "unknown" | "local" | "subscription";
   reasoningEfforts?: string[];
+  contextWindowTokens?: number;
   availabilityReason?: string;
   pricing?: { inputPerMillionUsd: number; outputPerMillionUsd: number; updatedAt: string };
 }

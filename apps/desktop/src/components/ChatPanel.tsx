@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronDown, CircleDashed, FileCode2, Search, Send, ShieldCheck, Square, FolderOpen, Star, X } from 'lucide-react';
-import { cancelSession, createSession, health, listProviders, listProviderModels, pickWorkspaceFolder, sendSessionMessage, updateSession } from '../lib/ipc';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Activity, Bot, Check, ChevronDown, CircleDashed, FileCode2, Search, Send, ShieldCheck, Square, FolderOpen, Star, X, CircleHelp, Layers3, ExternalLink, Repeat2 } from 'lucide-react';
+import { cancelSession, compactSessionContext, createSession, health, isDesktopApp, listCustomAgents, listProviders, listProviderModels, loadUsageAnalytics, openExternalUrl, pickWorkspaceFolder, sendSessionMessage, updateSession } from '../lib/ipc';
 import { followSessionOperation } from '../lib/sessionExecution';
 import { useDesktopStore, type ChatMessage } from '../lib/store';
-import type { HarnessEvent, PermissionProfile, RuntimeState, SessionRecord, WorkMode } from '../lib/contracts';
+import type { AgentProfile, HarnessEvent, PermissionProfile, RuntimeState, SessionRecord, WorkMode } from '../lib/contracts';
 import type { ProviderInfo, ProviderModel } from '../lib/ipc';
-import { Dropdown, DropdownOption, Kbd, StatusDot } from './ui';
+import { OFFICIAL_AGENTS } from '../lib/agents';
+import { AnchoredPopover, Dropdown, DropdownOption, Kbd, StatusDot } from './ui';
 import { Localized } from '../lib/localization';
 import orderCodeMark from '../../../../brand/LogoSinFondo.png';
 
@@ -43,10 +44,33 @@ function compareModelRank(left: ProviderModel, right: ProviderModel, recentModel
   return left.label.localeCompare(right.label);
 }
 
-function Message({ message }: { message: ChatMessage }) {
+function linkedMessageContent(content: string, onLinkError: (error: unknown) => void): ReactNode {
+  const matches = [...content.matchAll(/https?:\/\/[^\s<>"']+/gi)];
+  if (!matches.length) return content;
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+  for (const match of matches) {
+    const raw = match[0];
+    const start = match.index ?? 0;
+    let end = raw.length;
+    while (end > 0 && /[.,!?;:)}\]]/.test(raw[end - 1]!)) end -= 1;
+    const candidate = raw.slice(0, end);
+    let href: string | undefined;
+    try { const url = new URL(candidate); if (url.protocol === 'http:' || url.protocol === 'https:') href = url.href; } catch { /* Leave malformed links as plain text. */ }
+    if (!href) continue;
+    if (start > cursor) parts.push(content.slice(cursor, start));
+    parts.push(<a key={`${start}:${href}`} href={href} target="_blank" rel="noopener noreferrer" onClick={(event) => { event.preventDefault(); void openExternalUrl(href!).catch(onLinkError); }}>{candidate}<ExternalLink size={10} aria-hidden="true" /></a>);
+    if (end < raw.length) parts.push(raw.slice(end));
+    cursor = start + raw.length;
+  }
+  if (cursor < content.length) parts.push(content.slice(cursor));
+  return parts.length ? parts : content;
+}
+
+function Message({ message, onLinkError }: { message: ChatMessage; onLinkError: (error: unknown) => void }) {
   return <Localized><article className={`message message--${message.role}`}>
     <div className={`avatar avatar--${message.role}`}>{message.role === 'user' ? 'MP' : <img src={orderCodeMark} alt="" aria-hidden="true" draggable={false} />}</div>
-    <div className="message-body"><div className="message-meta"><strong>{message.role === 'user' ? 'Tú' : 'OrderCode'}</strong><span>{message.timestamp}</span></div><p>{message.content}</p>{message.refs?.length ? <div className="message-refs">{message.refs.map((ref) => <span key={ref} className="file-ref"><FileCode2 size={12} />{ref}</span>)}</div> : null}</div>
+    <div className="message-body"><div className="message-meta"><strong>{message.role === 'user' ? 'Tú' : 'OrderCode'}</strong><span>{message.timestamp}</span></div><p>{linkedMessageContent(message.content, onLinkError)}</p>{message.refs?.length ? <div className="message-refs">{message.refs.map((ref) => <span key={ref} className="file-ref"><FileCode2 size={12} />{ref}</span>)}</div> : null}</div>
   </article></Localized>;
 }
 
@@ -103,9 +127,39 @@ function ChangedFiles({ onOpenReview }: { onOpenReview: () => void }) {
   return <Localized><section className="changed-files"><div className="section-heading"><strong>Cambios de esta ejecución</strong><span className="panel-title-spacer" /><span className="delta">{files.length} archivo{files.length === 1 ? '' : 's'}</span></div>{files.map((name) => <div className="changed-file" key={name}><span className="code-badge">{name.split('.').pop()?.toUpperCase() ?? 'FILE'}</span><span>{name}</span></div>)}<button className="review-link" type="button" onClick={onOpenReview}>Revisar cambios <Kbd>Ctrl ⇧ D</Kbd></button></section></Localized>;
 }
 
-function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings, onModelState }: { onSubmit: (content: string) => Promise<boolean>; onCancel: () => void; onConfigError: (error: string) => void; onOpenSettings: () => void; onModelState: (state: { ready: boolean; label: string }) => void }) {
+const slashCommands = [
+  { name: 'help', label: 'Ayuda', description: 'Ver los comandos disponibles', icon: CircleHelp },
+  { name: 'agents', label: 'Agentes', description: 'Ver y elegir especialistas disponibles', icon: Bot },
+  { name: 'context', label: 'Contexto', description: 'Ver uso de contexto y tokens', icon: Activity },
+  { name: 'compact', label: 'Compactar contexto', description: 'Reducir historial futuro sin borrarlo', icon: Layers3 },
+  { name: 'model', label: 'Modelo', description: 'Elegir o buscar un modelo', icon: Search },
+  { name: 'effort', label: 'Esfuerzo', description: 'Cambiar el razonamiento del modelo', icon: CircleDashed },
+  { name: 'mode', label: 'Modo', description: 'Cambiar entre Auto, Plan y Build', icon: Activity },
+  { name: 'permissions', label: 'Permisos', description: 'Cambiar el nivel de permisos', icon: ShieldCheck },
+  { name: 'review', label: 'Revisar cambios', description: 'Abrir la revisión del proyecto', icon: FileCode2 },
+] as const;
+type ComposerPanel = 'help' | 'agents' | 'context' | 'compact' | 'effort' | 'locked' | null;
+
+function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings, onOpenReview, onModelState }: { onSubmit: (content: string, continueUntilDone: boolean) => Promise<boolean>; onCancel: () => void; onConfigError: (error: string) => void; onOpenSettings: () => void; onOpenReview: () => void; onModelState: (state: { ready: boolean; label: string }) => void }) {
+  const composerRef = useRef<HTMLFormElement>(null);
+  const commandPopoverRef = useRef<HTMLDivElement>(null);
+  const slashPopoverRef = useRef<HTMLDivElement>(null);
   const [value, setValue] = useState('');
   const [open, setOpen] = useState<'model' | 'effort' | 'options' | 'mode' | null>(null);
+  const [slashIndex, setSlashIndex] = useState(0);
+  const [panel, setPanel] = useState<ComposerPanel>(null);
+  const [continueUntilDone, setContinueUntilDone] = useState(false);
+  const continuousRunSubmitted = useRef(false);
+  const panelRequest = useRef(0);
+  const settingsRequest = useRef(0);
+  const [agentProfiles, setAgentProfiles] = useState<AgentProfile[] | null>(null);
+  const [agentProfilesBusy, setAgentProfilesBusy] = useState(false);
+  const [agentProfilesError, setAgentProfilesError] = useState('');
+  const [contextBusy, setContextBusy] = useState(false);
+  const [contextData, setContextData] = useState<Awaited<ReturnType<typeof loadUsageAnalytics>> | null>(null);
+  const [contextError, setContextError] = useState('');
+  const [compactResult, setCompactResult] = useState<Awaited<ReturnType<typeof compactSessionContext>> | null>(null);
+  const [compactError, setCompactError] = useState('');
   const [modelQuery, setModelQuery] = useState('');
   const [models, setModels] = useState<ProviderModel[]>([]);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
@@ -118,7 +172,36 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings, onModelSt
   const loadingCatalogs = useRef(new Set<string>());
   const failedCatalogs = useRef(new Set<string>());
   const catalogRevision = useRef(0);
-  const { model, reasoningEffort, mode, permission, freeOnly, runtimeState, session, health: brokerHealth, hiddenModelProviders, showAdvancedModels, recentModels, favoriteModels, set } = useDesktopStore();
+  const { model, reasoningEffort, mode, permission, freeOnly, agentId, runtimeState, session, events, health: brokerHealth, hiddenModelProviders, showAdvancedModels, recentModels, favoriteModels, set } = useDesktopStore();
+  const executionBusy = ['RUNNING', 'PREPARING', 'WAITING_APPROVAL', 'PAUSING'].includes(runtimeState);
+  const activeContinuous = useMemo(() => {
+    if (!executionBusy) return undefined;
+    let runId: string | undefined;
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index]!;
+      if (!runId && event.runId && /^(session\.state|run\.(started|completed|failed|cancelled))$/.test(event.type ?? event.summary)) {
+        if (!['RUNNING', 'PREPARING', 'WAITING_APPROVAL', 'PAUSING'].includes(event.state)) return undefined;
+        runId = event.runId;
+      }
+      if (runId && event.runId === runId && typeof event.continueUntilDone === 'boolean') return event.continueUntilDone;
+    }
+    return undefined;
+  }, [events, executionBusy]);
+  const continuousEnabled = activeContinuous ?? continueUntilDone;
+  useEffect(() => {
+    continuousRunSubmitted.current = false;
+    settingsRequest.current += 1;
+    setContinueUntilDone(false);
+  }, [session?.id]);
+  useEffect(() => {
+    panelRequest.current += 1;
+    setPanel(null); setOpen(null); setContextBusy(false); setContextData(null); setCompactResult(null); setContextError(''); setCompactError('');
+  }, [session?.id, model]);
+  useEffect(() => {
+    if (!continuousRunSubmitted.current || !['COMPLETED', 'FAILED', 'CANCELLED', 'WAITING_USER', 'RECOVERY_REQUIRED'].includes(runtimeState)) return;
+    continuousRunSubmitted.current = false;
+    setContinueUntilDone(false);
+  }, [runtimeState]);
   useEffect(() => {
     let current = true;
     const refresh = async () => {
@@ -185,6 +268,9 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings, onModelSt
   const selectedModel = models.find((item) => model === `${item.providerId}::${item.id}`);
   const modelSelectionMissing = !model || !selectedModel;
   const efforts = selectedModel?.reasoningEfforts ?? [];
+  const slashQuery = value.startsWith('/') && !/\s/.test(value) ? value.slice(1).toLowerCase() : null;
+  const matchingSlashCommands = slashQuery === null ? [] : slashCommands.filter((command) => command.name.startsWith(slashQuery));
+  const showSlashMenu = matchingSlashCommands.length > 0;
   const modelNeedsCredentials = Boolean(selectedModel && !selectedModel.available);
   const freeOnlyBlocked = freeOnly && (!selectedModel || (selectedModel.priceKind !== 'free' && selectedModel.priceKind !== 'local'));
   useEffect(() => { onModelState({ ready: Boolean(selectedModel?.available) && !freeOnlyBlocked, label: selectedModel?.label ?? '' }); }, [selectedModel?.available, selectedModel?.label, freeOnlyBlocked, onModelState]);
@@ -213,23 +299,90 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings, onModelSt
   const hasMoreModels = models.some((item) => !hiddenModelProviders.includes(item.providerId) && (!freeOnly || item.priceKind === 'free' || item.priceKind === 'local')) && models.filter((item) => !hiddenModelProviders.includes(item.providerId) && (!freeOnly || item.priceKind === 'free' || item.priceKind === 'local')).length > filteredModels.length;
   const hasDeferredCatalog = providers.some((provider) => provider.id === 'openrouter' && !hiddenModelProviders.includes(provider.id) && !catalogCache.current.has(provider.id));
   const retryCatalogs = () => { for (const provider of providers) if (failedCatalogs.current.has(provider.id) && !hiddenModelProviders.includes(provider.id)) failedCatalogs.current.delete(provider.id); setCatalogRetry((value) => value + 1); };
-  const submit = async () => { const trimmed = value.trim(); if (!trimmed || ['RUNNING', 'PREPARING', 'WAITING_APPROVAL'].includes(useDesktopStore.getState().runtimeState)) return; if (modelSelectionMissing) { onConfigError(catalogBusy ? 'Espera a que termine la búsqueda de modelos y selecciona uno disponible.' : (model ? 'El modelo guardado ya no está disponible. Selecciona un modelo del catálogo actual antes de enviar.' : 'Conecta un modelo para empezar.')); return; } if (modelNeedsCredentials) { onConfigError(selectedModel?.availabilityReason ?? (selectedModel?.providerId === 'openai_chatgpt' ? 'Conecta tu cuenta ChatGPT en Ajustes antes de usar el modelo.' : 'Conecta la clave API de este proveedor en Ajustes antes de usar el modelo.')); return; } if (freeOnlyBlocked) { onConfigError('Free Only necesita un modelo con precio gratuito verificado o inferencia local. No se enviará la solicitud con el modelo actual.'); return; } setValue(''); if (!await onSubmit(trimmed)) setValue((current) => current || trimmed); };
+  useEffect(() => {
+    const matches = slashCommands.filter((command) => slashQuery !== null && command.name.startsWith(slashQuery));
+    const exactMatch = matches.findIndex((command) => command.name === slashQuery);
+    setSlashIndex(exactMatch >= 0 ? exactMatch : 0);
+  }, [slashQuery]);
+  useEffect(() => {
+    if (showSlashMenu) slashPopoverRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
+  }, [slashIndex, showSlashMenu]);
+  const executeSlashCommand = async (commandName: string) => {
+    const request = ++panelRequest.current;
+    const revision = useDesktopStore.getState().sessionRevision;
+    const isCurrent = () => panelRequest.current === request && useDesktopStore.getState().sessionRevision === revision;
+    setValue(''); setOpen(null); setPanel(null); setContextError(''); setCompactError(''); setContextBusy(false);
+    if (executionBusy && ['model', 'effort', 'mode', 'permissions'].includes(commandName)) { setPanel('locked'); return; }
+    if (commandName === 'help') { setPanel('help'); return; }
+    if (commandName === 'agents') {
+      setPanel('agents'); setAgentProfilesError('');
+      if (agentProfiles !== null || agentProfilesBusy) return;
+      if (!isDesktopApp()) { setAgentProfiles([]); setAgentProfilesError('Los agentes personalizados requieren la aplicación de escritorio.'); return; }
+      setAgentProfilesBusy(true);
+      try { setAgentProfiles(await listCustomAgents()); }
+      catch { setAgentProfilesError('No se pudieron cargar los agentes personalizados. Revisa la conexión del Harness.'); }
+      finally { setAgentProfilesBusy(false); }
+      return;
+    }
+    if (commandName === 'context') {
+      setPanel('context'); setContextData(null); setContextBusy(true);
+      if (!session) { setContextError('Abre un workspace y ejecuta una tarea para ver el contexto.'); setContextBusy(false); return; }
+      try { const data = await loadUsageAnalytics({ projectPath: session.projectPath, days: 0, sessionId: session.id, ...(session.model ? { modelId: session.model } : {}) }); if (isCurrent()) setContextData(data); }
+      catch (error) { if (isCurrent()) setContextError(error instanceof Error ? error.message : String(error)); }
+      finally { if (isCurrent()) setContextBusy(false); }
+      return;
+    }
+    if (commandName === 'compact') {
+      setPanel('compact'); setCompactResult(null); setContextBusy(true);
+      if (!session) { setCompactError('Abre un workspace antes de compactar el contexto.'); setContextBusy(false); return; }
+      try { const result = await compactSessionContext(session.id); if (isCurrent()) setCompactResult(result); }
+      catch (error) { if (isCurrent()) setCompactError(error instanceof Error ? error.message : String(error)); }
+      finally { if (isCurrent()) setContextBusy(false); }
+      return;
+    }
+    if (commandName === 'model') { setModelQuery(''); setOpen('model'); return; }
+    if (commandName === 'effort') { if (efforts.length) setOpen('effort'); else setPanel('effort'); return; }
+    if (commandName === 'mode') { setOpen('mode'); return; }
+    if (commandName === 'permissions') { setOpen('options'); return; }
+    if (commandName === 'review') { onOpenReview(); return; }
+  };
+  const submit = async () => {
+    if (showSlashMenu && matchingSlashCommands[slashIndex]) { await executeSlashCommand(matchingSlashCommands[slashIndex]!.name); return; }
+    const trimmed = value.trim();
+    if (!trimmed || ['RUNNING', 'PREPARING', 'WAITING_APPROVAL', 'PAUSING'].includes(useDesktopStore.getState().runtimeState)) return;
+    if (modelSelectionMissing) { onConfigError(catalogBusy ? 'Espera a que termine la búsqueda de modelos y selecciona uno disponible.' : (model ? 'El modelo guardado ya no está disponible. Selecciona un modelo del catálogo actual antes de enviar.' : 'Conecta un modelo para empezar.')); return; }
+    if (modelNeedsCredentials) { onConfigError(selectedModel?.availabilityReason ?? (selectedModel?.providerId === 'openai_chatgpt' ? 'Conecta tu cuenta ChatGPT en Ajustes antes de usar el modelo.' : 'Conecta la clave API de este proveedor en Ajustes antes de usar el modelo.')); return; }
+    if (freeOnlyBlocked) { onConfigError('Free Only necesita un modelo con precio gratuito verificado o inferencia local. No se enviará la solicitud con el modelo actual.'); return; }
+    setValue('');
+    const draftSessionId = useDesktopStore.getState().session?.id;
+    const submitted = await onSubmit(trimmed, continueUntilDone);
+    if (useDesktopStore.getState().session?.id !== draftSessionId) return;
+    if (!submitted) { setValue((current) => current || trimmed); return; }
+    if (continueUntilDone) {
+      const state = useDesktopStore.getState().runtimeState;
+      if (['COMPLETED', 'FAILED', 'CANCELLED', 'WAITING_USER', 'RECOVERY_REQUIRED'].includes(state)) setContinueUntilDone(false);
+      else continuousRunSubmitted.current = true;
+    }
+  };
   const changeSetting = async (patch: Partial<Pick<SessionRecord, 'mode' | 'permission' | 'model' | 'providerId' | 'freeOnly' | 'reasoningEffort'>>): Promise<void> => {
     const active = useDesktopStore.getState().session;
     if (!active) return;
+    const request = ++settingsRequest.current;
+    const revision = useDesktopStore.getState().sessionRevision;
     const updated = { ...active, ...patch };
     set('session', updated);
     try { await updateSession(updated); } catch (error) {
+      if (settingsRequest.current !== request || useDesktopStore.getState().sessionRevision !== revision || useDesktopStore.getState().session?.id !== active.id) return;
       set('session', active); set('mode', active.mode); set('permission', active.permission); set('model', active.providerId ? `${active.providerId}::${active.model}` : active.model); set('freeOnly', active.freeOnly ?? false);
       onConfigError(error instanceof Error ? error.message : String(error));
     }
   };
 
   useEffect(() => {
-    if (!selectedModel || !reasoningEffort || selectedModel.reasoningEfforts?.includes(reasoningEffort)) return;
+    if (executionBusy || !selectedModel || !reasoningEffort || selectedModel.reasoningEfforts?.includes(reasoningEffort)) return;
     set('reasoningEffort', undefined);
     if (session) void changeSetting({ reasoningEffort: undefined });
-  }, [selectedModel?.providerId, selectedModel?.id, reasoningEffort, session?.id]);
+  }, [selectedModel?.providerId, selectedModel?.id, reasoningEffort, session?.id, executionBusy]);
 
   const renderModelOption = (item: ProviderModel) => {
     const key = `${item.providerId}::${item.id}`;
@@ -243,11 +396,50 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings, onModelSt
     </div>;
   };
 
-  return <Localized><form className="composer" data-busy={runtimeState === 'RUNNING' || runtimeState === 'PREPARING'} onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+  const latestContextCall = contextData?.latestCall;
+  const contextTokens = latestContextCall?.inputTokens ?? latestContextCall?.estimatedSentTokens;
+  const contextTokenSource = typeof latestContextCall?.inputTokens === 'number' ? 'Informado por el proveedor' : 'Estimación de OrderCode';
+  const contextWindow = selectedModel?.contextWindowTokens;
+  const contextFill = contextTokens !== undefined && contextWindow ? Math.round(contextTokens / contextWindow * 100) : undefined;
+  const automaticCompactions = events.filter((event) => event.type === 'context.compacted' && event.runId).length;
+  const automaticTokensSaved = events.filter((event) => event.type === 'context.compacted' && event.runId).reduce((sum, event) => sum + (event.estimatedTokensSaved ?? 0), 0);
+
+  return <Localized><form ref={composerRef} className="composer" data-busy={runtimeState === 'RUNNING' || runtimeState === 'PREPARING'} onSubmit={(event) => { event.preventDefault(); void submit(); }}>
     <span className="composer-aura" aria-hidden="true" />
-    <textarea value={value} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void submit(); } if (event.key === 'Escape' && runtimeState === 'RUNNING') onCancel(); }} placeholder="Describe lo que quieres hacer…" aria-label="Mensaje para OrderCode" rows={2} />
+    {panel && <AnchoredPopover anchor={composerRef} menuRef={commandPopoverRef} matchAnchor onDismiss={() => setPanel(null)} className="composer-command-panel" role="region" label={panel === 'agents' ? 'Agentes disponibles' : panel === 'context' ? 'Uso del contexto' : panel === 'compact' ? 'Compactación del contexto' : 'Comandos de chat'}>
+      <div className="composer-command-panel-heading"><strong>{panel === 'help' ? 'Comandos del chat' : panel === 'agents' ? 'Especialistas disponibles' : panel === 'context' ? 'Uso del contexto' : panel === 'compact' ? 'Compactar contexto' : panel === 'locked' ? 'Configuración de la tarea' : 'Esfuerzo de razonamiento'}</strong><button type="button" aria-label="Cerrar panel" onClick={() => setPanel(null)}><X size={13} /></button></div>
+      {panel === 'locked' && <div className="context-inspector"><p>Termina o detén la tarea antes de cambiar modelo, esfuerzo, modo o permisos.</p></div>}
+      {panel === 'help' && <div className="slash-help-list">{slashCommands.map((command) => { const Icon = command.icon; return <button type="button" key={command.name} onClick={() => void executeSlashCommand(command.name)}><Icon size={13} /><code>/{command.name}</code><span>{command.description}</span></button>; })}</div>}
+      {panel === 'agents' && <div className="agent-picker-panel">
+        <div className="agent-picker-list">{OFFICIAL_AGENTS.map((agent) => <button type="button" className={`agent-picker-option ${agentId === agent.id ? 'is-active' : ''}`} key={agent.id} aria-pressed={agentId === agent.id} onClick={() => set('agentId', agent.id)}><span className="agent-picker-mark"><Bot size={13} /></span><span className="agent-picker-copy"><strong>{agent.name}</strong><small>{agent.detail}</small></span>{agentId === agent.id && <Check size={13} />}</button>)}
+          {agentProfiles?.filter((profile) => profile.enabled).map((profile) => <button type="button" className={`agent-picker-option ${agentId === profile.id ? 'is-active' : ''}`} key={profile.id} aria-pressed={agentId === profile.id} onClick={() => set('agentId', profile.id)}><span className="agent-picker-mark agent-picker-mark--custom"><Bot size={13} /></span><span className="agent-picker-copy"><strong>{profile.name}</strong><small>{profile.description || 'Especialista personalizado'}</small></span>{agentId === profile.id && <Check size={13} />}</button>)}
+        </div>
+        <p>{agentProfilesBusy ? 'Cargando agentes personalizados…' : agentProfilesError || 'El especialista elegido se usa en el próximo mensaje. Los subagentes heredan modelo y permisos.'}</p>
+      </div>}
+      {panel === 'context' && <div className="context-inspector">
+        {contextBusy ? <p>Consultando el uso de esta conversación…</p> : contextError ? <p className="context-inspector-error">{contextError}</p> : contextData?.latestCall && contextTokens !== undefined ? <>
+          <div className="context-metric"><span>Última solicitud</span><strong>{contextTokens.toLocaleString()} tokens</strong></div>
+          {contextWindow ? <><div className="context-meter" role="progressbar" aria-label="Contexto usado en la última solicitud" aria-valuemin={0} aria-valuemax={contextWindow} aria-valuenow={Math.min(contextTokens, contextWindow)}><span data-level={contextFill! >= 90 ? 'high' : contextFill! >= 70 ? 'medium' : 'low'} style={{ width: `${Math.min(100, contextFill!)}%` }} /></div><small>{contextFill}% de {contextWindow.toLocaleString()} tokens de contexto · {contextTokenSource}</small></> : <small>{contextTokenSource}. El proveedor no publicó el límite de contexto para este modelo.</small>}
+          {contextData.estimatedSavedTokens > 0 && <small>OrderCode estima {contextData.estimatedSavedTokens.toLocaleString()} tokens ahorrados en esta conversación.</small>}
+        </> : contextData?.latestCall ? <p>La última solicitud no incluye datos suficientes para estimar los tokens de entrada.</p> : !contextBusy && !contextError ? <p>Aún no hay solicitudes registradas para este modelo.</p> : null}
+        {(automaticCompactions > 0 || automaticTokensSaved > 0) && <small>Compactación automática en esta sesión: {automaticCompactions} · {automaticTokensSaved.toLocaleString()} tokens estimados.</small>}
+      </div>}
+      {panel === 'compact' && <div className="context-inspector">
+        {contextBusy ? <p>Preparando un resumen local del historial…</p> : compactError ? <p className="context-inspector-error">{compactError}</p> : compactResult?.compacted ? <><div className="context-metric"><span>Mensajes resumidos</span><strong>{compactResult.compactedMessages}</strong></div><p>Las próximas solicitudes usarán un extracto local y los 6 mensajes recientes. El historial completo sigue visible.</p><small>Ahorro estimado: {compactResult.estimatedTokensSaved.toLocaleString()} tokens en el contexto que se enviará al modelo. No se realizó ninguna llamada de IA.</small></> : compactResult?.reason === 'no-savings' ? <p>El historial ya es compacto; no se reduciría más sin quitar información útil.</p> : compactResult ? <p>No hay mensajes antiguos que compactar. Se conservaron {compactResult.retainedMessages} mensajes recientes.</p> : null}
+      </div>}
+      {panel === 'effort' && <div className="context-inspector"><p>Este modelo no publica niveles de razonamiento configurables. Se usará su nivel automático.</p><button type="button" className="context-action" onClick={() => { setPanel(null); setOpen('model'); }}>Elegir otro modelo</button></div>}
+    </AnchoredPopover>}
+    {showSlashMenu && <AnchoredPopover anchor={composerRef} menuRef={slashPopoverRef} matchAnchor className="slash-command-menu" label="Comandos disponibles">{matchingSlashCommands.map((command, index) => { const Icon = command.icon; return <button type="button" role="option" aria-selected={index === slashIndex} className={index === slashIndex ? 'is-active' : ''} key={command.name} onMouseDown={(event) => event.preventDefault()} onClick={() => void executeSlashCommand(command.name)}><Icon size={13} /><code>/{command.name}</code><span>{command.description}</span></button>; })}</AnchoredPopover>}
+    <textarea value={value} onChange={(event) => { setValue(event.target.value); if (event.target.value.startsWith('/')) setPanel(null); }} onKeyDown={(event) => {
+      if (showSlashMenu && event.key === 'ArrowDown') { event.preventDefault(); setSlashIndex((index) => (index + 1) % matchingSlashCommands.length); return; }
+      if (showSlashMenu && event.key === 'ArrowUp') { event.preventDefault(); setSlashIndex((index) => (index - 1 + matchingSlashCommands.length) % matchingSlashCommands.length); return; }
+      if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void submit(); return; }
+      if (event.key === 'Escape' && panel) { setPanel(null); return; }
+      if (event.key === 'Escape' && showSlashMenu) { event.preventDefault(); setValue(''); return; }
+      if (event.key === 'Escape' && ['RUNNING', 'PREPARING', 'PAUSING'].includes(runtimeState)) onCancel();
+    }} placeholder="Describe lo que quieres hacer…" aria-label="Mensaje para OrderCode" aria-autocomplete="list" aria-expanded={showSlashMenu} rows={2} />
     <div className="composer-controls">
-      <Dropdown label="Modelo" value={selectedModel?.label ?? (model ? model.split('::').at(-1) ?? model : 'Elegir modelo')} open={open === 'model'} onOpenChange={(value) => setOpen((current) => value ? 'model' : current === 'model' ? null : current)} className="composer-dropdown composer-dropdown--model">
+      <Dropdown disabled={executionBusy} label="Modelo" value={selectedModel?.label ?? (model ? model.split('::').at(-1) ?? model : 'Elegir modelo')} open={open === 'model'} onOpenChange={(value) => setOpen((current) => value ? 'model' : current === 'model' ? null : current)} className="composer-dropdown composer-dropdown--model">
         <label className="dropdown-search"><Search size={13} /><input value={modelQuery} onChange={(event) => setModelQuery(event.target.value)} placeholder="Buscar modelos" aria-label="Buscar modelos" /></label>
         <button type="button" className={`free-only-toggle ${freeOnly ? 'is-active' : ''}`} aria-pressed={freeOnly} onClick={() => { const enabled = !freeOnly; set('freeOnly', enabled); void changeSetting({ freeOnly: enabled }); }}><span className="free-only-check">{freeOnly ? '✓' : ''}</span><span><strong>Solo gratuitos</strong><small>Modelos gratuitos o locales</small></span></button>
         {modelGroups.map(([providerId, items]) => <section className="model-provider-group" key={providerId} role="group" aria-label={modelProviderLabel(providerId)}><div className="model-provider-heading" aria-hidden="true"><span>{modelProviderLabel(providerId)}</span><small>{items.some((item) => item.priceKind === 'free') ? 'GRATUITOS PRIMERO' : items[0]?.priceKind === 'subscription' ? 'PLAN INCLUIDO' : `${items.length} MODELO${items.length === 1 ? '' : 'S'}`}</small></div>{items.map(renderModelOption)}</section>)}
@@ -256,17 +448,18 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings, onModelSt
         {!filteredModels.length && <div className="dropdown-empty">{freeOnly ? 'No hay modelos locales o gratuitos con precio verificado. Los modelos con precio desconocido quedan bloqueados.' : discovery || 'No hay resultados.'}<button type="button" onClick={() => { setOpen(null); onOpenSettings(); }}>Abrir Ajustes</button></div>}
         <button type="button" className="model-connect-action" onClick={() => { setOpen(null); onOpenSettings(); }}>Conectar otro modelo</button>
       </Dropdown>
-      {efforts.length > 0 && <Dropdown label="Esfuerzo" value={reasoningEffort ? effortLabel(reasoningEffort) : 'Auto'} open={open === 'effort'} onOpenChange={(value) => setOpen((current) => value ? 'effort' : current === 'effort' ? null : current)} className="composer-dropdown composer-dropdown--effort">
+      {efforts.length > 0 && <Dropdown disabled={executionBusy} label="Esfuerzo" value={reasoningEffort ? effortLabel(reasoningEffort) : 'Auto'} open={open === 'effort'} onOpenChange={(value) => setOpen((current) => value ? 'effort' : current === 'effort' ? null : current)} className="composer-dropdown composer-dropdown--effort">
         <div className="dropdown-search">Nivel de razonamiento</div><DropdownOption active={!reasoningEffort} description="Usar el nivel predeterminado del proveedor." onClick={() => { set('reasoningEffort', undefined); setOpen(null); void changeSetting({ reasoningEffort: undefined }); }}>Automático</DropdownOption>{efforts.map((effort) => <DropdownOption key={effort} active={reasoningEffort === effort} onClick={() => { set('reasoningEffort', effort); setOpen(null); void changeSetting({ reasoningEffort: effort }); }}>{effortLabel(effort)}</DropdownOption>)}
       </Dropdown>}
-      <Dropdown label="Modo" value={mode} open={open === 'mode'} onOpenChange={(value) => setOpen((current) => value ? 'mode' : current === 'mode' ? null : current)} className="composer-dropdown composer-dropdown--mode"><div className="dropdown-search">Modo de trabajo</div>{modes.map((item) => <DropdownOption key={item.name} active={mode === item.name} description={item.description} onClick={() => { set('mode', item.name); setOpen(null); void changeSetting({ mode: item.name }); }}>{item.name}</DropdownOption>)}</Dropdown>
-      <Dropdown label="Opciones" value={'Opciones · ' + permission} open={open === 'options'} onOpenChange={(value) => setOpen((current) => value ? 'options' : current === 'options' ? null : current)} className="composer-dropdown composer-dropdown--options">
+      <Dropdown disabled={executionBusy} label="Modo" value={mode} open={open === 'mode'} onOpenChange={(value) => setOpen((current) => value ? 'mode' : current === 'mode' ? null : current)} className="composer-dropdown composer-dropdown--mode"><div className="dropdown-search">Modo de trabajo</div>{modes.map((item) => <DropdownOption key={item.name} active={mode === item.name} description={item.description} onClick={() => { set('mode', item.name); setOpen(null); void changeSetting({ mode: item.name }); }}>{item.name}</DropdownOption>)}</Dropdown>
+      <Dropdown disabled={executionBusy} label="Opciones" value={'Opciones · ' + permission} open={open === 'options'} onOpenChange={(value) => setOpen((current) => value ? 'options' : current === 'options' ? null : current)} className="composer-dropdown composer-dropdown--options">
         <div role="group" aria-label="Permisos"><div className="dropdown-search"><ShieldCheck size={13} />Permisos</div>{permissions.map((item) => <DropdownOption key={item.name} active={permission === item.name} description={item.description} onClick={() => { set('permission', item.name); setOpen(null); void changeSetting({ permission: item.name }); }}>{item.name}</DropdownOption>)}</div>
       </Dropdown>
+      <button type="button" className={`continuous-toggle ${continuousEnabled ? 'is-active' : ''}`} aria-label={continuousEnabled ? 'Desactivar modo continuo' : 'Activar modo continuo'} aria-pressed={continuousEnabled} title={executionBusy && continuousEnabled ? 'Modo continuo activo · trabajando en los objetivos según los límites de sesión.' : continuousEnabled ? 'La siguiente tarea seguirá hasta completarse según los límites de sesión y el modo se apagará al terminar' : 'Modo continuo: seguir trabajando hasta completar y verificar la tarea'} disabled={executionBusy} onClick={() => setContinueUntilDone((enabled) => !enabled)}><Repeat2 size={13} /><span>{continuousEnabled ? 'Continuo' : 'Hasta completar'}</span></button>
       <span className="control-spacer" />
-      {runtimeState === 'RUNNING' || runtimeState === 'PREPARING' ? <button className="send-button send-button--stop" type="button" aria-label="Detener ejecución" onClick={onCancel}><Square size={12} fill="currentColor" /></button> : <button className="send-button" type="submit" aria-label="Enviar mensaje" disabled={!value.trim() || runtimeState === 'WAITING_APPROVAL' || modelSelectionMissing || modelNeedsCredentials || freeOnlyBlocked}><Send size={15} /></button>}
+      {runtimeState === 'RUNNING' || runtimeState === 'PREPARING' || runtimeState === 'PAUSING' ? <button className="send-button send-button--stop" type="button" aria-label="Detener ejecución" onClick={onCancel}><Square size={12} fill="currentColor" /></button> : <button className="send-button" type="submit" aria-label="Enviar mensaje" disabled={!value.trim() || (!showSlashMenu && (executionBusy || modelSelectionMissing || modelNeedsCredentials || freeOnlyBlocked))}><Send size={15} /></button>}
     </div>
-    {(modelSelectionMissing || modelNeedsCredentials || freeOnlyBlocked || runtimeState === 'RUNNING') && <div className="composer-hint"><span>{modelSelectionMissing ? catalogBusy ? 'Cargando modelos disponibles…' : 'Conecta un modelo para empezar.' : modelNeedsCredentials ? selectedModel?.availabilityReason ?? (selectedModel?.providerId === 'openai_chatgpt' ? 'Conecta tu cuenta ChatGPT en Ajustes para usar estos modelos.' : 'Conecta la clave API del proveedor en Ajustes para usar este catálogo.') : freeOnlyBlocked ? 'Selecciona un modelo gratuito verificado o local para continuar.' : 'Trabajando en tu proyecto…'}</span><span>{runtimeState === 'RUNNING' ? 'Esc para detener' : ''}</span></div>}
+    {(modelSelectionMissing || modelNeedsCredentials || freeOnlyBlocked || runtimeState === 'RUNNING' || continuousEnabled) && <div className="composer-hint"><span>{modelSelectionMissing ? catalogBusy ? 'Cargando modelos disponibles…' : 'Conecta un modelo para empezar.' : modelNeedsCredentials ? selectedModel?.availabilityReason ?? (selectedModel?.providerId === 'openai_chatgpt' ? 'Conecta tu cuenta ChatGPT en Ajustes para usar estos modelos.' : 'Conecta la clave API del proveedor en Ajustes para usar este catálogo.') : freeOnlyBlocked ? 'Selecciona un modelo gratuito verificado o local para continuar.' : executionBusy ? continuousEnabled ? 'Modo continuo activo · trabajando en los objetivos según los límites de sesión.' : 'Trabajando en tu proyecto…' : 'Modo continuo activo para el próximo mensaje · se apaga al terminar la tarea.'}</span><span>{runtimeState === 'RUNNING' ? 'Esc para detener' : ''}</span></div>}
   </form></Localized>;
 }
 
@@ -276,7 +469,7 @@ export function ChatPanel({ onOpenReview, onOpenSettings }: { onOpenReview: () =
   const [openingWorkspace, setOpeningWorkspace] = useState(false);
   const [modelState, setModelState] = useState({ ready: false, label: '' });
   useEffect(() => { setError(null); }, [session?.id]);
-  const handleSubmit = async (content: string): Promise<boolean> => {
+  const handleSubmit = async (content: string, continueUntilDone: boolean): Promise<boolean> => {
     const initial = useDesktopStore.getState();
     if (['RUNNING', 'PREPARING', 'WAITING_APPROVAL'].includes(initial.runtimeState)) return false;
     let submitted = false;
@@ -302,7 +495,7 @@ export function ChatPanel({ onOpenReview, onOpenSettings }: { onOpenReview: () =
       addMessage({ id: crypto.randomUUID(), role: 'user', content, timestamp });
       submitted = true;
       set('streamingText', '');
-      await followSessionOperation(activeSession.id, () => sendSessionMessage(activeSession!.id, content, mode, model, permission, activeSession!.providerId, agentId, freeOnly, reasoningEffort));
+      await followSessionOperation(activeSession.id, () => sendSessionMessage(activeSession!.id, content, mode, model, permission, activeSession!.providerId, agentId, freeOnly, reasoningEffort, continueUntilDone));
       return true;
     } catch (cause) {
       if (!isCurrent()) return submitted;
@@ -338,13 +531,13 @@ export function ChatPanel({ onOpenReview, onOpenSettings }: { onOpenReview: () =
   return <Localized><main className={'chat-panel ' + (empty ? 'is-empty' : '')}>
     <div className="conversation-header"><div><h1>{projectName ?? 'Nueva conversación'}</h1>{(!empty || busy || error) && <p><StatusDot color={error || runtimeState === 'FAILED' ? 'red' : busy ? 'green' : 'muted'} />{error ? 'Error' : stateLabel}</p>}</div></div>
     <div className="conversation-stage"><div className="conversation-scroll">
-      {messages.length ? messages.map((message) => <Message message={message} key={message.id} />) : <div className="conversation-empty"><strong>¿Qué quieres crear?</strong><p>{session && modelState.ready ? 'Describe el cambio y OrderCode se encarga del siguiente paso.' : 'Abre un proyecto y cuéntanos tu idea.'}</p>
+      {messages.some((message) => message.content.trim() || message.refs?.length) ? messages.filter((message) => message.content.trim() || message.refs?.length).map((message) => <Message message={message} key={message.id} onLinkError={(cause) => setError(cause instanceof Error ? cause.message : String(cause))} />) : <div className="conversation-empty"><strong>¿Qué quieres crear?</strong><p>{session && modelState.ready ? 'Describe el cambio y OrderCode se encarga del siguiente paso.' : 'Abre un proyecto y cuéntanos tu idea.'}</p>
         {(!session || !modelState.ready) && <ol className="start-steps" aria-label="Primeros pasos">
           <li className={session ? 'is-complete' : ''}><span className="start-step-number">{session ? <Check size={16} /> : '1'}</span><div><strong>Tu proyecto</strong><p>{projectName ?? 'Elige una carpeta para guardar tu trabajo.'}</p></div><button type="button" disabled={openingWorkspace || busy} onClick={() => void openWorkspace()}>{openingWorkspace ? 'Abriendo…' : session ? 'Cambiar carpeta' : 'Abrir carpeta'}</button></li>
           <li className={modelState.ready ? 'is-complete' : ''}><span className="start-step-number">{modelState.ready ? <Check size={16} /> : '2'}</span><div><strong>Tu asistente</strong><p>{modelState.ready ? modelState.label : 'Conecta tu cuenta o utiliza un modelo local.'}</p></div>{modelState.ready ? <span className="start-step-ready">Listo</span> : <button type="button" onClick={onOpenSettings}>Conectar modelo</button>}</li>
         </ol>}
       </div>}
-      {streamingText && <Message message={{ id: 'assistant-stream', role: 'assistant', content: streamingText, timestamp: 'Ahora' }} />}<ActivityGroup /><ChangedFiles onOpenReview={onOpenReview} />{error && <div className="inline-error" role="alert"><X size={14} /><span>{error}</span></div>}
-    </div><Composer onSubmit={handleSubmit} onCancel={() => { if (session) { const revision = useDesktopStore.getState().sessionRevision; void cancelSession(session.id).then(() => { if (useDesktopStore.getState().sessionRevision === revision) set('runtimeState', 'CANCELLED'); }).catch((cause) => setError(String(cause))); } }} onConfigError={setError} onOpenSettings={onOpenSettings} onModelState={setModelState} /></div>
+      {streamingText && <Message message={{ id: 'assistant-stream', role: 'assistant', content: streamingText, timestamp: 'Ahora' }} onLinkError={(cause) => setError(cause instanceof Error ? cause.message : String(cause))} />}<ActivityGroup /><ChangedFiles onOpenReview={onOpenReview} />{error && <div className="inline-error" role="alert"><X size={14} /><span>{error}</span></div>}
+    </div><Composer onSubmit={handleSubmit} onCancel={() => { if (session) { const revision = useDesktopStore.getState().sessionRevision; void cancelSession(session.id).then(() => { if (useDesktopStore.getState().sessionRevision === revision) set('runtimeState', 'CANCELLED'); }).catch((cause) => setError(String(cause))); } }} onConfigError={setError} onOpenSettings={onOpenSettings} onOpenReview={onOpenReview} onModelState={setModelState} /></div>
   </main></Localized>;
 }

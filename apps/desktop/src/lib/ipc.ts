@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { harnessRpcRequestSchema } from '@ordercode/shared';
 import type {
   BrokerHealth,
@@ -200,6 +201,18 @@ export async function loadUsageAnalytics(query: { projectPath: string; days: 7 |
   return rpc<UsageAnalytics>('usage.analytics', query);
 }
 
+export type SessionContextCompaction = { compacted: boolean; compactedMessages: number; retainedMessages: number; estimatedTokensSaved: number; totalEstimatedTokensSaved: number; reason?: 'not-enough-history' | 'no-savings' };
+export async function compactSessionContext(sessionId: string): Promise<SessionContextCompaction> {
+  return rpc<SessionContextCompaction>('session.context.compact', { sessionId });
+}
+
+export async function openExternalUrl(value: string): Promise<void> {
+  const url = new URL(value);
+  if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Solo se pueden abrir enlaces HTTP o HTTPS.');
+  if (isTauri()) { await openUrl(url.href); return; }
+  window.open(url.href, '_blank', 'noopener,noreferrer');
+}
+
 export async function createSession(config: SessionConfig): Promise<SessionRecord> {
   const selection = modelSelection(config.model, config.providerId, config.modelId);
   const fallback: SessionRecord = { ...config, freeOnly: config.freeOnly ?? false, model: selection.modelId ?? config.model, providerId: selection.providerId ?? '', id: `preview-${crypto.randomUUID()}`, createdAt: new Date().toISOString(), state: 'CREATED', sequence: 0 };
@@ -255,7 +268,7 @@ function toDesktopEvent(event: Record<string, unknown>): HarnessEvent {
   const request = payload.request && typeof payload.request === 'object' ? payload.request as Record<string, unknown> : undefined;
   const decision = ['reject', 'once', 'session', 'project'].includes(String(payload.decision)) ? payload.decision as PermissionDecision : undefined;
   const permissionState = event.type === 'permission.resolved' && decision ? decision === 'reject' ? 'CANCELLED' : 'COMPLETED' : undefined;
-  const rawState = typeof payload.state === 'string' ? payload.state : toolState ?? permissionState ?? (event.type === 'run.completed' ? 'COMPLETED' : event.type === 'run.failed' ? 'FAILED' : event.type === 'run.cancelled' ? 'CANCELLED' : event.type === 'permission.requested' ? 'WAITING_APPROVAL' : 'RUNNING');
+  const rawState = typeof payload.state === 'string' ? payload.state : toolState ?? permissionState ?? (event.type === 'run.completed' || event.type === 'context.compacted' ? 'COMPLETED' : event.type === 'run.failed' ? 'FAILED' : event.type === 'run.cancelled' ? 'CANCELLED' : event.type === 'permission.requested' ? 'WAITING_APPROVAL' : 'RUNNING');
   const input = payload.input && typeof payload.input === 'object' ? payload.input as Record<string, unknown> : undefined;
   const toolName = typeof payload.toolName === 'string' ? payload.toolName : typeof request?.toolName === 'string' ? request.toolName : undefined;
   const permissionToolName = toolName ?? String(request?.toolName ?? 'acción');
@@ -276,7 +289,9 @@ function toDesktopEvent(event: Record<string, unknown>): HarnessEvent {
     type: String(event.type ?? ''),
     ...(toolName ? { toolName } : {}),
     ...(typeof payload.invocationId === 'string' ? { invocationId: payload.invocationId } : {}),
-    summary: event.type === 'permission.requested' ? `Autorización: ${permissionToolName}` : event.type === 'permission.resolved' ? `Autorización ${decision === 'reject' ? 'rechazada' : 'concedida'}: ${permissionToolName}` : toolName ? `${toolName}${result ? ` · ${String(result.status ?? '')}` : ''}` : String(event.type ?? 'Actividad'),
+    summary: event.type === 'permission.requested' ? `Autorización: ${permissionToolName}` : event.type === 'permission.resolved' ? `Autorización ${decision === 'reject' ? 'rechazada' : 'concedida'}: ${permissionToolName}` : event.type === 'context.compacted' ? (payload.automatic === true ? 'Compactación automática del contexto' : 'Contexto de conversación compactado') : toolName ? `${toolName}${result ? ` · ${String(result.status ?? '')}` : ''}` : String(event.type ?? 'Actividad'),
+    ...(event.type === 'context.compacted' && typeof payload.estimatedTokensSaved === 'number' ? { estimatedTokensSaved: payload.estimatedTokensSaved } : {}),
+    ...(event.type === 'context.compacted' ? { detail: `${Number(payload.compactedMessages ?? 1)} mensajes · ${Number(payload.estimatedTokensSaved ?? 0).toLocaleString()} tokens estimados ahorrados${payload.automatic === true ? ' en resultados de herramientas' : ''}` } : {}),
     ...(usageDetail ? { detail: usageDetail } : {}),
     ...(actionDetail ? { detail: actionDetail } : {}),
     ...(event.type === 'tool.started' && toolName === 'agents.delegate' && input ? { detail: `${String(input.role ?? 'specialist')} · ${String(input.task ?? '')}` } : {}),
@@ -293,13 +308,14 @@ function toDesktopEvent(event: Record<string, unknown>): HarnessEvent {
     ...(typeof payload.error === 'string' ? { detail: payload.error } : {}),
     ...(typeof payload.reason === 'string' ? { detail: payload.reason } : {}),
     ...(typeof event.runId === 'string' ? { runId: event.runId } : {}),
+    ...(typeof payload.continueUntilDone === 'boolean' ? { continueUntilDone: payload.continueUntilDone } : {}),
   };
 }
 
-export async function sendSessionMessage(sessionId: string, message: string, mode: WorkMode, model: string, permission: PermissionProfile, providerId?: string, agentId?: string, freeOnly = false, reasoningEffort?: string): Promise<HarnessEvent> {
+export async function sendSessionMessage(sessionId: string, message: string, mode: WorkMode, model: string, permission: PermissionProfile, providerId?: string, agentId?: string, freeOnly = false, reasoningEffort?: string, continueUntilDone = false): Promise<HarnessEvent> {
   if (!isTauri()) return { id: crypto.randomUUID(), sessionId, sequence: 0, state: 'WAITING_USER', summary: 'Disponible en la app de escritorio', detail: 'El navegador solo muestra la vista previa. Para ejecutar tareas, abre OrderCode Desktop.' };
   const selection = modelSelection(model, providerId);
-  const value = await rpc<Record<string, unknown>>('run', { sessionId, goal: message, mode: mode.toLowerCase(), permissionProfile: profileId(permission), freeOnly, reasoningEffort: reasoningEffort ?? null, ...(agentId ? { agentId } : {}), ...selection });
+  const value = await rpc<Record<string, unknown>>('run', { sessionId, goal: message, mode: mode.toLowerCase(), permissionProfile: profileId(permission), freeOnly, continueUntilDone, reasoningEffort: reasoningEffort ?? null, ...(agentId ? { agentId } : {}), ...selection });
   const state = typeof value.state === 'string' ? value.state as HarnessEvent['state'] : 'FAILED';
   const assistant = value.assistantMessage && typeof value.assistantMessage === 'object' ? value.assistantMessage as Record<string, unknown> : undefined;
   const pending = value.pendingPermission && typeof value.pendingPermission === 'object' ? value.pendingPermission as Record<string, unknown> : undefined;
@@ -397,7 +413,7 @@ export function executeAllowed(command: string, cwd?: string): Promise<{ code: n
 }
 
 export type ProviderInfo = { id: string; label: string; baseUrl: string; configured: boolean; custom?: boolean };
-export type ProviderModel = { id: string; providerId: string; label: string; capabilities: string[]; available: boolean; availabilityReason?: string; reasoningEfforts?: string[]; catalogRank?: number; priceKind: 'free' | 'paid' | 'unknown' | 'local' | 'subscription'; pricing?: { inputPerMillionUsd: number; outputPerMillionUsd: number; updatedAt: string } };
+export type ProviderModel = { id: string; providerId: string; label: string; capabilities: string[]; available: boolean; availabilityReason?: string; reasoningEfforts?: string[]; contextWindowTokens?: number; catalogRank?: number; priceKind: 'free' | 'paid' | 'unknown' | 'local' | 'subscription'; pricing?: { inputPerMillionUsd: number; outputPerMillionUsd: number; updatedAt: string } };
 export function listProviders(): Promise<ProviderInfo[]> { return rpc('providers.list'); }
 export function listProviderModels(providerId: string): Promise<ProviderModel[]> { return rpc('provider.models', { providerId }); }
 export function providerKeysStatus(providerIds: string[] = []): Promise<Record<string, boolean>> { return call('provider_keys_status', { providerIds }, {}); }

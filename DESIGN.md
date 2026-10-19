@@ -156,6 +156,8 @@ El campo de mensaje permanecerá accesible en la parte inferior del chat.
 - Los controles secundarios se agrupan en un menú de más acciones cuando falta espacio.
 - No introducir grandes paneles explicativos dentro del composer.
 - Botón enviar solo si hay contenido válido; durante ejecución, acceso inequívoco a detener.
+- El botón **Hasta completar** se activa para una tarea y muestra su estado real al navegar entre vistas. Los ajustes de ejecución quedan bloqueados durante la tarea; detener y resolver autorizaciones siguen disponibles.
+- Los comandos `/` y el panel de especialistas se abren bajo demanda en menús ajustados a la ventana, con cierre accesible incluso en pantallas pequeñas. Los comandos de consulta funcionan sin conectar un modelo; mostrar el contexto de la sesión que los solicitó.
 
 ### 5.3. Selector de modelo
 

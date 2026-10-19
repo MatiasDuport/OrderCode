@@ -61,6 +61,10 @@ export class JsonRpcServer {
       case "session.update": return this.runtime.updateSession(String(object.sessionId), object.patch as Parameters<HarnessRuntime["updateSession"]>[1]);
       case "session.list": return this.runtime.listSessions(typeof object.projectPath === "string" ? object.projectPath : undefined);
       case "session.messages": return this.runtime.listMessages(String(object.sessionId), Number(object.limit ?? 200));
+      case "session.context.compact": {
+        if (typeof object.sessionId !== "string" || !object.sessionId) throw new Error("A session id is required to compact its context.");
+        return this.runtime.compactSessionContext(object.sessionId);
+      }
       case "session.events": return this.runtime.listEvents(String(object.sessionId), Number(object.afterSequence ?? 0));
       case "usage.analytics": {
         if (typeof object.projectPath !== "string" || ![0, 7, 30, 90].includes(Number(object.days))) throw new Error("A workspace path and a 7, 30, 90, or all-time range are required.");
@@ -77,6 +81,7 @@ export class JsonRpcServer {
       case "run": {
         const run = object as unknown as RunInput;
         if (typeof run.sessionId !== "string" || typeof run.goal !== "string" || !run.goal.trim()) throw new Error("A session and non-empty goal are required.");
+        if (run.continueUntilDone !== undefined && typeof run.continueUntilDone !== "boolean") throw new Error("Continuous completion must be a boolean.");
         const controller = new AbortController();
         this.controllers.set(run.sessionId, controller);
         try { return await this.runtime.run({ ...run, signal: controller.signal }); }

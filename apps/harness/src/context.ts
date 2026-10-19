@@ -111,12 +111,13 @@ export class ContextBuilder {
     add("Runtime", `mode=${input.mode}\nstate=${input.state}\nproject=${input.projectPath}`, 100);
     add("Instructions", input.systemInstructions, 95);
     add("Decisions", input.decisions?.slice(-20).join("\n- "), 85);
+    add("Compacted conversation history", input.historySummary, 82);
     const history = (input.history ?? []).slice(-20).map((message) => {
       const compacted = compactOutput(message.content, 8_000);
       historySavings += Math.max(0, estimateTokens(`${message.role}: ${message.content}`) - estimateTokens(`${message.role}: ${compacted}`));
       return `${message.role}: ${compacted}`;
     }).join("\n");
-    add("Relevant history", history, 80);
+    add("Recent conversation", history, 81);
     for (const fragment of input.fileFragments ?? []) {
       const range = fragment.startLine === undefined ? "" : `:${fragment.startLine}-${fragment.endLine ?? fragment.startLine}`;
       add(`File ${fragment.path}${range}`, fragment.content, 70);

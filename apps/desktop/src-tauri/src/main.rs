@@ -669,7 +669,10 @@ async fn workspace_tree(state: State<'_, BrokerState>, directory: Option<String>
 async fn git_status(state: State<'_, BrokerState>) -> Result<String, String> {
     let root = state.workspace_root.lock().map_err(|_| "No se pudo leer el workspace activo".to_string())?.clone().ok_or_else(|| "Abre un workspace antes de consultar Git".to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
-        let output = Command::new("git").arg("-C").arg(root).args(["status", "--short", "--branch"]).output().map_err(|error| format!("No se pudo consultar Git: {error}"))?;
+        let mut command = Command::new("git");
+        #[cfg(windows)]
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW: the project sidebar runs this query automatically.
+        let output = command.arg("-C").arg(root).args(["status", "--short", "--branch"]).output().map_err(|error| format!("No se pudo consultar Git: {error}"))?;
         if !output.status.success() {
             let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
             return Err(if detail.is_empty() { "Git no pudo consultar el estado del workspace".into() } else { detail });
@@ -1029,21 +1032,28 @@ fn request_harness(process: &HarnessProcess, request: serde_json::Value) -> Resu
         stdin.flush().map_err(|error| format!("No se pudo enviar la solicitud Harness: {error}"))
     })();
     if let Err(error) = write_result { if let Ok(mut waiting) = process.pending.lock() { waiting.remove(&key); } return Err(error); }
-    let value = receiver.recv_timeout(timeout).map_err(|error| {
+    // The runtime owns execution budgets. Its stdout reader also resolves pending
+    // requests when the process exits, so long tasks need no second wall-clock cap.
+    let response = match timeout {
+        Some(duration) => receiver.recv_timeout(duration).map_err(|error| format!("Tiempo de espera agotado al recibir respuesta Harness: {error}")),
+        None => receiver.recv().map_err(|error| format!("Se cerró la conexión con Harness: {error}")),
+    };
+    let value = response.map_err(|error| {
         if let Ok(mut waiting) = process.pending.lock() { waiting.remove(&key); }
-        format!("Tiempo de espera agotado al recibir respuesta Harness: {error}")
+        error
     })?;
     if let Some(error) = value.get("error") { return Err(error.get("message").and_then(serde_json::Value::as_str).unwrap_or("Harness devolvió un error").to_string()); }
     Ok(value)
 }
 
-fn harness_request_timeout(method: &str) -> Duration {
-    Duration::from_secs(match method {
+fn harness_request_timeout(method: &str) -> Option<Duration> {
+    if matches!(method, "run" | "permission.resolve" | "tool.invoke") { return None; }
+    Some(Duration::from_secs(match method {
         "shutdown" => 5,
         "health" => 10,
-        "run" | "permission.resolve" | "tool.invoke" | "agents.test" | "code.index" | "code.graph" | "provider.models" | "mcp.connect" | "marketplace.install" => 900,
+        "agents.test" | "code.index" | "code.graph" | "provider.models" | "mcp.connect" | "marketplace.install" => 900,
         _ => 60,
-    })
+    }))
 }
 
 fn rpc_id_key(value: &serde_json::Value) -> String {
@@ -1053,6 +1063,7 @@ fn rpc_id_key(value: &serde_json::Value) -> String {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(BrokerState::default())
         .manage(UpdaterState::default())
@@ -1134,11 +1145,13 @@ mod tests {
 
     #[test]
     fn control_requests_have_bounded_timeouts_and_model_runs_keep_long_budget() {
-        assert_eq!(harness_request_timeout("shutdown"), Duration::from_secs(5));
-        assert_eq!(harness_request_timeout("health"), Duration::from_secs(10));
-        assert_eq!(harness_request_timeout("session.cancel"), Duration::from_secs(60));
-        assert_eq!(harness_request_timeout("run"), Duration::from_secs(900));
-        assert_eq!(harness_request_timeout("permission.resolve"), Duration::from_secs(900));
+        assert_eq!(harness_request_timeout("shutdown"), Some(Duration::from_secs(5)));
+        assert_eq!(harness_request_timeout("health"), Some(Duration::from_secs(10)));
+        assert_eq!(harness_request_timeout("session.cancel"), Some(Duration::from_secs(60)));
+        assert_eq!(harness_request_timeout("run"), None);
+        assert_eq!(harness_request_timeout("permission.resolve"), None);
+        assert_eq!(harness_request_timeout("tool.invoke"), None);
+        assert_eq!(harness_request_timeout("provider.models"), Some(Duration::from_secs(900)));
     }
 
     #[test]

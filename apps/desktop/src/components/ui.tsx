@@ -28,10 +28,18 @@ export function StatusDot({ color = 'green', pulse = false }: { color?: 'green' 
 
 export function Kbd({ children }: { children: ReactNode }) { return <kbd>{children}</kbd>; }
 
-function DropdownPopover({ id, label, children, anchor, menuRef }: { id: string; label: string; children: ReactNode; anchor: RefObject<HTMLButtonElement | null>; menuRef: RefObject<HTMLDivElement | null> }) {
+export function AnchoredPopover({ id, label, children, anchor, menuRef, className = 'dropdown-menu', role = 'listbox', matchAnchor = false, onDismiss }: { id?: string; label: string; children: ReactNode; anchor: RefObject<HTMLElement | null>; menuRef: RefObject<HTMLDivElement | null>; className?: string; role?: 'listbox' | 'region'; matchAnchor?: boolean; onDismiss?: () => void }) {
   const present = useIsPresent();
   const systemReducedMotion = useReducedMotion();
   const reducedMotion = useDesktopStore((state) => state.reducedMotion) || systemReducedMotion;
+  useEffect(() => {
+    if (!onDismiss || !present) return;
+    const dismiss = (event: PointerEvent) => {
+      if (event.target instanceof Node && !anchor.current?.contains(event.target) && !menuRef.current?.contains(event.target)) onDismiss();
+    };
+    document.addEventListener('pointerdown', dismiss);
+    return () => document.removeEventListener('pointerdown', dismiss);
+  }, [onDismiss, present, anchor, menuRef]);
   useLayoutEffect(() => {
     const menu = menuRef.current;
     const control = anchor.current;
@@ -41,11 +49,11 @@ function DropdownPopover({ id, label, children, anchor, menuRef }: { id: string;
       const rect = control.getBoundingClientRect();
       const composer = control.closest('.composer')?.getBoundingClientRect();
       const compact = window.innerWidth <= 620 && !!composer;
-      menu.style.width = compact ? `${Math.min(composer.width, window.innerWidth - margin * 2)}px` : '';
-      menu.style.maxWidth = `${Math.min(380, window.innerWidth - margin * 2)}px`;
+      menu.style.width = matchAnchor ? `${Math.min(rect.width, window.innerWidth - margin * 2)}px` : compact ? `${Math.min(composer.width, window.innerWidth - margin * 2)}px` : '';
+      menu.style.maxWidth = `${Math.min(matchAnchor ? window.innerWidth : 380, window.innerWidth - margin * 2)}px`;
       const above = Math.max(0, rect.top - margin - gap);
       const below = Math.max(0, window.innerHeight - rect.bottom - margin - gap);
-      menu.style.maxHeight = `${Math.max(64, Math.min(420, Math.max(above, below)))}px`;
+      menu.style.maxHeight = `${Math.max(32, Math.min(matchAnchor ? 520 : 420, Math.max(above, below)))}px`;
       const width = menu.offsetWidth, height = menu.offsetHeight;
       const left = compact ? composer.x : rect.right - width;
       const opensAbove = above >= height || above >= below;
@@ -60,15 +68,16 @@ function DropdownPopover({ id, label, children, anchor, menuRef }: { id: string;
     window.addEventListener('resize', place);
     window.addEventListener('scroll', place, true);
     return () => { observer.disconnect(); window.removeEventListener('resize', place); window.removeEventListener('scroll', place, true); };
-  }, [anchor, menuRef]);
-  return createPortal(<Localized><motion.div ref={menuRef} id={id} className="dropdown-menu" role="listbox" aria-label={label} aria-hidden={!present} inert={!present ? true : undefined}
+  }, [anchor, menuRef, matchAnchor]);
+  return createPortal(<Localized><motion.div ref={menuRef} id={id} className={className} role={role} aria-label={label} aria-live={role === 'region' ? 'polite' : undefined} aria-hidden={!present} inert={!present ? true : undefined}
+    onKeyDown={(event) => { if (event.key === 'Escape' && onDismiss) { event.preventDefault(); event.stopPropagation(); onDismiss(); anchor.current?.querySelector<HTMLTextAreaElement>('textarea')?.focus(); } }}
     initial={reducedMotion ? false : { opacity: 0, y: 9, scale: .97, rotateX: -7 }} animate={{ opacity: 1, y: 0, scale: 1, rotateX: 0 }}
     exit={{ opacity: 0, y: reducedMotion ? 0 : 5, scale: reducedMotion ? 1 : .98 }}
     transition={reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 480, damping: 33, opacity: { duration: .14 } }}
-    style={{ position: 'fixed', bottom: 'auto', right: 'auto', zIndex: 35, transformOrigin: 'var(--menu-origin, bottom left)', transformPerspective: 800 }}>{children}</motion.div></Localized>, document.body);
+    style={{ position: 'fixed', bottom: 'auto', right: 'auto', zIndex: 35, overflowY: matchAnchor ? 'auto' : undefined, transformOrigin: 'var(--menu-origin, bottom left)', transformPerspective: 800 }}>{children}</motion.div></Localized>, document.body);
 }
 
-export function Dropdown({ label, value, open, onOpenChange, children, className = '' }: { label: string; value: string; open: boolean; onOpenChange: (open: boolean) => void; children: ReactNode; className?: string }) {
+export function Dropdown({ label, value, open, onOpenChange, children, className = '', disabled = false }: { label: string; value: string; open: boolean; onOpenChange: (open: boolean) => void; children: ReactNode; className?: string; disabled?: boolean }) {
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
@@ -79,6 +88,11 @@ export function Dropdown({ label, value, open, onOpenChange, children, className
   const clearTimer = () => { clearTimeout(timer.current); timer.current = undefined; };
   const contains = useCallback((target: EventTarget | null) => target instanceof Node && (!!root.current?.contains(target) || !!menu.current?.contains(target)), []);
   useEffect(() => () => clearTimeout(timer.current), []);
+  useEffect(() => {
+    if (!disabled) return;
+    clearTimeout(timer.current);
+    if (open) onOpenChange(false);
+  }, [disabled, open, onOpenChange]);
   useEffect(() => {
     if (!open) return;
     if (focusOption.current) {
@@ -93,13 +107,14 @@ export function Dropdown({ label, value, open, onOpenChange, children, className
   }, [open, onOpenChange, contains]);
   return <Localized><div ref={root} className={`dropdown ${className}`} onPointerEnter={(event) => {
     clearTimer();
-    if (event.pointerType === 'mouse' && !open) timer.current = setTimeout(() => { openedByHover.current = true; onOpenChange(true); }, 120);
+    if (!disabled && event.pointerType === 'mouse' && !open) timer.current = setTimeout(() => { openedByHover.current = true; onOpenChange(true); }, 120);
   }} onPointerLeave={(event) => {
     clearTimer();
     if (event.pointerType === 'mouse' && (!contains(document.activeElement) || (openedByHover.current && document.activeElement === trigger.current))) timer.current = setTimeout(() => onOpenChange(false), 180);
   }} onFocusCapture={clearTimer} onClickCapture={(event) => {
     if ((event.target as HTMLElement).closest('[role="option"]:not(:disabled)')) trigger.current?.focus();
   }} onBlur={(event) => { if (!contains(event.relatedTarget)) { clearTimer(); onOpenChange(false); } }} onKeyDown={(event) => {
+    if (disabled) return;
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); clearTimer(); onOpenChange(false); trigger.current?.focus(); return; }
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
     event.preventDefault(); clearTimer();
@@ -109,14 +124,14 @@ export function Dropdown({ label, value, open, onOpenChange, children, className
     const index = options.indexOf(document.activeElement as HTMLButtonElement);
     options[index < 0 ? (event.key === 'ArrowUp' ? options.length - 1 : 0) : (index + (event.key === 'ArrowUp' ? -1 : 1) + options.length) % options.length]?.focus();
   }}>
-    <button ref={trigger} type="button" className="dropdown-trigger" aria-haspopup="listbox" aria-controls={open ? id : undefined} aria-expanded={open} onClick={() => {
+    <button ref={trigger} type="button" className="dropdown-trigger" disabled={disabled} aria-haspopup="listbox" aria-controls={open && !disabled ? id : undefined} aria-expanded={open && !disabled} onClick={() => {
       clearTimer();
       if (openedByHover.current && open) { openedByHover.current = false; return; }
       openedByHover.current = false; onOpenChange(!open);
     }}>
       <span className="dropdown-label">{label}</span><span className="dropdown-value">{value}</span><ChevronDown className="dropdown-caret" size={13} />
     </button>
-    <AnimatePresence>{open && <DropdownPopover id={id} label={label} anchor={trigger} menuRef={menu}>{children}</DropdownPopover>}</AnimatePresence>
+    <AnimatePresence>{open && !disabled && <AnchoredPopover id={id} label={label} anchor={trigger} menuRef={menu}>{children}</AnchoredPopover>}</AnimatePresence>
   </div></Localized>;
 }
 

@@ -2,10 +2,10 @@ import { Bot, Check, Pencil, Plus, Save, Trash2, X } from 'lucide-react';
 import { useEffect, useState, type ChangeEvent } from 'react';
 import { deleteCustomAgent, listAvailableAgentTools, listCustomAgents, saveCustomAgent, testCustomAgent } from '../lib/ipc';
 import type { AgentProfile, AgentTestResult, AgentToolChoice } from '../lib/contracts';
+import type { OfficialAgent } from '../lib/agents';
 import { useDesktopStore } from '../lib/store';
 import { Localized } from '../lib/localization';
 
-interface OfficialAgent { id: string; name: string; detail: string }
 interface Draft { id?: string; name: string; description: string; instructions: string; toolAllowlist: string[]; enabled: boolean }
 
 export function AgentStudio({ officialAgents }: { officialAgents: OfficialAgent[] }) {
