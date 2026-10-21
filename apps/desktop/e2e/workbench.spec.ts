@@ -1,4 +1,13 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
+
+async function openTools(page: Page, advanced = false) {
+  const tools = page.locator('[aria-controls="navigation-tools"]');
+  if (await tools.getAttribute('aria-expanded') !== 'true') await tools.click();
+  if (advanced) {
+    const more = page.locator('[aria-controls="navigation-advanced-tools"]');
+    if (await more.getAttribute('aria-expanded') !== 'true') await more.click();
+  }
+}
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
@@ -28,31 +37,87 @@ test('shows the honest browser preview and keeps effort, work mode and permissio
 
   await permissionControl.locator('.dropdown-trigger').click();
   await page.getByRole('option', { name: /Lectura/ }).click();
-  await expect(permissionControl.locator('.dropdown-value')).toHaveText('Opciones · Lectura');
+  await expect(permissionControl.locator('.dropdown-value')).toHaveText('Lectura');
 
   await page.locator('.composer-dropdown--model .dropdown-trigger').click();
-  await expect(page.locator('.dropdown-empty')).toContainText(/requiere la app de escritorio|Configura un proveedor/i);
-  await expect(page.getByRole('option')).toHaveCount(0);
+  await expect(page.locator('.model-picker-empty')).toContainText(/requiere la app de escritorio|Conecta un proveedor/i);
+  await expect(page.getByRole('listbox', { name: 'Modelos disponibles' }).getByRole('option')).toHaveCount(0);
 });
 
 test('shows usage, savings and session event tabs without inventing browser-preview metrics', async ({ page }) => {
   await page.goto('/');
-  await page.getByRole('button', { name: 'Herramientas', exact: true }).click();
+  await openTools(page, true);
   await page.getByRole('button', { name: 'Uso y actividad', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Uso y ahorro' })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Uso y ahorro filters' })).toBeVisible();
   await expect(page.getByText('Abre un workspace y ejecuta una tarea para empezar a registrar uso.')).toBeVisible();
-  await page.getByRole('tab', { name: 'Eventos de sesión' }).click();
+  await page.getByRole('tab', { name: 'Detalles de actividad' }).click();
   await expect(page.getByText('Sin eventos guardados para la sesión activa.')).toBeVisible();
   await page.getByRole('tab', { name: 'Uso y ahorro' }).click();
   await expect(page.getByRole('heading', { name: 'Uso y ahorro' })).toBeVisible();
 });
 
+test('opens preview beside chat, keeps the selected website, pauses it when closed, and fits mobile screens', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.route('http://localhost:4175/**', (route) => route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><body><main>Web del proyecto desplegada</main></body></html>' }));
+  await page.goto('/');
+  const draft = page.getByRole('textbox', { name: 'Mensaje para OrderCode' });
+  await draft.fill('Conservar mientras miro mi web');
+  await page.getByRole('button', { name: 'Abrir vista previa' }).click();
+  await expect(page.getByRole('heading', { name: 'Nueva conversación' })).toBeVisible();
+  const panel = page.getByRole('complementary', { name: 'Vista previa' });
+  await expect(panel).toBeVisible();
+  const address = panel.getByRole('textbox', { name: 'Dirección web' });
+  await address.fill('localhost:4175/demo');
+  await panel.getByRole('button', { name: 'Abrir', exact: true }).click();
+  const website = panel.locator('iframe[title="Vista previa web"]');
+  await expect(page.frameLocator('#preview-context-panel iframe[title="Vista previa web"]').getByText('Web del proyecto desplegada')).toBeVisible();
+  if (process.env.TEMP) await page.screenshot({ path: `${process.env.TEMP}/ordercode-chat-preview-panel.png`, animations: 'disabled' });
+  await panel.getByRole('button', { name: 'Cerrar vista previa' }).click();
+  await expect(panel).toBeHidden();
+  await expect(page.locator('iframe[title="Vista previa web"]')).toHaveCount(0);
+  await expect(draft).toHaveValue('Conservar mientras miro mi web');
+  await page.getByRole('button', { name: 'Abrir vista previa' }).click();
+  await expect(panel).toBeVisible();
+  await expect(panel.getByRole('textbox', { name: 'Dirección web' })).toHaveValue('http://localhost:4175/demo');
+  await expect(website).toBeVisible();
+  await page.keyboard.press('Control+p');
+  await page.getByRole('dialog').getByRole('button', { name: 'Abrir vista previa', exact: true }).click();
+  await expect(panel).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 750 });
+  await expect(page.getByRole('heading', { name: 'Nueva conversación' })).toBeHidden();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await panel.getByRole('button', { name: 'Cerrar vista previa' }).click();
+  await expect(page.getByRole('heading', { name: 'Nueva conversación' })).toBeVisible();
+  await expect(draft).toHaveValue('Conservar mientras miro mi web');
+});
+
+test('returns to a visible, focused chat from contextual panels on narrow screens', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 750 });
+  await page.goto('/');
+  const chat = page.getByRole('textbox', { name: 'Mensaje para OrderCode' });
+  await expect(chat).toBeVisible();
+  await page.keyboard.press('Control+Shift+d');
+  await expect(page.locator('.review-panel')).toBeVisible();
+  await page.getByRole('button', { name: 'Conversación', exact: true }).click();
+  await expect(chat).toBeVisible();
+  await page.keyboard.press('Control+Shift+d');
+  await expect(page.locator('.review-panel')).toBeVisible();
+  await page.keyboard.press('Control+l');
+  await expect(chat).toBeVisible();
+  await expect(chat).toBeFocused();
+  await page.getByRole('button', { name: 'Abrir vista previa', exact: true }).click();
+  await expect(page.getByRole('complementary', { name: 'Vista previa' })).toBeVisible();
+  await page.keyboard.press('Control+l');
+  await expect(chat).toBeVisible();
+  await expect(chat).toBeFocused();
+});
+
 test('opens a local website in the isolated viewer and rejects unsafe web addresses', async ({ page }) => {
   await page.route('http://localhost:4175/**', (route) => route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><body><main>Servidor de desarrollo visible</main></body></html>' }));
   await page.goto('/');
-  await page.getByRole('button', { name: 'Herramientas', exact: true }).click();
-  await page.getByRole('button', { name: 'Web y gráficas', exact: true }).click();
+  await openTools(page);
+  await page.getByRole('button', { name: 'Vista previa', exact: true }).click();
   const address = page.getByRole('textbox', { name: 'Dirección web' });
   await address.fill('localhost:4175/demo');
   await page.getByRole('button', { name: 'Abrir', exact: true }).click();
@@ -71,7 +136,7 @@ test('localizes the usage dashboard when English is selected', async ({ page }) 
     localStorage.setItem('ordercode.desktop.preferences.v1', JSON.stringify({ language: 'en', themePreference: 'light' }));
   });
   await page.goto('/');
-  await page.getByRole('button', { name: 'Tools', exact: true }).click();
+  await openTools(page, true);
   await page.getByRole('button', { name: 'Usage & activity', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Usage & savings' })).toBeVisible();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
@@ -109,38 +174,42 @@ test('chat slash commands open help and context controls without sending a model
 
 test('keeps product surfaces visible without inventing unavailable runtime state', async ({ page }) => {
   await page.goto('/');
-  await page.getByRole('button', { name: 'Herramientas', exact: true }).click();
+  await openTools(page);
   await page.getByRole('button', { name: 'Agentes', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Agentes' })).toBeVisible();
   await expect(page.getByText('General', { exact: true })).toBeVisible();
 
-  await page.getByRole('button', { name: 'Skills y MCP', exact: true }).click();
+  await openTools(page, true);
+  await page.getByRole('button', { name: 'Extensiones', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Extensiones' })).toBeVisible();
-  await expect(page.getByRole('tab', { name: /Skills/ })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab', { name: /Instrucciones/ })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByRole('button', { name: 'Nuevo' })).toBeDisabled();
   await expect(page.getByText('Conecta un workspace para crear, importar y administrar Skills.')).toBeVisible();
-  await page.getByRole('tab', { name: /MCPs/ }).click();
-  await expect(page.getByRole('tab', { name: /MCPs/ })).toHaveAttribute('aria-selected', 'true');
+  await page.getByRole('tab', { name: /Conexiones/ }).click();
+  await expect(page.getByRole('tab', { name: /Conexiones/ })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByText('Servidores MCP', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Agregar' })).toBeDisabled();
+  await expect(page.getByText('Marketplace MCP', { exact: true })).toBeHidden();
+  await page.getByText('Buscar nuevas conexiones', { exact: true }).click();
   await expect(page.getByText('Marketplace MCP', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Buscar', exact: true })).toBeDisabled();
-  await page.getByRole('tab', { name: /Skills/ }).click();
-  await expect(page.getByRole('tab', { name: /Skills/ })).toHaveAttribute('aria-selected', 'true');
+  await page.getByRole('tab', { name: /Instrucciones/ }).click();
+  await expect(page.getByRole('tab', { name: /Instrucciones/ })).toHaveAttribute('aria-selected', 'true');
 
   await page.getByRole('button', { name: 'Historial', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Historial' })).toBeVisible();
-  await page.getByRole('button', { name: 'Herramientas', exact: true }).click();
-  await page.getByRole('button', { name: 'Grafo y código', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Inteligencia de código' })).toBeVisible();
-  await expect(page.getByLabel('Buscar símbolos')).toBeDisabled();
+  await openTools(page, true);
+  await page.getByRole('button', { name: 'Mapa del código', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Mapa del código' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Elige un proyecto' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Abrir proyecto', exact: true })).toBeEnabled();
 
   await page.getByRole('button', { name: 'Ajustes', exact: true }).click();
   await page.getByRole('button', { name: /Uso y límites/ }).click();
   await expect(page.getByText('Coste máximo (USD)')).toBeVisible();
-  await page.getByRole('button', { name: 'Herramientas', exact: true }).click();
+  await openTools(page);
   await page.getByRole('button', { name: 'Terminal', exact: true }).click();
-  await page.getByRole('button', { name: 'Processes' }).click();
+  await page.getByRole('button', { name: 'Procesos' }).click();
   await expect(page.getByText('No hay procesos de terminal')).toBeVisible();
 });
 
@@ -234,4 +303,38 @@ test('guides first use and keeps advanced tools out of the main path in both the
   expect(await page.locator('.composer-controls').evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
   expect(await controlsDoNotOverlap()).toBe(true);
   if (process.env.TEMP) await page.screenshot({ path: process.env.TEMP + '/ordercode-aurora-mobile-small.png', animations: 'disabled' });
+});
+
+test('keeps four everyday tools, reveals advanced tools on demand, and closes the terminal without losing a draft', async ({ page }) => {
+  await page.goto('/');
+  const draft = page.getByRole('textbox', { name: 'Mensaje para OrderCode' });
+  await draft.fill('Conserva esta idea');
+  await openTools(page);
+  const menu = page.locator('#navigation-tools');
+  await expect(menu.locator(':scope > button:not(.tools-advanced-toggle)')).toHaveCount(4);
+  await expect(page.locator('#navigation-advanced-tools')).toHaveCount(0);
+  await menu.getByRole('button', { name: 'Terminal', exact: true }).click();
+  await expect(page.locator('#terminal-dock')).toBeVisible();
+  await page.getByRole('button', { name: 'Cerrar terminal', exact: true }).click();
+  await expect(page.locator('#terminal-dock')).toBeHidden();
+  await expect(draft).toHaveValue('Conserva esta idea');
+  await openTools(page, true);
+  await expect(page.locator('#navigation-advanced-tools > button')).toHaveCount(4);
+  await page.getByRole('button', { name: 'Publicar proyecto', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Publicar proyecto' })).toBeVisible();
+  await page.getByRole('button', { name: 'Abrir proyecto', exact: true }).click();
+  await expect(page.getByRole('complementary', { name: 'Proyecto' })).toBeVisible();
+  await page.getByRole('button', { name: 'Cerrar proyecto', exact: true }).click();
+  await expect(draft).toHaveValue('Conserva esta idea');
+  await page.setViewportSize({ width: 390, height: 750 });
+  await openTools(page, true);
+  await page.getByRole('button', { name: 'Herramientas avanzadas', exact: true }).press('Escape');
+  await expect(menu).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Herramientas', exact: true })).toBeFocused();
+  await openTools(page);
+  await page.getByRole('button', { name: 'Vista previa', exact: true }).click();
+  await expect(menu).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Vista previa' })).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Imágenes y gráficas' })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });

@@ -28,7 +28,7 @@ export function StatusDot({ color = 'green', pulse = false }: { color?: 'green' 
 
 export function Kbd({ children }: { children: ReactNode }) { return <kbd>{children}</kbd>; }
 
-export function AnchoredPopover({ id, label, children, anchor, menuRef, className = 'dropdown-menu', role = 'listbox', matchAnchor = false, onDismiss }: { id?: string; label: string; children: ReactNode; anchor: RefObject<HTMLElement | null>; menuRef: RefObject<HTMLDivElement | null>; className?: string; role?: 'listbox' | 'region'; matchAnchor?: boolean; onDismiss?: () => void }) {
+export function AnchoredPopover({ id, label, children, anchor, menuRef, className = 'dropdown-menu', role = 'listbox', matchAnchor = false, align = 'end', onDismiss }: { id?: string; label: string; children: ReactNode; anchor: RefObject<HTMLElement | null>; menuRef: RefObject<HTMLDivElement | null>; className?: string; role?: 'listbox' | 'region'; matchAnchor?: boolean; align?: 'start' | 'end'; onDismiss?: () => void }) {
   const present = useIsPresent();
   const systemReducedMotion = useReducedMotion();
   const reducedMotion = useDesktopStore((state) => state.reducedMotion) || systemReducedMotion;
@@ -44,6 +44,7 @@ export function AnchoredPopover({ id, label, children, anchor, menuRef, classNam
     const menu = menuRef.current;
     const control = anchor.current;
     if (!menu || !control) return;
+    const preferredHeight = Number.parseFloat(getComputedStyle(menu).getPropertyValue('--popover-max-height')) || (matchAnchor ? 520 : 420);
     const place = () => {
       const margin = 12, gap = 8;
       const rect = control.getBoundingClientRect();
@@ -53,9 +54,9 @@ export function AnchoredPopover({ id, label, children, anchor, menuRef, classNam
       menu.style.maxWidth = `${Math.min(matchAnchor ? window.innerWidth : 380, window.innerWidth - margin * 2)}px`;
       const above = Math.max(0, rect.top - margin - gap);
       const below = Math.max(0, window.innerHeight - rect.bottom - margin - gap);
-      menu.style.maxHeight = `${Math.max(32, Math.min(matchAnchor ? 520 : 420, Math.max(above, below)))}px`;
+      menu.style.maxHeight = `${Math.max(32, Math.min(preferredHeight, Math.max(above, below)))}px`;
       const width = menu.offsetWidth, height = menu.offsetHeight;
-      const left = compact ? composer.x : rect.right - width;
+      const left = compact ? composer.x : align === 'start' ? rect.left : rect.right - width;
       const opensAbove = above >= height || above >= below;
       const top = opensAbove ? rect.top - gap - height : rect.bottom + gap;
       menu.style.setProperty('--menu-origin', opensAbove ? 'bottom left' : 'top left');
@@ -68,7 +69,7 @@ export function AnchoredPopover({ id, label, children, anchor, menuRef, classNam
     window.addEventListener('resize', place);
     window.addEventListener('scroll', place, true);
     return () => { observer.disconnect(); window.removeEventListener('resize', place); window.removeEventListener('scroll', place, true); };
-  }, [anchor, menuRef, matchAnchor]);
+  }, [anchor, menuRef, matchAnchor, align]);
   return createPortal(<Localized><motion.div ref={menuRef} id={id} className={className} role={role} aria-label={label} aria-live={role === 'region' ? 'polite' : undefined} aria-hidden={!present} inert={!present ? true : undefined}
     onKeyDown={(event) => { if (event.key === 'Escape' && onDismiss) { event.preventDefault(); event.stopPropagation(); onDismiss(); anchor.current?.querySelector<HTMLTextAreaElement>('textarea')?.focus(); } }}
     initial={reducedMotion ? false : { opacity: 0, y: 9, scale: .97, rotateX: -7 }} animate={{ opacity: 1, y: 0, scale: 1, rotateX: 0 }}
@@ -77,7 +78,7 @@ export function AnchoredPopover({ id, label, children, anchor, menuRef, classNam
     style={{ position: 'fixed', bottom: 'auto', right: 'auto', zIndex: 35, overflowY: matchAnchor ? 'auto' : undefined, transformOrigin: 'var(--menu-origin, bottom left)', transformPerspective: 800 }}>{children}</motion.div></Localized>, document.body);
 }
 
-export function Dropdown({ label, value, open, onOpenChange, children, className = '', disabled = false }: { label: string; value: string; open: boolean; onOpenChange: (open: boolean) => void; children: ReactNode; className?: string; disabled?: boolean }) {
+export function Dropdown({ label, value, open, onOpenChange, children, className = '', disabled = false, menuClassName = '', menuRole = 'listbox', menuAlign = 'end', icon: Icon }: { label: string; value: string; open: boolean; onOpenChange: (open: boolean) => void; children: ReactNode; className?: string; disabled?: boolean; menuClassName?: string; menuRole?: 'listbox' | 'region'; menuAlign?: 'start' | 'end'; icon?: LucideIcon }) {
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
@@ -117,6 +118,7 @@ export function Dropdown({ label, value, open, onOpenChange, children, className
     if (disabled) return;
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); clearTimer(); onOpenChange(false); trigger.current?.focus(); return; }
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    if (event.target instanceof HTMLSelectElement) return;
     event.preventDefault(); clearTimer();
     if (!open) { focusOption.current = event.key === 'ArrowUp' ? 'last' : 'first'; onOpenChange(true); return; }
     const options = [...(menu.current?.querySelectorAll<HTMLButtonElement>('[role="option"]:not(:disabled)') ?? [])];
@@ -124,14 +126,14 @@ export function Dropdown({ label, value, open, onOpenChange, children, className
     const index = options.indexOf(document.activeElement as HTMLButtonElement);
     options[index < 0 ? (event.key === 'ArrowUp' ? options.length - 1 : 0) : (index + (event.key === 'ArrowUp' ? -1 : 1) + options.length) % options.length]?.focus();
   }}>
-    <button ref={trigger} type="button" className="dropdown-trigger" disabled={disabled} aria-haspopup="listbox" aria-controls={open && !disabled ? id : undefined} aria-expanded={open && !disabled} onClick={() => {
+    <button ref={trigger} type="button" className="dropdown-trigger" title={Icon ? `${label}: ${value}` : undefined} disabled={disabled} aria-haspopup="listbox" aria-controls={open && !disabled ? id : undefined} aria-expanded={open && !disabled} onClick={() => {
       clearTimer();
       if (openedByHover.current && open) { openedByHover.current = false; return; }
       openedByHover.current = false; onOpenChange(!open);
     }}>
-      <span className="dropdown-label">{label}</span><span className="dropdown-value">{value}</span><ChevronDown className="dropdown-caret" size={13} />
+      {Icon && <Icon className="dropdown-icon" size={13} strokeWidth={1.7} aria-hidden="true" />}<span className="dropdown-label">{label}</span><span className="dropdown-value">{value}</span><ChevronDown className="dropdown-caret" size={12} />
     </button>
-    <AnimatePresence>{open && !disabled && <AnchoredPopover id={id} label={label} anchor={trigger} menuRef={menu}>{children}</AnchoredPopover>}</AnimatePresence>
+    <AnimatePresence>{open && !disabled && <AnchoredPopover id={id} label={label} anchor={trigger} menuRef={menu} className={`dropdown-menu ${menuClassName}`} role={menuRole} align={menuAlign}>{children}</AnchoredPopover>}</AnimatePresence>
   </div></Localized>;
 }
 

@@ -592,6 +592,9 @@ kbd { border: 1px solid var(--border); border-radius: 4px; background: rgba(150,
 .terminal-session-tab.is-active { border-color: var(--ion); }
 .terminal-session-tab button { overflow: hidden; padding: 4px 6px; color: var(--muted); background: transparent; border: 0; font: 10px 'JetBrains Mono Variable', monospace; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .terminal-session-tab.is-active button:first-child { color: var(--frost); }
+.terminal-tabs > .terminal-close-button { width: 24px; height: 24px; margin-left: 3px; }
+.terminal-tabs > .terminal-close-button > svg { width: 13px; height: 13px; }
+.terminal-tabs > .terminal-close-button:hover { color: var(--danger, #ff7882); background: color-mix(in srgb, var(--danger, #ff7882) 12%, transparent); }
 .terminal-session-bar select, .terminal-new-button { height: 25px; padding: 0 7px; color: var(--frost); background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; font-size: 10px; }
 .terminal-new-button { color: var(--ion); cursor: pointer; }
 .terminal-new-button:disabled, .terminal-session-bar select:disabled { opacity: .45; cursor: not-allowed; }

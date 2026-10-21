@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Activity, Bot, Check, ChevronDown, CircleDashed, FileCode2, Search, Send, ShieldCheck, Square, FolderOpen, Star, X, CircleHelp, Layers3, ExternalLink, Repeat2 } from 'lucide-react';
+import { Activity, Bot, Check, ChevronDown, CircleDashed, FileCode2, Search, Send, ShieldCheck, Square, FolderOpen, X, CircleHelp, Layers3, ExternalLink, Gauge, WandSparkles, ListChecks, Code2, ChartNoAxesCombined, Infinity as InfinityIcon } from 'lucide-react';
 import { cancelSession, compactSessionContext, createSession, health, isDesktopApp, listCustomAgents, listProviders, listProviderModels, loadUsageAnalytics, openExternalUrl, pickWorkspaceFolder, sendSessionMessage, updateSession } from '../lib/ipc';
 import { followSessionOperation } from '../lib/sessionExecution';
-import { useDesktopStore, type ChatMessage } from '../lib/store';
+import { useComposerDraftStore, useDesktopStore, type ChatMessage } from '../lib/store';
 import type { AgentProfile, HarnessEvent, PermissionProfile, RuntimeState, SessionRecord, WorkMode } from '../lib/contracts';
 import type { ProviderInfo, ProviderModel } from '../lib/ipc';
+import { ModelPicker } from './ModelPicker';
+import { shortModelLabel } from '../lib/modelCatalog';
 import { OFFICIAL_AGENTS } from '../lib/agents';
 import { AnchoredPopover, Dropdown, DropdownOption, Kbd, StatusDot } from './ui';
 import { Localized } from '../lib/localization';
@@ -23,26 +25,6 @@ const permissions: Array<{ name: PermissionProfile; description: string }> = [
 ];
 const effortLabels: Record<string, string> = { none: 'Sin esfuerzo adicional', minimal: 'Mínimo', low: 'Bajo', medium: 'Medio', high: 'Alto', xhigh: 'Extra alto', max: 'Máximo' };
 const effortLabel = (value: string) => effortLabels[value] ?? value;
-
-function modelProviderLabel(providerId: string): string {
-  return providerId === 'opencode_zen' ? 'OpenCode' : providerId === 'openai_chatgpt' ? 'ChatGPT' : providerId === 'xai_plan' ? 'SuperGrok' : providerId === 'openrouter' ? 'OpenRouter' : providerId === 'ollama' ? 'Ollama' : providerId === 'lmstudio' ? 'LM Studio' : providerId;
-}
-
-function modelRank(item: ProviderModel, recentModels: string[], favoriteModels: string[]): number[] {
-  const tier = item.priceKind === 'free' ? 0 : item.priceKind === 'subscription' ? 1 : item.priceKind === 'local' ? 2 : item.priceKind === 'paid' ? 3 : 4;
-  const key = `${item.providerId}::${item.id}`;
-  const favorite = favoriteModels.includes(key);
-  const recent = recentModels.indexOf(key);
-  const popular = /(?:gpt-4\.1|claude.*sonnet|gemini.*(?:flash|pro)|deepseek.*(?:v3|chat)|qwen.*coder|grok.*code|llama.*3\.3)/i.test(item.id) ? 0 : 1;
-  const providerRank = item.providerId === 'openrouter' ? item.catalogRank ?? Number.MAX_SAFE_INTEGER : popular;
-  return [tier, favorite ? 0 : 1, recent < 0 ? 1 : 0, recent < 0 ? 99 : recent, item.available ? 0 : 1, providerRank];
-}
-
-function compareModelRank(left: ProviderModel, right: ProviderModel, recentModels: string[], favoriteModels: string[]): number {
-  const a = modelRank(left, recentModels, favoriteModels); const b = modelRank(right, recentModels, favoriteModels);
-  for (let index = 0; index < a.length; index += 1) if (a[index] !== b[index]) return a[index] - b[index];
-  return left.label.localeCompare(right.label);
-}
 
 function linkedMessageContent(content: string, onLinkError: (error: unknown) => void): ReactNode {
   const matches = [...content.matchAll(/https?:\/\/[^\s<>"']+/gi)];
@@ -156,7 +138,6 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings, onOpenRev
   const composerRef = useRef<HTMLFormElement>(null);
   const commandPopoverRef = useRef<HTMLDivElement>(null);
   const slashPopoverRef = useRef<HTMLDivElement>(null);
-  const [value, setValue] = useState('');
   const [open, setOpen] = useState<'model' | 'effort' | 'options' | 'mode' | null>(null);
   const [slashIndex, setSlashIndex] = useState(0);
   const [panel, setPanel] = useState<ComposerPanel>(null);
@@ -172,19 +153,21 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings, onOpenRev
   const [contextError, setContextError] = useState('');
   const [compactResult, setCompactResult] = useState<Awaited<ReturnType<typeof compactSessionContext>> | null>(null);
   const [compactError, setCompactError] = useState('');
-  const [modelQuery, setModelQuery] = useState('');
   const [models, setModels] = useState<ProviderModel[]>([]);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [catalogBusy, setCatalogBusy] = useState(false);
   const [catalogError, setCatalogError] = useState(false);
   const [catalogRetry, setCatalogRetry] = useState(0);
-  const [showAllNow, setShowAllNow] = useState<boolean | null>(null);
+  const [catalogGeneration, setCatalogGeneration] = useState(0);
   const [discovery, setDiscovery] = useState('Buscando proveedores…');
   const catalogCache = useRef(new Map<string, ProviderModel[]>());
   const loadingCatalogs = useRef(new Set<string>());
   const failedCatalogs = useRef(new Set<string>());
   const catalogRevision = useRef(0);
-  const { model, reasoningEffort, mode, permission, freeOnly, agentId, runtimeState, session, events, health: brokerHealth, hiddenModelProviders, showAdvancedModels, recentModels, favoriteModels, set } = useDesktopStore();
+  const { model, reasoningEffort, mode, permission, freeOnly, agentId, runtimeState, session, events, health: brokerHealth, hiddenModelProviders, recentModels, set } = useDesktopStore();
+  const draftKey = session?.id ?? '__new__';
+  const value = useComposerDraftStore((state) => state.drafts[draftKey] ?? '');
+  const setValue = (next: string | ((current: string) => string)) => useComposerDraftStore.getState().setDraft(draftKey, next);
   const executionBusy = ['RUNNING', 'PREPARING', 'WAITING_APPROVAL', 'PAUSING'].includes(runtimeState);
   const activeContinuous = useMemo(() => {
     if (!executionBusy) return undefined;
@@ -216,19 +199,22 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings, onOpenRev
   }, [runtimeState]);
   useEffect(() => {
     let current = true;
+    let refreshRequest = 0;
     const refresh = async () => {
+      const request = ++refreshRequest;
       setDiscovery('Buscando proveedores…');
       try {
         const found = await listProviders();
-        if (!current) return;
+        if (!current || request !== refreshRequest) return;
         catalogRevision.current += 1;
         catalogCache.current.clear();
         loadingCatalogs.current.clear();
         failedCatalogs.current.clear();
         setCatalogError(false);
         setProviders(found);
+        setCatalogGeneration(catalogRevision.current);
       } catch {
-        if (current) setDiscovery('La búsqueda de modelos requiere la app de escritorio.');
+        if (current && request === refreshRequest) setDiscovery('La búsqueda de modelos requiere la app de escritorio.');
       }
     };
     const onProvidersUpdated = () => { void refresh(); };
@@ -237,13 +223,10 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings, onOpenRev
     return () => { current = false; window.removeEventListener('ordercode:providers-updated', onProvidersUpdated); };
   }, [brokerHealth?.harnessConnected]);
 
-  const advancedCatalog = Boolean(modelQuery.trim()) || (showAllNow ?? showAdvancedModels);
-  useEffect(() => { setShowAllNow(null); }, [showAdvancedModels]);
   useEffect(() => {
     const revision = catalogRevision.current;
-    const included = providers.filter((provider) => !hiddenModelProviders.includes(provider.id));
-    const eager = included.filter((provider) => provider.configured || ['ollama', 'lmstudio', 'opencode_zen', 'openrouter'].includes(provider.id));
-    const targets = advancedCatalog ? included.filter((provider) => provider.configured || ['ollama', 'lmstudio', 'opencode_zen', 'openrouter'].includes(provider.id)) : eager;
+    const included = providers.filter((provider) => !hiddenModelProviders.includes(provider.id) || provider.id === model.split('::')[0]);
+    const targets = included.filter((provider) => provider.configured || ['ollama', 'lmstudio', 'opencode_zen', 'openrouter'].includes(provider.id));
     const pending = targets.filter((provider) => !catalogCache.current.has(provider.id) && !loadingCatalogs.current.has(provider.id) && !failedCatalogs.current.has(provider.id));
     if (!pending.length) {
       if (targets.some((provider) => loadingCatalogs.current.has(provider.id))) { setCatalogBusy(true); return; }
@@ -275,7 +258,7 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings, onOpenRev
         setDiscovery(failed ? 'No se pudo cargar un catálogo. Revisa la conexión e inténtalo de nuevo.' : found.length ? '' : included.length ? 'No se encontraron modelos en los proveedores seleccionados.' : 'Activa un proveedor en Ajustes para descubrir modelos.');
       });
     }
-  }, [providers, hiddenModelProviders, advancedCatalog, catalogRetry, catalogRevision.current]);
+  }, [providers, hiddenModelProviders, model, catalogRetry, catalogGeneration]);
 
   const selectedModel = models.find((item) => model === `${item.providerId}::${item.id}`);
   const modelSelectionMissing = !model || !selectedModel;
@@ -286,30 +269,6 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings, onOpenRev
   const modelNeedsCredentials = Boolean(selectedModel && !selectedModel.available);
   const freeOnlyBlocked = freeOnly && (!selectedModel || (selectedModel.priceKind !== 'free' && selectedModel.priceKind !== 'local'));
   useEffect(() => { onModelState({ ready: Boolean(selectedModel?.available) && !freeOnlyBlocked, label: selectedModel?.label ?? '' }); }, [selectedModel?.available, selectedModel?.label, freeOnlyBlocked, onModelState]);
-  const filteredModels = useMemo(() => {
-    const query = modelQuery.trim().toLowerCase();
-    const matching = models.filter((item) => !hiddenModelProviders.includes(item.providerId) && (advancedCatalog || query || item.available) && (!freeOnly || item.priceKind === 'free' || item.priceKind === 'local') && `${item.label} ${item.providerId}`.toLowerCase().includes(query)).sort((left, right) => compareModelRank(left, right, recentModels, favoriteModels));
-    if (advancedCatalog) return matching;
-    const pinned = matching.filter((item) => favoriteModels.includes(`${item.providerId}::${item.id}`) || recentModels.includes(`${item.providerId}::${item.id}`));
-    const pinnedKeys = new Set(pinned.map((item) => `${item.providerId}::${item.id}`));
-    const perProvider = new Map<string, number>();
-    const recommended = matching.filter((item) => {
-      if (pinnedKeys.has(`${item.providerId}::${item.id}`)) return false;
-      const count = perProvider.get(item.providerId) ?? 0;
-      const cap = item.providerId === 'opencode_zen' ? 6 : item.providerId === 'openai_chatgpt' ? 5 : 3;
-      if (count >= cap) return false;
-      perProvider.set(item.providerId, count + 1);
-      return true;
-    }).slice(0, 20);
-    return [...pinned, ...recommended].sort((left, right) => compareModelRank(left, right, recentModels, favoriteModels));
-  }, [models, modelQuery, freeOnly, hiddenModelProviders, advancedCatalog, recentModels, favoriteModels]);
-  const modelGroups = useMemo(() => {
-    const groups = new Map<string, ProviderModel[]>();
-    for (const item of filteredModels) groups.set(item.providerId, [...(groups.get(item.providerId) ?? []), item]);
-    return [...groups.entries()].sort((left, right) => compareModelRank(left[1][0], right[1][0], recentModels, favoriteModels));
-  }, [filteredModels, recentModels, favoriteModels]);
-  const hasMoreModels = models.some((item) => !hiddenModelProviders.includes(item.providerId) && (!freeOnly || item.priceKind === 'free' || item.priceKind === 'local')) && models.filter((item) => !hiddenModelProviders.includes(item.providerId) && (!freeOnly || item.priceKind === 'free' || item.priceKind === 'local')).length > filteredModels.length;
-  const hasDeferredCatalog = providers.some((provider) => provider.id === 'openrouter' && !hiddenModelProviders.includes(provider.id) && !catalogCache.current.has(provider.id));
   const retryCatalogs = () => { for (const provider of providers) if (failedCatalogs.current.has(provider.id) && !hiddenModelProviders.includes(provider.id)) failedCatalogs.current.delete(provider.id); setCatalogRetry((value) => value + 1); };
   useEffect(() => {
     const matches = slashCommands.filter((command) => slashQuery !== null && command.name.startsWith(slashQuery));
@@ -352,7 +311,7 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings, onOpenRev
       finally { if (isCurrent()) setContextBusy(false); }
       return;
     }
-    if (commandName === 'model') { setModelQuery(''); setOpen('model'); return; }
+    if (commandName === 'model') { setOpen('model'); return; }
     if (commandName === 'effort') { if (efforts.length) setOpen('effort'); else setPanel('effort'); return; }
     if (commandName === 'mode') { setOpen('mode'); return; }
     if (commandName === 'permissions') { setOpen('options'); return; }
@@ -395,18 +354,6 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings, onOpenRev
     set('reasoningEffort', undefined);
     if (session) void changeSetting({ reasoningEffort: undefined });
   }, [selectedModel?.providerId, selectedModel?.id, reasoningEffort, session?.id, executionBusy]);
-
-  const renderModelOption = (item: ProviderModel) => {
-    const key = `${item.providerId}::${item.id}`;
-    const favorite = favoriteModels.includes(key);
-    const price = item.priceKind === 'free' ? 'Gratis verificado' : item.priceKind === 'local' ? 'Inferencia local · sin tarifa API' : item.priceKind === 'subscription' ? 'Uso de tu plan · sujeto a límites' : item.pricing ? `$${item.pricing.inputPerMillionUsd.toFixed(6)} / $${item.pricing.outputPerMillionUsd.toFixed(6)} por 1M tokens` : 'Precio no verificado';
-    const needsConnection = item.availabilityReason ?? (item.providerId === 'openai_chatgpt' ? 'Conecta tu cuenta en Ajustes' : item.providerId === 'xai_plan' ? 'Conecta tu cuenta SuperGrok en Ajustes' : 'Conecta la clave API en Ajustes');
-    const description = item.availabilityReason ?? `${price}${item.available ? '' : ` · ${needsConnection}`}`;
-    return <div className="model-option-row" key={key}>
-      <DropdownOption active={model === key} disabled={Boolean(item.availabilityReason && (item.providerId === 'opencode_zen' || item.providerId !== 'openrouter'))} description={description} onClick={() => { if (!item.available) { setOpen(null); onOpenSettings(); return; } const effort = reasoningEffort && item.reasoningEfforts?.includes(reasoningEffort) ? reasoningEffort : undefined; set('model', key); set('reasoningEffort', effort); set('recentModels', [key, ...recentModels.filter((value) => value !== key)].slice(0, 5)); setOpen(null); if (session) void changeSetting({ model: item.id, providerId: item.providerId, reasoningEffort: effort }); }}>{item.label}</DropdownOption>
-      <button type="button" className={`model-favorite-button ${favorite ? 'is-active' : ''}`} aria-label={`${favorite ? 'Quitar de favoritos' : 'Añadir a favoritos'}: ${item.label}`} aria-pressed={favorite} title={favorite ? 'Quitar de favoritos' : 'Añadir a favoritos'} onClick={(event) => { event.stopPropagation(); set('favoriteModels', favorite ? favoriteModels.filter((value) => value !== key) : [...favoriteModels, key].slice(-100)); }}><Star size={13} /></button>
-    </div>;
-  };
 
   const latestContextCall = contextData?.latestCall;
   const contextTokens = latestContextCall?.inputTokens ?? latestContextCall?.estimatedSentTokens;
@@ -451,23 +398,25 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings, onOpenRev
       if (event.key === 'Escape' && ['RUNNING', 'PREPARING', 'PAUSING'].includes(runtimeState)) onCancel();
     }} placeholder="Describe lo que quieres hacer…" aria-label="Mensaje para OrderCode" aria-autocomplete="list" aria-expanded={showSlashMenu} rows={2} />
     <div className="composer-controls">
-      <Dropdown disabled={executionBusy} label="Modelo" value={selectedModel?.label ?? (model ? model.split('::').at(-1) ?? model : 'Elegir modelo')} open={open === 'model'} onOpenChange={(value) => setOpen((current) => value ? 'model' : current === 'model' ? null : current)} className="composer-dropdown composer-dropdown--model">
-        <label className="dropdown-search"><Search size={13} /><input value={modelQuery} onChange={(event) => setModelQuery(event.target.value)} placeholder="Buscar modelos" aria-label="Buscar modelos" /></label>
-        <button type="button" className={`free-only-toggle ${freeOnly ? 'is-active' : ''}`} aria-pressed={freeOnly} onClick={() => { const enabled = !freeOnly; set('freeOnly', enabled); void changeSetting({ freeOnly: enabled }); }}><span className="free-only-check">{freeOnly ? '✓' : ''}</span><span><strong>Solo gratuitos</strong><small>Modelos gratuitos o locales</small></span></button>
-        {modelGroups.map(([providerId, items]) => <section className="model-provider-group" key={providerId} role="group" aria-label={modelProviderLabel(providerId)}><div className="model-provider-heading" aria-hidden="true"><span>{modelProviderLabel(providerId)}</span><small>{items.some((item) => item.priceKind === 'free') ? 'GRATUITOS PRIMERO' : items[0]?.priceKind === 'subscription' ? 'PLAN INCLUIDO' : `${items.length} MODELO${items.length === 1 ? '' : 'S'}`}</small></div>{items.map(renderModelOption)}</section>)}
-        {(catalogBusy || catalogError || (!advancedCatalog && (hasMoreModels || hasDeferredCatalog))) && <button type="button" className="model-catalog-toggle" disabled={catalogBusy} onClick={() => { if (catalogError) retryCatalogs(); else setShowAllNow(true); }}>{catalogBusy ? 'Cargando catálogo…' : catalogError ? 'Reintentar catálogo' : 'Ver más modelos'}<small>{catalogBusy ? 'Consultando proveedores seleccionados' : catalogError ? 'No se pudo completar la búsqueda' : 'Catálogo completo agrupado por proveedor'}</small></button>}
-        {advancedCatalog && (hasMoreModels || showAllNow === true) && <button type="button" className="model-catalog-toggle" onClick={() => { setModelQuery(''); setShowAllNow(false); }}><span>Volver a recomendados</span><small>Lista breve con gratuitos, favoritos y recientes primero</small></button>}
-        {!filteredModels.length && <div className="dropdown-empty">{freeOnly ? 'No hay modelos locales o gratuitos con precio verificado. Los modelos con precio desconocido quedan bloqueados.' : discovery || 'No hay resultados.'}<button type="button" onClick={() => { setOpen(null); onOpenSettings(); }}>Abrir Ajustes</button></div>}
-        <button type="button" className="model-connect-action" onClick={() => { setOpen(null); onOpenSettings(); }}>Conectar otro modelo</button>
+      <div className="composer-toolbar" role="group" aria-label="Configuración de la conversación">
+      <Dropdown disabled={executionBusy} icon={Bot} label="Modelo" value={selectedModel ? shortModelLabel(selectedModel) : (model ? model.split('::').at(-1) ?? model : 'Elegir modelo')} open={open === 'model'} onOpenChange={(value) => setOpen((current) => value ? 'model' : current === 'model' ? null : current)} className="composer-dropdown composer-dropdown--model" menuClassName="model-picker-menu" menuRole="region" menuAlign="start">
+        <ModelPicker models={models} providers={providers} selected={model} freeOnly={freeOnly} busy={catalogBusy} error={catalogError} discovery={discovery} onRetry={retryCatalogs} onSettings={() => { setOpen(null); onOpenSettings(); }} onFreeOnlyChange={() => { const enabled = !freeOnly; set('freeOnly', enabled); void changeSetting({ freeOnly: enabled }); }} onSelect={(item) => {
+          if (!item.available) { setOpen(null); onOpenSettings(); return; }
+          const key = `${item.providerId}::${item.id}`;
+          const effort = reasoningEffort && item.reasoningEfforts?.includes(reasoningEffort) ? reasoningEffort : undefined;
+          set('model', key); set('reasoningEffort', effort); set('recentModels', [key, ...recentModels.filter((value) => value !== key)].slice(0, 5)); setOpen(null);
+          if (session) void changeSetting({ model: item.id, providerId: item.providerId, reasoningEffort: effort });
+        }} />
       </Dropdown>
-      {efforts.length > 0 && <Dropdown disabled={executionBusy} label="Esfuerzo" value={reasoningEffort ? effortLabel(reasoningEffort) : 'Auto'} open={open === 'effort'} onOpenChange={(value) => setOpen((current) => value ? 'effort' : current === 'effort' ? null : current)} className="composer-dropdown composer-dropdown--effort">
+      {efforts.length > 0 && <Dropdown disabled={executionBusy} icon={Gauge} label="Esfuerzo" value={reasoningEffort ? effortLabel(reasoningEffort) : 'Auto'} open={open === 'effort'} onOpenChange={(value) => setOpen((current) => value ? 'effort' : current === 'effort' ? null : current)} className="composer-dropdown composer-dropdown--effort">
         <div className="dropdown-search">Nivel de razonamiento</div><DropdownOption active={!reasoningEffort} description="Usar el nivel predeterminado del proveedor." onClick={() => { set('reasoningEffort', undefined); setOpen(null); void changeSetting({ reasoningEffort: undefined }); }}>Automático</DropdownOption>{efforts.map((effort) => <DropdownOption key={effort} active={reasoningEffort === effort} onClick={() => { set('reasoningEffort', effort); setOpen(null); void changeSetting({ reasoningEffort: effort }); }}>{effortLabel(effort)}</DropdownOption>)}
       </Dropdown>}
-      <Dropdown disabled={executionBusy} label="Modo" value={mode} open={open === 'mode'} onOpenChange={(value) => setOpen((current) => value ? 'mode' : current === 'mode' ? null : current)} className="composer-dropdown composer-dropdown--mode"><div className="dropdown-search">Modo de trabajo</div>{modes.map((item) => <DropdownOption key={item.name} active={mode === item.name} description={item.description} onClick={() => { set('mode', item.name); setOpen(null); void changeSetting({ mode: item.name }); }}>{item.name}</DropdownOption>)}</Dropdown>
-      <Dropdown disabled={executionBusy} label="Opciones" value={'Opciones · ' + permission} open={open === 'options'} onOpenChange={(value) => setOpen((current) => value ? 'options' : current === 'options' ? null : current)} className="composer-dropdown composer-dropdown--options">
+      <Dropdown disabled={executionBusy} icon={mode === 'Plan' ? ListChecks : mode === 'Build' ? Code2 : WandSparkles} label="Modo" value={mode} open={open === 'mode'} onOpenChange={(value) => setOpen((current) => value ? 'mode' : current === 'mode' ? null : current)} className="composer-dropdown composer-dropdown--mode"><div className="dropdown-search">Modo de trabajo</div>{modes.map((item) => <DropdownOption key={item.name} active={mode === item.name} description={item.description} onClick={() => { set('mode', item.name); setOpen(null); void changeSetting({ mode: item.name }); }}>{item.name}</DropdownOption>)}</Dropdown>
+      <Dropdown disabled={executionBusy} icon={ShieldCheck} label="Permisos" value={permission} open={open === 'options'} onOpenChange={(value) => setOpen((current) => value ? 'options' : current === 'options' ? null : current)} className="composer-dropdown composer-dropdown--options">
         <div role="group" aria-label="Permisos"><div className="dropdown-search"><ShieldCheck size={13} />Permisos</div>{permissions.map((item) => <DropdownOption key={item.name} active={permission === item.name} description={item.description} onClick={() => { set('permission', item.name); setOpen(null); void changeSetting({ permission: item.name }); }}>{item.name}</DropdownOption>)}</div>
       </Dropdown>
-      <button type="button" className={`continuous-toggle ${continuousEnabled ? 'is-active' : ''}`} aria-label={continuousEnabled ? 'Desactivar modo continuo' : 'Activar modo continuo'} aria-pressed={continuousEnabled} title={executionBusy && continuousEnabled ? 'Modo continuo activo · trabajando en los objetivos según los límites de sesión.' : continuousEnabled ? 'La siguiente tarea seguirá hasta completarse según los límites de sesión y el modo se apagará al terminar' : 'Modo continuo: seguir trabajando hasta completar y verificar la tarea'} disabled={executionBusy} onClick={() => setContinueUntilDone((enabled) => !enabled)}><Repeat2 size={13} /><span>{continuousEnabled ? 'Continuo' : 'Hasta completar'}</span></button>
+      <button type="button" className={`continuous-toggle ${continuousEnabled ? 'is-active' : ''}`} aria-label={continuousEnabled ? 'Desactivar modo continuo' : 'Activar modo continuo'} aria-pressed={continuousEnabled} title={executionBusy && continuousEnabled ? 'Modo continuo activo · trabajando en los objetivos según los límites de sesión.' : continuousEnabled ? 'La siguiente tarea seguirá hasta completarse según los límites de sesión y el modo se apagará al terminar' : 'Modo continuo: seguir trabajando hasta completar y verificar la tarea'} disabled={executionBusy} onClick={() => setContinueUntilDone((enabled) => !enabled)}><InfinityIcon size={15} aria-hidden="true" /><span>Continuo</span><span className="continuous-switch" aria-hidden="true"><span /></span></button>
+      </div>
       <span className="control-spacer" />
       {runtimeState === 'RUNNING' || runtimeState === 'PREPARING' || runtimeState === 'PAUSING' ? <button className="send-button send-button--stop" type="button" aria-label="Detener ejecución" onClick={onCancel}><Square size={12} fill="currentColor" /></button> : <button className="send-button" type="submit" aria-label="Enviar mensaje" disabled={!value.trim() || (!showSlashMenu && (executionBusy || modelSelectionMissing || modelNeedsCredentials || freeOnlyBlocked))}><Send size={15} /></button>}
     </div>
@@ -475,7 +424,7 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings, onOpenRev
   </form></Localized>;
 }
 
-export function ChatPanel({ onOpenReview, onOpenSettings }: { onOpenReview: () => void; onOpenSettings: () => void }) {
+export function ChatPanel({ previewOpen, onTogglePreview, onOpenReview, onOpenSettings }: { previewOpen: boolean; onTogglePreview: () => void; onOpenReview: () => void; onOpenSettings: () => void }) {
   const { messages, streamingText, mode, permission, model, reasoningEffort, freeOnly, session, agentId, runtimeState, addMessage, addEvent, set } = useDesktopStore();
   const [error, setError] = useState<string | null>(null);
   const [openingWorkspace, setOpeningWorkspace] = useState(false);
@@ -541,7 +490,7 @@ export function ChatPanel({ onOpenReview, onOpenSettings }: { onOpenReview: () =
   const projectName = session?.projectPath.split(/[\\/]/).filter(Boolean).at(-1);
   const busy = ['RUNNING', 'PREPARING', 'WAITING_APPROVAL', 'PAUSING'].includes(runtimeState);
   return <Localized><main className={'chat-panel ' + (empty ? 'is-empty' : '')}>
-    <div className="conversation-header"><div><h1>{projectName ?? 'Nueva conversación'}</h1>{(!empty || busy || error) && <p><StatusDot color={error || runtimeState === 'FAILED' ? 'red' : busy ? 'green' : 'muted'} />{error ? 'Error' : stateLabel}</p>}</div></div>
+    <div className="conversation-header"><div><h1>{projectName ?? 'Nueva conversación'}</h1>{(!empty || busy || error) && <p><StatusDot color={error || runtimeState === 'FAILED' ? 'red' : busy ? 'green' : 'muted'} />{error ? 'Error' : stateLabel}</p>}</div><button type="button" className={`conversation-preview-toggle${previewOpen ? ' is-active' : ''}`} aria-label={previewOpen ? 'Cerrar vista previa' : 'Abrir vista previa'} aria-pressed={previewOpen} aria-controls="preview-context-panel" title={previewOpen ? 'Cerrar vista previa' : 'Ver web y gráficas del proyecto'} onClick={onTogglePreview}><ChartNoAxesCombined size={16} /></button></div>
     <div className="conversation-stage"><div className="conversation-scroll">
       {messages.some((message) => message.content.trim() || message.refs?.length) ? messages.filter((message) => message.content.trim() || message.refs?.length).map((message) => <Message message={message} key={message.id} onLinkError={(cause) => setError(cause instanceof Error ? cause.message : String(cause))} />) : <div className="conversation-empty"><strong>¿Qué quieres crear?</strong><p>{session && modelState.ready ? 'Describe el cambio y OrderCode se encarga del siguiente paso.' : 'Abre un proyecto y cuéntanos tu idea.'}</p>
         {(!session || !modelState.ready) && <ol className="start-steps" aria-label="Primeros pasos">

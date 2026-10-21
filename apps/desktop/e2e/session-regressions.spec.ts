@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 // Controlled native transport: regression checks, without paid calls or a user account.
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
-    localStorage.setItem('ordercode.desktop.preferences.v1', JSON.stringify({ language: 'es', autoCheckUpdates: false }));
+    if (!localStorage.getItem('ordercode.desktop.preferences.v1')) localStorage.setItem('ordercode.desktop.preferences.v1', JSON.stringify({ language: 'es', autoCheckUpdates: false }));
     const fixture = { sessionsCreated: 0, ready: false, slowResolved: false, modelRequests: 0, polls: 0, maxPolls: 0, cursors: [] as number[], runRequests: 0, completeEvents: false, graphFailure: true, folderResult: 'C:/fixtures/new-project' as string | null, requests: [] as Array<{ method: string; params: Record<string, unknown> }> };
     const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
     const rawSession = (id: string) => ({ id, projectPath: `C:/fixtures/${id}`, title: id, modelId: 'local-code', providerId: 'ollama', mode: 'build', permissionProfile: 'guided', state: 'COMPLETED', createdAt: new Date().toISOString(), sequence: 1500 });
@@ -19,6 +19,12 @@ test.beforeEach(async ({ page }) => {
         if (command === 'workspace_open') return args.projectPath;
         if (command === 'workspace_read_file') {
           Object.assign(fixture, { lastFileRead: args.path });
+          const delayedRead = fixture as unknown as { holdGraphicRead?: boolean; graphicReadPending?: boolean; graphicReadResolved?: boolean };
+          if (args.path === 'graphs/curve.svg' && delayedRead.holdGraphicRead) {
+            delayedRead.graphicReadPending = true;
+            while (delayedRead.holdGraphicRead) await pause(25);
+            delayedRead.graphicReadResolved = true;
+          }
           if (args.path === 'img/campo.jpg') return { kind: 'image', mimeType: 'image/png', dataUrl: (fixture as unknown as { imageData: string }).imageData, size: 2048 };
           if (args.path === 'graphs/curve.svg') return { kind: 'text', size: 96, content: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 40"><path d="M3 35L35 8L72 24" stroke="blue" fill="none"/></svg>' };
           if (args.path === 'graphs/report.html') return { kind: 'text', size: 120, content: '<!doctype html><html><body><strong>Gráfica estática</strong><script>document.body.append("Este script no debe ejecutarse")</script></body></html>' };
@@ -60,10 +66,14 @@ test.beforeEach(async ({ page }) => {
         if (method === 'providers.list') {
           fixture.modelRequests += 1;
           if (!fixture.ready) throw new Error('Harness has not started');
-          result = [{ id: 'ollama', configured: true }, { id: 'lmstudio', configured: true }];
+          result = (fixture as unknown as { providers?: unknown[] }).providers ?? [{ id: 'ollama', configured: true }, { id: 'lmstudio', configured: true }];
         } else if (method === 'provider.models') {
-          if (params.providerId === 'lmstudio') { await pause(2500); fixture.slowResolved = true; }
-          result = [{ id: 'local-code', providerId: params.providerId, label: params.providerId === 'ollama' ? 'Fast local code' : 'Slow local code', available: true, priceKind: 'local', reasoningEfforts: params.providerId === 'ollama' ? ['low', 'high'] : [] }];
+          const override = (fixture as unknown as { providerModels?: Record<string, unknown[]> }).providerModels?.[String(params.providerId)];
+          if (override) result = override;
+          else {
+            if (params.providerId === 'lmstudio') { await pause(2500); fixture.slowResolved = true; }
+            result = [{ id: 'local-code', providerId: params.providerId, label: params.providerId === 'ollama' ? 'Fast local code' : 'Slow local code', available: true, priceKind: 'local', reasoningEfforts: params.providerId === 'ollama' ? ['low', 'high'] : [] }];
+          }
         } else if (method === 'session.list') result = [];
         else if (method === 'session.create') { while ((fixture as unknown as { holdCreate?: boolean }).holdCreate) await pause(25); fixture.sessionsCreated += 1; result = { ...rawSession(fixture.sessionsCreated === 1 ? 'new-project' : 'new-project-' + fixture.sessionsCreated), ...params }; }
         else if (method === 'session.update') {
@@ -283,12 +293,12 @@ test('expands navigation without covering Workspace and keeps tool navigation in
 
   await panel.getByRole('button', { name: 'Cerrar proyecto', exact: true }).click();
   await nav.getByRole('button', { name: 'Herramientas', exact: true }).click();
-  await nav.getByRole('button', { name: 'Cambios y Git', exact: true }).click();
-  await expect(nav.getByRole('button', { name: 'Cambios y Git', exact: true })).toBeVisible();
+  await nav.getByRole('button', { name: 'Cambios', exact: true }).click();
+  await expect(nav.getByRole('button', { name: 'Cambios', exact: true })).toBeVisible();
   await page.setViewportSize({ width: 500, height: 700 });
-  await expect(nav.getByRole('button', { name: 'Cambios y Git', exact: true })).toHaveCount(0);
+  await expect(nav.getByRole('button', { name: 'Cambios', exact: true })).toHaveCount(0);
   await page.setViewportSize({ width: 1280, height: 800 });
-  await expect(nav.getByRole('button', { name: 'Cambios y Git', exact: true })).toBeVisible();
+  await expect(nav.getByRole('button', { name: 'Cambios', exact: true })).toBeVisible();
 });
 
 test('explores a clean folder tree, searches nested files and opens them in both themes', async ({ page }) => {
@@ -397,8 +407,8 @@ test('discovers and safely previews SVG graphics and static HTML from the projec
   await page.getByRole('button', { name: 'Proyecto', exact: true }).click();
   await page.getByRole('button', { name: 'Añadir proyecto' }).click();
   await page.getByRole('button', { name: 'Herramientas', exact: true }).click();
-  await page.getByRole('button', { name: 'Web y gráficas', exact: true }).click();
-  await page.getByRole('tab', { name: /Gráficas/ }).click();
+  await page.getByRole('button', { name: 'Vista previa', exact: true }).click();
+  await page.getByRole('tab', { name: /Imágenes y gráficas/ }).click();
   await expect(page.getByRole('button', { name: 'graphs/curve.svg' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'graphs/report.html' })).toBeVisible();
   await page.getByRole('button', { name: 'img/campo.jpg' }).click();
@@ -413,6 +423,45 @@ test('discovers and safely previews SVG graphics and static HTML from the projec
   await expect(page.frameLocator('iframe[title="Gráfica graphs/report.html"]').getByText('Gráfica estática')).toBeVisible();
   await expect(page.locator('.visualizer-security-note')).toContainText('se omitieron los scripts');
   await expect(page.frameLocator('iframe[title="Gráfica graphs/report.html"]').getByText('Este script no debe ejecutarse')).toHaveCount(0);
+});
+
+test('changing conversations during a graphic read does not block later previews or show stale content', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openChatProject(page);
+  await page.getByRole('button', { name: 'Abrir vista previa', exact: true }).click();
+  const preview = page.getByRole('complementary', { name: 'Vista previa' });
+  await preview.getByRole('tab', { name: /Imágenes y gráficas/ }).click();
+  await page.evaluate(() => Object.assign((window as unknown as { auditFixture: object }).auditFixture, { holdGraphicRead: true }));
+  await preview.getByRole('button', { name: 'graphs/curve.svg' }).click();
+  await expect(preview.getByText('Cargando vista previa…')).toBeVisible();
+  await page.getByRole('button', { name: 'Nueva conversación', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { auditFixture: { sessionsCreated: number } }).auditFixture.sessionsCreated)).toBe(2);
+  await page.getByRole('button', { name: 'Abrir vista previa', exact: true }).click();
+  await preview.getByRole('button', { name: 'graphs/report.html' }).click();
+  const chart = preview.locator('iframe[title="Gráfica graphs/report.html"]');
+  await expect(chart).toBeVisible();
+  await page.evaluate(() => Object.assign((window as unknown as { auditFixture: object }).auditFixture, { holdGraphicRead: false }));
+  await expect.poll(() => page.evaluate(() => (window as unknown as { auditFixture: { graphicReadResolved?: boolean } }).auditFixture.graphicReadResolved)).toBe(true);
+  await expect(chart).toBeVisible();
+  await expect(preview.getByRole('img', { name: 'Gráfica: graphs/curve.svg' })).toHaveCount(0);
+});
+
+test('keeps the web preview within its project when switching to a different workspace', async ({ page }) => {
+  await page.route('https://project.example.test/**', (route) => route.fulfill({ contentType: 'text/html', body: '<main>Primer proyecto</main>' }));
+  await openChatProject(page);
+  await page.getByRole('button', { name: 'Abrir vista previa', exact: true }).click();
+  const preview = page.getByRole('complementary', { name: 'Vista previa' });
+  const address = preview.getByRole('textbox', { name: 'Dirección web' });
+  await address.fill('https://project.example.test/');
+  await preview.getByRole('button', { name: 'Abrir', exact: true }).click();
+  await expect(preview.locator('iframe[title="Vista previa web"]')).toHaveAttribute('src', 'https://project.example.test/');
+  await page.evaluate(async () => {
+    const path = '/src/lib/store.ts'; const { useDesktopStore } = await import(path); const state = useDesktopStore.getState();
+    state.set('session', { ...state.session, id: 'other-workspace', projectPath: 'C:/fixtures/other-workspace' });
+  });
+  await expect(address).toHaveValue('');
+  await expect(preview.locator('iframe[title="Vista previa web"]')).toHaveCount(0);
+  await expect(page.locator('.conversation-header h1')).toHaveText('other-workspace');
 });
 
 test('pairs parallel tools and resolves permission activity without changing the run state', async ({ page }) => {
@@ -517,9 +566,10 @@ test('recovers from a code graph error, inspects relationships and opens the rea
   await page.getByRole('button', { name: 'Enviar mensaje' }).click();
   await expect(page.getByText('Persisted final answer', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Herramientas', exact: true }).click();
-  await page.getByRole('button', { name: 'Grafo y código', exact: true }).click();
+  await page.getByRole('button', { name: 'Herramientas avanzadas', exact: true }).click();
+  await page.getByRole('button', { name: 'Mapa del código', exact: true }).click();
   await expect(page.getByRole('textbox', { name: 'Buscar símbolos' })).toBeEnabled();
-  await page.getByRole('button', { name: 'Abrir grafo' }).click();
+  await page.getByRole('button', { name: 'Mapa', exact: true }).click();
   await expect(page.getByRole('alert')).toContainText('No se pudo cargar el grafo');
   await expect(page.getByRole('button', { name: 'Reintentar' })).toBeVisible();
   await expect(page.getByText('Indexando archivos y preparando relaciones…')).toHaveCount(0);
@@ -798,4 +848,276 @@ test('agent editor protects edits, preserves active status, and recovers from a 
   await page.getByRole('button', { name: 'Volver a agentes' }).click();
   await page.getByRole('button', { name: 'Descartar cambios' }).click();
   await expect(page.locator('.agent-editor')).toHaveCount(0);
+});
+
+
+async function seedModelCatalog(page: Page) {
+  await page.goto('/');
+  await expect(page.locator('.composer-dropdown--model .dropdown-trigger')).toBeEnabled();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { auditFixture: { ready: boolean } }).auditFixture.ready)).toBe(true);
+  await page.evaluate(() => {
+    const free = { available: true, providerId: 'openrouter', priceKind: 'free', capabilities: ['chat', 'streaming', 'tool-calling'], pricing: { inputPerMillionUsd: 0, outputPerMillionUsd: 0 }, contextWindowTokens: 128000 };
+    Object.assign((window as unknown as { auditFixture: object }).auditFixture, {
+      providers: [{ id: 'openrouter', label: 'OpenRouter', configured: true }, { id: 'anthropic', label: 'Anthropic', configured: true }],
+      providerModels: {
+        openrouter: [
+          { ...free, id: 'openrouter/free', label: 'Free Models Router', catalogRank: 999 },
+          { ...free, id: 'nvidia/nemotron-ultra:free', label: 'NVIDIA: Nemotron Ultra (free)', catalogRank: 1, reasoningEfforts: ['low', 'high'] },
+          { ...free, id: 'google/gemma-code:free', label: 'Google: Gemma Code (free)', catalogRank: 2 },
+          { ...free, id: 'deepseek/code:free', label: 'DeepSeek: Code (free)', catalogRank: 3 },
+          { ...free, id: 'cohere/command:free', label: 'Cohere: Command (free)', catalogRank: 4 },
+          ...Array.from({ length: 65 }, (_, index) => ({ ...free, id: 'qwen/code-' + index + ':free', label: 'Qwen: Code ' + index + ' (free)', catalogRank: index + 5 })),
+        ],
+        anthropic: [{ id: 'claude-code', providerId: 'anthropic', label: 'Claude Code', available: true, priceKind: 'paid', capabilities: ['chat', 'tool-calling'], pricing: { inputPerMillionUsd: 3, outputPerMillionUsd: 15 }, reasoningEfforts: ['low', 'medium', 'high'] }],
+      },
+    });
+    window.dispatchEvent(new Event('ordercode:providers-updated'));
+  });
+}
+
+test('organizes OpenRouter into a short starter list, creator groups, search, and persistent favorites', async ({ page }) => {
+  await seedModelCatalog(page);
+  await page.locator('.composer-dropdown--model .dropdown-trigger').click();
+  const menu = page.locator('.model-picker-menu');
+  await expect(menu.getByRole('option', { name: /Free Models Router/ })).toBeVisible();
+  await expect.poll(async () => Math.round((await menu.boundingBox())!.x - (await page.locator('.composer-dropdown--model .dropdown-trigger').boundingBox())!.x)).toBe(0);
+  await expect(menu.getByRole('group', { name: 'OpenRouter', exact: true }).getByRole('option')).toHaveCount(6);
+  await expect(menu.getByRole('listbox', { name: 'Modelos disponibles' }).getByRole('option').first()).toContainText('Free Models Router');
+  await menu.getByRole('textbox', { name: 'Buscar modelos' }).fill('nvidia ultra');
+  await expect(menu.getByRole('listbox', { name: 'Modelos disponibles' }).getByRole('option')).toHaveCount(1);
+  await expect(menu.getByRole('listbox', { name: 'Modelos disponibles' }).getByRole('option')).toContainText('Nemotron Ultra');
+  await expect(menu.getByRole('listbox', { name: 'Modelos disponibles' }).getByRole('option')).not.toContainText('(free)');
+  await expect(menu.getByRole('listbox', { name: 'Modelos disponibles' }).getByRole('option')).toContainText('Razonamiento');
+  await menu.getByRole('button', { name: 'Añadir a favoritos: NVIDIA: Nemotron Ultra (free)', exact: true }).click();
+  await expect(menu).toBeVisible();
+  await menu.getByRole('button', { name: 'Borrar búsqueda', exact: true }).click();
+  await menu.getByRole('button', { name: /^Favoritos/ }).click();
+  await expect(menu.getByRole('listbox', { name: 'Modelos disponibles' }).getByRole('option')).toHaveCount(1);
+  await menu.getByRole('option', { name: /Nemotron Ultra/ }).click();
+  await expect(menu).not.toBeVisible();
+  await expect(page.locator('.composer-dropdown--model .dropdown-trigger')).toContainText('Nemotron Ultra');
+  await page.locator('.composer-dropdown--effort .dropdown-trigger').click();
+  await expect(page.getByRole('option', { name: 'Medio', exact: true })).toHaveCount(0);
+  await page.getByRole('option', { name: 'Alto', exact: true }).click();
+  await page.locator('.composer-dropdown--model .dropdown-trigger').click();
+  await menu.getByRole('button', { name: 'Catálogo', exact: true }).click();
+  await menu.getByRole('combobox', { name: 'Filtrar por proveedor' }).selectOption('openrouter');
+  await expect(menu.getByRole('group', { name: 'OpenRouter / NVIDIA', exact: true })).toBeVisible();
+  await expect(menu.getByRole('listbox', { name: 'Modelos disponibles' }).getByRole('option')).toHaveCount(40);
+  await menu.locator('.model-picker-body').evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  await expect(menu.getByRole('textbox', { name: 'Buscar modelos' })).toBeVisible();
+  await expect(menu.getByRole('button', { name: 'Gestionar modelos' })).toBeVisible();
+  await menu.getByRole('button', { name: 'Mostrar más modelos' }).click();
+  await expect(menu.getByRole('listbox', { name: 'Modelos disponibles' }).getByRole('option')).toHaveCount(70);
+  await menu.getByRole('textbox', { name: 'Buscar modelos' }).fill('gemma');
+  await menu.getByRole('option', { name: /Gemma Code/ }).click();
+  await expect(page.locator('.composer-dropdown--effort')).toHaveCount(0);
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('ordercode.desktop.preferences.v1')!).favoriteModels)).toContain('openrouter::nvidia/nemotron-ultra:free');
+});
+
+test('keeps free-only restrictions when exploring providers and favorite paid models', async ({ page }) => {
+  await seedModelCatalog(page);
+  await page.locator('.composer-dropdown--model .dropdown-trigger').click();
+  const menu = page.locator('.model-picker-menu');
+  await menu.getByRole('button', { name: 'Catálogo', exact: true }).click();
+  await menu.getByRole('combobox', { name: 'Filtrar por proveedor' }).selectOption('anthropic');
+  await menu.getByRole('combobox', { name: 'Filtrar por proveedor' }).press('ArrowUp');
+  await expect(menu.getByRole('combobox', { name: 'Filtrar por proveedor' })).toHaveValue('openrouter');
+  await menu.getByRole('combobox', { name: 'Filtrar por proveedor' }).press('ArrowDown');
+  await expect(menu.getByRole('combobox', { name: 'Filtrar por proveedor' })).toHaveValue('anthropic');
+  await menu.getByRole('button', { name: 'Añadir a favoritos: Claude Code', exact: true }).click();
+  await menu.getByRole('button', { name: 'Solo gratuitos', exact: true }).click();
+  await expect(menu.getByRole('listbox', { name: 'Modelos disponibles' }).getByRole('option')).toHaveCount(0);
+  await menu.getByRole('button', { name: /^Favoritos/ }).click();
+  await expect(menu.getByRole('listbox', { name: 'Modelos disponibles' }).getByRole('option')).toHaveCount(0);
+  await menu.getByRole('combobox', { name: 'Filtrar por proveedor' }).selectOption('openrouter');
+  await menu.getByRole('button', { name: 'Catálogo', exact: true }).click();
+  await expect(menu.getByRole('listbox', { name: 'Modelos disponibles' }).getByRole('option').first()).toContainText('Free Models Router');
+  await expect.poll(() => page.evaluate(async () => { const path = '/src/lib/store.ts'; return (await import(path)).useDesktopStore.getState().freeOnly; })).toBe(true);
+  await menu.getByRole('textbox', { name: 'Buscar modelos' }).press('ArrowDown');
+  await expect(menu.getByRole('listbox', { name: 'Modelos disponibles' }).getByRole('option').first()).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.composer-dropdown--model .dropdown-trigger')).toBeFocused();
+});
+
+test('manages individual OpenRouter favorites in Settings without changing the active conversation model', async ({ page }) => {
+  await seedModelCatalog(page);
+  await page.locator('.composer-dropdown--model .dropdown-trigger').click();
+  await page.getByRole('option', { name: /Free Models Router/ }).click();
+  await page.getByRole('button', { name: 'Ajustes', exact: true }).click();
+  await page.getByRole('button', { name: 'Modelos', exact: true }).click();
+  const library = page.locator('.model-library');
+  await library.locator(':scope > summary').click();
+  await expect(library.getByRole('combobox', { name: 'Catálogo del proveedor' })).toHaveValue('openrouter');
+  await library.getByRole('textbox', { name: 'Buscar en el catálogo' }).fill('nvidia ultra');
+  await expect(library.locator('.model-choice')).toHaveCount(1);
+  await library.getByRole('button', { name: 'Añadir a favoritos: NVIDIA: Nemotron Ultra (free)', exact: true }).click();
+  await expect(library.getByRole('button', { name: 'Quitar de favoritos: NVIDIA: Nemotron Ultra (free)', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(() => page.evaluate(async () => { const path = '/src/lib/store.ts'; return (await import(path)).useDesktopStore.getState().model; })).toBe('openrouter::openrouter/free');
+  await library.getByRole('combobox', { name: 'Catálogo del proveedor' }).selectOption('anthropic');
+  await library.getByRole('button', { name: 'Ver gratuitos' }).click();
+  await expect(library.locator('.model-choice')).toHaveCount(0);
+});
+
+
+test('fits the model picker on narrow light screens and translates model details to English', async ({ page }) => {
+  await seedModelCatalog(page);
+  await page.setViewportSize({ width: 390, height: 760 });
+  await page.evaluate(async () => { const path = '/src/lib/store.ts'; const { useDesktopStore } = await import(path); const state = useDesktopStore.getState(); state.set('language', 'en'); state.set('themePreference', 'light'); state.set('reducedMotion', true); });
+  await page.locator('.composer-dropdown--model .dropdown-trigger').click();
+  const menu = page.locator('.model-picker-menu');
+  await expect(menu.locator('.model-picker-title strong')).toHaveText('Choose model');
+  await expect(menu.getByRole('button', { name: 'Recommended', exact: true })).toBeVisible();
+  await expect(menu.getByRole('button', { name: 'Manage models' })).toBeVisible();
+  await expect(menu.getByRole('option', { name: /Nemotron Ultra/ })).toContainText('Reasoning');
+  await expect(menu.getByRole('option', { name: /Nemotron Ultra/ })).toHaveAttribute('title', /per 1M tokens/);
+  const bounds = await menu.boundingBox();
+  expect(bounds!.x).toBeGreaterThanOrEqual(12);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(378);
+  expect(bounds!.y).toBeGreaterThanOrEqual(12);
+  expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(748);
+  await menu.getByRole('option', { name: /Free Models Router/ }).click();
+  await page.evaluate(async () => { const path = '/src/lib/store.ts'; const { useDesktopStore } = await import(path); useDesktopStore.getState().set('hiddenModelProviders', ['openrouter']); });
+  await expect(page.locator('.composer-dropdown--model .dropdown-trigger')).toContainText('Free Models Router');
+  await page.locator('.composer textarea').fill('Check selection availability');
+  await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeEnabled();
+});
+
+test('offers connection for unconfigured models while keeping restricted models unavailable', async ({ page }) => {
+  await seedModelCatalog(page);
+  await page.evaluate(() => {
+    const fixture = (window as unknown as { auditFixture: { providers: Array<{ id: string; configured: boolean }>; providerModels: Record<string, Array<Record<string, unknown>>> } }).auditFixture;
+    fixture.providers = [{ id: 'openrouter', configured: false }, { id: 'opencode_zen', configured: false }];
+    fixture.providerModels.openrouter = fixture.providerModels.openrouter.map((model) => ({ ...model, available: false, availabilityReason: 'Conecta una clave gratuita de OpenRouter.' }));
+    fixture.providerModels.opencode_zen = [{ id: 'restricted-free', providerId: 'opencode_zen', label: 'Restricted Free', priceKind: 'free', available: false, availabilityReason: 'Los modelos gratuitos de OpenCode solo pueden usarse en su aplicación. Elige otro proveedor o un modelo local.' }];
+    window.dispatchEvent(new Event('ordercode:providers-updated'));
+  });
+  await page.locator('.composer-dropdown--model .dropdown-trigger').click();
+  const menu = page.locator('.model-picker-menu');
+  await expect(menu.getByRole('option', { name: /Free Models Router/ })).toContainText('Conecta una clave');
+  await menu.getByRole('button', { name: 'Catálogo', exact: true }).click();
+  await menu.getByRole('combobox', { name: 'Filtrar por proveedor' }).selectOption('opencode_zen');
+  await expect(menu.getByRole('option', { name: /Restricted Free/ })).toBeDisabled();
+  await menu.getByRole('combobox', { name: 'Filtrar por proveedor' }).selectOption('openrouter');
+  await menu.getByRole('option', { name: /Free Models Router/ }).click();
+  await expect(page.getByRole('heading', { name: 'Modelos', exact: true })).toBeVisible();
+  expect(await page.evaluate(() => (window as unknown as { auditFixture: { runRequests: number } }).auditFixture.runRequests)).toBe(0);
+});
+
+
+test('keeps the redesigned control bar readable, responsive, and fully operable', async ({ page }) => {
+  await seedModelCatalog(page);
+  await page.locator('.composer-dropdown--model .dropdown-trigger').click();
+  await page.getByRole('option', { name: /Nemotron Ultra/ }).click();
+  await page.locator('.composer-dropdown--effort .dropdown-trigger').click();
+  await page.getByRole('option', { name: 'Alto', exact: true }).click();
+  await page.locator('.composer-dropdown--options .dropdown-trigger').click();
+  await page.getByRole('option', { name: /^Auto/ }).click();
+  await expect(page.locator('.composer-dropdown--options .dropdown-trigger')).toContainText('Permisos');
+  await expect(page.locator('.composer-dropdown--effort .dropdown-trigger')).toContainText('Esfuerzo');
+  const toggle = page.getByRole('button', { name: 'Activar modo continuo', exact: true });
+  await toggle.click();
+  await expect(page.getByRole('button', { name: 'Desactivar modo continuo', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  for (const width of [1280, 760, 390]) {
+    await page.setViewportSize({ width, height: 800 });
+    const bar = page.locator('.composer-toolbar');
+    await expect(bar).toBeVisible();
+    const metrics = await bar.evaluate((element) => {
+      const r = element.getBoundingClientRect();
+      return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, children: [...element.children].map((child) => { const c = child.getBoundingClientRect(); return { left: c.left, right: c.right, top: c.top, bottom: c.bottom }; }) };
+    });
+    for (const child of metrics.children) {
+      expect(child.left).toBeGreaterThanOrEqual(metrics.left);
+      expect(child.right).toBeLessThanOrEqual(metrics.right);
+      expect(child.bottom).toBeLessThanOrEqual(metrics.bottom);
+    }
+    await expect(page.locator('.composer-dropdown--effort .dropdown-trigger')).toBeVisible();
+    await expect(page.locator('.continuous-toggle')).toBeVisible();
+  }
+  await page.locator('.composer-dropdown--mode .dropdown-trigger').click();
+  await page.getByRole('option', { name: /^Plan/ }).click();
+  await expect(page.locator('.composer-dropdown--mode .dropdown-value')).toHaveText('Plan');
+  await expect(page.locator('.composer-dropdown--effort .dropdown-value')).toHaveText('Alto');
+  await page.locator('.composer-dropdown--options .dropdown-trigger').click();
+  await page.getByRole('option', { name: /^Avanzado/ }).click();
+  const permissionFits = await page.locator('.composer-dropdown--options .dropdown-value').evaluate((element) => element.scrollWidth <= element.clientWidth);
+  expect(permissionFits).toBe(true);
+  await page.locator('.composer-dropdown--options .dropdown-trigger').click();
+  await page.getByRole('option', { name: /^Auto/ }).click();
+  await expect(page.locator('.composer-dropdown--options .dropdown-value')).toHaveText('Auto');
+});
+
+test('reviews one Git diff at a time and preserves staging and save-version actions behind the simplified UI', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => {
+    const native = (window as unknown as { __TAURI_INTERNALS__: { invoke: (command: string, args: Record<string, unknown>) => Promise<unknown> }; auditFixture: { requests: Array<{ method: string; params: Record<string, unknown> }> } });
+    const previous = native.__TAURI_INTERNALS__.invoke;
+    let staged = false;
+    let committed = false;
+    native.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      const request = args.request as { method: string; params: { name: string; input: Record<string, unknown> } } | undefined;
+      if (command !== 'harness_request' || request?.method !== 'tool.invoke' || !request.params.name.startsWith('git.')) return previous(command, args);
+      native.auditFixture.requests.push(request);
+      const { name, input } = request.params;
+      if (name === 'git.stage') staged = true;
+      if (name === 'git.unstage') staged = false;
+      if (name === 'git.commit') { committed = true; staged = false; }
+      const diff = 'diff --git a/src/App.tsx b/src/App.tsx\n+verified change';
+      const stdout = name === 'git.status' ? '## main\0' + (committed ? '' : (staged ? 'M  ' : ' M ') + 'src/App.tsx\0')
+        : name === 'git.diff' ? !committed && Boolean(input.staged) === staged ? diff : ''
+        : name === 'git.branches' ? '* main'
+        : name === 'git.remotes' ? 'origin\thttps://example.com/project.git'
+        : '';
+      return { result: { status: 'completed', summary: 'Controlled Git action', data: { stdout } } };
+    };
+  });
+  await page.getByRole('button', { name: 'Abrir carpeta', exact: true }).click();
+  await page.getByRole('button', { name: 'Herramientas', exact: true }).click();
+  await page.getByRole('button', { name: 'Cambios', exact: true }).click();
+  await expect(page.locator('.git-file-row')).toHaveCount(1);
+  await expect(page.locator('.git-status-output')).toBeHidden();
+  await expect(page.getByRole('tabpanel', { name: 'Sin preparar' })).toContainText('+verified change');
+  await expect(page.getByRole('button', { name: 'Guardar versión', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: 'Preparar todos', exact: true }).click();
+  await expect(page.getByRole('tabpanel', { name: 'Sin preparar' })).toContainText('No hay cambios sin preparar.');
+  await page.getByRole('tab', { name: 'Preparados', exact: true }).click();
+  await expect(page.getByRole('tabpanel', { name: 'Preparados' })).toContainText('+verified change');
+  await page.getByRole('textbox', { name: 'Describe esta versión' }).fill('Mejorar interfaz');
+  await page.getByRole('button', { name: 'Guardar versión', exact: true }).click();
+  await expect(page.locator('.git-file-row')).toHaveCount(0);
+  const actions = await page.evaluate(() => (window as unknown as { auditFixture: { requests: Array<{ method: string; params: Record<string, unknown> }> } }).auditFixture.requests.filter((r) => r.method === 'tool.invoke').map((r) => r.params));
+  expect(actions.some((action) => action.name === 'git.stage' && (action.input as { all?: boolean }).all)).toBe(true);
+  expect(actions.some((action) => action.name === 'git.commit' && (action.input as { message?: string }).message === 'Mejorar interfaz')).toBe(true);
+  expect(actions.some((action) => action.name === 'git.push')).toBe(false);
+});
+
+
+test('carries an initial idea into the first project and keeps drafts separate between conversations', async ({ page }) => {
+  await page.goto('/');
+  const composer = page.getByRole('textbox', { name: 'Mensaje para OrderCode' });
+  await composer.fill('Mi idea inicial');
+  await page.getByRole('button', { name: 'Abrir carpeta', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'new-project' })).toBeVisible();
+  await expect(composer).toHaveValue('Mi idea inicial');
+  await page.getByRole('button', { name: 'Herramientas', exact: true }).click();
+  await page.getByRole('button', { name: 'Agentes', exact: true }).click();
+  await page.getByRole('button', { name: 'Volver a la conversación' }).click();
+  await expect(composer).toHaveValue('Mi idea inicial');
+  await page.evaluate(async () => {
+    const path = '/src/lib/store.ts';
+    const { useDesktopStore } = await import(path);
+    const current = useDesktopStore.getState().session!;
+    useDesktopStore.getState().set('session', { ...current, id: 'another-conversation' });
+  });
+  await expect(composer).toHaveValue('');
+  await composer.fill('Otra idea');
+  await page.evaluate(async () => {
+    const path = '/src/lib/store.ts';
+    const { useDesktopStore } = await import(path);
+    const current = useDesktopStore.getState().session!;
+    useDesktopStore.getState().set('session', { ...current, id: 'new-project' });
+  });
+  await expect(composer).toHaveValue('Mi idea inicial');
+  expect(await page.evaluate(() => localStorage.getItem('ordercode.desktop.preferences.v1'))).not.toContain('Mi idea inicial');
 });

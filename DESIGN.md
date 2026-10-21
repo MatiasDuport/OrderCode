@@ -107,7 +107,8 @@ Mostrar el isotipo transparente de OrderCode, sin texto ni fondo, Buscar y los c
 ### 4.2. Navegación lateral
 
 - Navegación con nombres siempre visibles: Conversación, Proyecto e Historial. Botón Nueva conversación al inicio; Ajustes al final.
-- Herramientas agrupa Cambios y Git, Terminal, Grafo y código, Web y gráficas, Agentes, Skills y MCP, Uso y actividad y Publicar proyecto. Se despliega por clic o teclado; no exigir descubrir iconos al pasar el ratón.
+- Herramientas muestra cuatro accesos cotidianos: Cambios, Vista previa, Terminal y Agentes. Avanzado agrupa Extensiones, Mapa del código, Uso y actividad y Publicar proyecto. Ambos grupos se despliegan por clic o teclado; las funciones avanzadas se abren automáticamente cuando son la vista activa. Evitar duplicar destinos o mostrar todos los controles técnicos de entrada.
+- Cada herramienta presenta una tarea clara. Cambios muestra una comparación a la vez y despliega ramas, sincronización e historial bajo demanda. Vista previa se abre desde el chat en un panel contextual junto a la conversación, conserva su dirección y pestaña al cerrarse dentro del mismo proyecto, pausa el contenido web mientras está oculta, y separa Web de Imágenes y gráficas; descubre archivos solo al abrir estas últimas. Agentes prioriza selección y creación; transferencias y borrador por descripción son opcionales. Extensiones diferencia Instrucciones (Skills) y Conexiones (MCP), con el catálogo bajo demanda. Uso evita encabezados duplicados y despliega filtros secundarios. Publicar proyecto conserva su módulo independiente y separa versiones de sitios web. Sin proyecto, explicar el siguiente paso y ofrecer Abrir proyecto.
 - Conversación muestra el chat; Proyecto abre o cierra los archivos sin perder la conversación. El panel se cierra desde su control, con Escape o al pulsar fuera en ventanas estrechas.
 - Ancho de referencia 196 px; 174 px en ventanas medianas. En móvil, navegación inferior con etiquetas y herramientas en un desplegable.
 - Ajustes tiene General, Modelos, Seguridad y Actualizaciones; Uso, Conexión local, Editor, Accesibilidad y Datos se agrupan en Avanzado. Las conexiones aparecen antes que la personalización del catálogo.
@@ -125,7 +126,7 @@ Oculto por defecto. Aparece para archivos, cambios, actividad de agentes, detall
 
 ### 4.5. Panel inferior
 
-Oculto por defecto; incluye Terminal, Processes, Logs y Problems como vistas alternables. Tamaño ajustable. No transmitir todo el stdout del agente al chat.
+Oculto por defecto; incluye Terminal, Processes, Logs y Problems como vistas alternables. Tamaño ajustable y botón de cierre en la cabecera; cerrar el panel lo oculta sin terminar shells activos. Cada sesión se cierra desde su pestaña. No transmitir todo el stdout del agente al chat.
 
 ### 4.6. Adaptación
 
@@ -147,16 +148,16 @@ Oculto por defecto; incluye Terminal, Processes, Logs y Problems como vistas alt
 
 ### 5.2. Composer compacto
 
-Mostrar Modelo, Esfuerzo, Modo (Auto inicialmente) y Opciones. Esfuerzo tiene un selector propio y visible, ofrece Auto y únicamente los niveles admitidos por el modelo; sin niveles configurables explica por qué. Opciones contiene los permisos y el permiso actual permanece visible en el disparador. No presentar niveles de esfuerzo que el modelo no admite. Retirar barras de estado técnicas y el selector flotante de tema; la apariencia se cambia en Ajustes.
+Mostrar Modelo, Esfuerzo, Modo (Auto inicialmente) y Permisos en una barra común compacta, con iconos discretos y sin recuadros independientes en cada control. El modelo destaca suavemente; los demás conservan etiqueta y valor para distinguir sus opciones Auto. Esfuerzo tiene un selector propio y visible, ofrece Auto y únicamente los niveles admitidos por el modelo; sin niveles configurables explica por qué. Permisos muestra el perfil actual. No presentar niveles de esfuerzo que el modelo no admite. La barra se adapta al ancho real del chat, en dos filas cuando es necesario. Continuo conserva un botón propio con indicador de activación y ayuda sobre trabajar hasta completar la tarea. Retirar barras de estado técnicas y el selector flotante de tema; la apariencia se cambia en Ajustes.
 
-El campo de mensaje permanecerá accesible en la parte inferior del chat.
+El campo de mensaje permanecerá accesible en la parte inferior del chat. El borrador se conserva en memoria al visitar herramientas o Ajustes, por conversación; al abrir el primer proyecto se traslada a esa conversación. No guardar estos borradores entre los ajustes de usuario.
 
 - Altura inicial mínima, adaptada al texto; crecimiento limitado y scroll interno cuando sea necesario.
 - Elementos indispensables: entrada, adjuntar/referenciar, **selector de modelo**, **selector de modo**, acceso a permisos y enviar/detener.
 - Los controles secundarios se agrupan en un menú de más acciones cuando falta espacio.
 - No introducir grandes paneles explicativos dentro del composer.
 - Botón enviar solo si hay contenido válido; durante ejecución, acceso inequívoco a detener.
-- El botón **Hasta completar** se activa para una tarea y muestra su estado real al navegar entre vistas. Los ajustes de ejecución quedan bloqueados durante la tarea; detener y resolver autorizaciones siguen disponibles.
+- El botón **Continuo** (trabajar hasta completar) se activa para una tarea y muestra su estado real al navegar entre vistas. Los ajustes de ejecución quedan bloqueados durante la tarea; detener y resolver autorizaciones siguen disponibles.
 - Los comandos `/` y el panel de especialistas se abren bajo demanda en menús ajustados a la ventana, con cierre accesible incluso en pantallas pequeñas. Los comandos de consulta funcionan sin conectar un modelo; mostrar el contexto de la sesión que los solicitó.
 
 ### 5.3. Selector de modelo
@@ -168,6 +169,7 @@ El campo de mensaje permanecerá accesible en la parte inferior del chat.
 - Cuando el modelo no está configurado, ofrecer una acción clara para conectarlo.
 - Los subagentes heredan el modelo de la conversación: no mostrar selectores por agente.
 - Los cambios no deben ocultar operaciones ya iniciadas ni sus parámetros reales.
+- El desplegable mantiene búsqueda y filtros fijos, un único catálogo desplazable y pie de gestión. Ofrece Recomendados (selección breve de modelos disponibles), Favoritos y Catálogo; OpenRouter se agrupa por creador al explorar y abrevia nombres sin repetirlo. Cada fila distingue Gratis, Tu plan, Local o API e indica razonamiento cuando esté disponible. Ajustes permite explorar por proveedor y guardar favoritos sin cambiar el modelo de la conversación; los precios y niveles de esfuerzo completos se consultan en el detalle de cada fila.
 
 ### 5.4. Selector de modo
 
@@ -179,7 +181,7 @@ El campo de mensaje permanecerá accesible en la parte inferior del chat.
 
 El valor elegido es visible en reposo. Cuando `Auto` está trabajando, una indicación discreta puede informar la fase interna actual.
 
-**No confundir:** el esfuerzo `Auto`, el modo de trabajo `Auto` y el permiso `Auto` son ajustes independientes. Esfuerzo siempre tiene su propio selector; los permisos tienen una sección dentro de Opciones y el perfil elegido permanece visible en su disparador.
+**No confundir:** el esfuerzo `Auto`, el modo de trabajo `Auto` y el permiso `Auto` son ajustes independientes. Cada selector muestra su etiqueta y su valor; el perfil elegido permanece visible en Permisos.
 
 **Release no es un cuarto modo**; se accede al Release Center desde Git o el resultado de una tarea.
 

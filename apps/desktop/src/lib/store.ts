@@ -75,6 +75,29 @@ export interface UpdateViewState {
 
 export const initialUpdateViewState: UpdateViewState = { phase: 'idle', downloadedBytes: 0 };
 
+// Keep keystrokes local to the composer subscription; drafts never enter persisted preferences.
+export const useComposerDraftStore = create<{
+  drafts: Record<string, string>;
+  setDraft: (key: string, next: string | ((current: string) => string)) => void;
+  adoptDraft: (sessionId: string) => void;
+}>((set) => ({
+  drafts: {},
+  setDraft: (key, next) => set((state) => {
+    const drafts = { ...state.drafts };
+    const value = typeof next === 'function' ? next(drafts[key] ?? '') : next;
+    if (value) drafts[key] = value;
+    else delete drafts[key];
+    return { drafts };
+  }),
+  adoptDraft: (sessionId) => set((state) => {
+    if (!state.drafts.__new__) return state;
+    const drafts = { ...state.drafts };
+    drafts[sessionId] ??= drafts.__new__!;
+    delete drafts.__new__;
+    return { drafts };
+  }),
+}));
+
 interface DesktopState {
   theme: 'dark' | 'light';
   themePreference: ThemePreference;
@@ -93,6 +116,7 @@ interface DesktopState {
   settingsSection: string;
   sidebarOpen: boolean;
   reviewOpen: boolean;
+  previewOpen: boolean;
   terminalOpen: boolean;
   terminalSessions: TerminalSessionInfo[];
   terminalBuffers: Record<string, string>;
@@ -130,6 +154,7 @@ export const useDesktopStore = create<DesktopState>((set) => ({
   settingsSection: 'general',
   sidebarOpen: false,
   reviewOpen: false,
+  previewOpen: false,
   terminalOpen: false,
   terminalSessions: [],
   terminalBuffers: {},
@@ -156,9 +181,12 @@ export const useDesktopStore = create<DesktopState>((set) => ({
   editorOriginal: '',
   set: (key, value) => set((state) => {
     const next = { [key]: value } as Partial<DesktopState>;
+    if (key === 'reviewOpen' && value === true) next.previewOpen = false;
+    if (key === 'previewOpen' && value === true) next.reviewOpen = false;
     if (key === 'openFile' && value !== state.openFile) next.filePreview = null;
     if (key === 'session' && (value as SessionRecord | null)?.id !== state.session?.id) next.filePreview = null;
     if (key === 'session') next.reasoningEffort = (value as SessionRecord | null)?.reasoningEffort;
+    if (key === 'session' && value && !state.session) useComposerDraftStore.getState().adoptDraft((value as SessionRecord).id);
     if (key === 'session' && (value as SessionRecord | null)?.id !== state.session?.id) next.sessionRevision = state.sessionRevision + 1;
     if (key === 'theme') next.themePreference = value as ThemePreference;
     if (key === 'themePreference') next.theme = resolveTheme(value as ThemePreference);

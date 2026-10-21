@@ -147,7 +147,7 @@ La autorización del modelo no sustituye controles nativos. Identificar operacio
 
 **Editor:** Monaco, pestañas, archivos, edición, búsqueda, símbolos, diagnósticos y diffs integrados con el chat.
 
-**Visualizador:** vista Web integrada para direcciones HTTPS y servidores de desarrollo locales, dentro de un marco aislado sin acceso a IPC de OrderCode. La vista Gráficas descubre resultados PNG, JPEG, GIF, WebP, AVIF, BMP, SVG y HTML entre archivos del proyecto y archivos modificados por tareas. El HTML de proyecto se muestra en un marco estático aislado, sin ejecutar scripts ni cargar recursos externos. Para contenido interactivo se usa el servidor local en la vista Web. No enviar estos archivos al modelo por abrirlos en el visualizador.
+**Visualizador:** panel contextual que se abre desde el chat sin abandonar la conversación. Conserva la dirección HTTPS/local y pestaña al cerrarse dentro del mismo proyecto; pausa el contenido web mientras está oculto. La vista Web muestra direcciones HTTPS y servidores de desarrollo locales, dentro de un marco aislado sin acceso a IPC de OrderCode. La vista Gráficas descubre resultados PNG, JPEG, GIF, WebP, AVIF, BMP, SVG y HTML entre archivos del proyecto y archivos modificados por tareas. El HTML de proyecto se muestra en un marco estático aislado, sin ejecutar scripts ni cargar recursos externos. Para contenido interactivo se usa el servidor local en la vista Web. No enviar estos archivos al modelo por abrirlos en el visualizador.
 
 **Git:** estado, ramas, staging, historial, commits, diffs, conflictos, worktrees y operaciones remotas autorizadas. Preservar cambios preexistentes; worktrees no equivalen a sandbox.
 
@@ -181,7 +181,7 @@ Todas las herramientas externas pasarán por el Permission Engine.
 
 **Flujo:** proyecto → modelo → Plan/Build/Auto → conversación → ejecución → resultado.
 
-**Navegación:** Conversación, Proyecto e Historial; herramientas avanzadas agrupadas en Herramientas y configuración en Ajustes. Incluye el visualizador integrado de Web y gráficas. Release Center sigue siendo un módulo independiente dentro de Herramientas. Inicio guiado: abrir carpeta y conectar modelo. El modo inicial es Auto, con permisos Guiado.
+**Navegación:** Conversación, Proyecto e Historial; Herramientas prioriza Cambios, Vista previa, Terminal y Agentes. El grupo Avanzado reúne Extensiones, Mapa del código, Uso y actividad y Publicar proyecto, con controles técnicos bajo demanda. Ajustes conserva la configuración. Incluye el visualizador integrado de Web e Imágenes y gráficas. Release Center sigue siendo un módulo independiente. Inicio guiado: abrir carpeta y conectar modelo. El modo inicial es Auto, con permisos Guiado.
 
 **Paneles contextuales:** editor, diffs, terminal, procesos, logs, contexto, Git y Release Center.
 

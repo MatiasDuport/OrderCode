@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChartNoAxesCombined, FileImage, Globe, Image as ImageIcon, LoaderCircle, RefreshCw, RotateCw, Search } from 'lucide-react';
+import { ChartNoAxesCombined, FileImage, Globe, Image as ImageIcon, LoaderCircle, RefreshCw, RotateCw, Search, X } from 'lucide-react';
 import type { HarnessEvent, WorkspaceEntry, WorkspaceFileContent } from '../lib/contracts';
 import { isDesktopApp, readWorkspaceFile, workspaceTree } from '../lib/ipc';
 import { useDesktopStore } from '../lib/store';
@@ -47,7 +47,7 @@ function HtmlChart({ path, source }: { path: string; source: string }) {
   </div>;
 }
 
-export function VisualizationView() {
+export function VisualizationView({ active = true, onClose }: { active?: boolean; onClose?: () => void }) {
   const { session, sessionRevision, events, language } = useDesktopStore();
   const [tab, setTab] = useState<'web' | 'graphs'>('web');
   const [urlDraft, setUrlDraft] = useState('');
@@ -62,24 +62,34 @@ export function VisualizationView() {
   const [selectionLoading, setSelectionLoading] = useState(false);
   const [selectionError, setSelectionError] = useState('');
   const fileRequest = useRef(0);
+  const listRequest = useRef(0);
   const english = language === 'en';
 
   const loadFiles = useCallback(async () => {
-    if (!session || !isDesktopApp()) { setEntries([]); return; }
+    const request = ++listRequest.current;
+    if (!session || !isDesktopApp()) { setEntries([]); setFilesLoading(false); setFilesError(''); return; }
     const revision = sessionRevision;
+    const isCurrent = () => request === listRequest.current && useDesktopStore.getState().sessionRevision === revision;
     setFilesLoading(true); setFilesError('');
     try {
       const result = await workspaceTree(undefined, false);
-      if (useDesktopStore.getState().sessionRevision === revision) setEntries(result);
+      if (isCurrent()) setEntries(result);
     } catch (cause) {
-      if (useDesktopStore.getState().sessionRevision === revision) setFilesError(cause instanceof Error ? cause.message : String(cause));
-    } finally { if (useDesktopStore.getState().sessionRevision === revision) setFilesLoading(false); }
+      if (isCurrent()) setFilesError(cause instanceof Error ? cause.message : String(cause));
+    } finally { if (isCurrent()) setFilesLoading(false); }
   }, [session?.id, sessionRevision]);
 
   useEffect(() => {
+    fileRequest.current += 1;
+    listRequest.current += 1;
     setEntries([]); setSelectedFile(''); setSelectedContent(null); setSelectionError('');
-    void loadFiles();
+    setFilesLoading(false); setFilesError(''); setSelectionLoading(false);
+    return () => { fileRequest.current += 1; listRequest.current += 1; };
   }, [loadFiles]);
+
+  useEffect(() => { setUrlDraft(''); setActiveUrl(''); setUrlError(''); setReloadCount(0); }, [session?.projectPath]);
+
+  useEffect(() => { if (active && tab === 'graphs') void loadFiles(); }, [active, tab, loadFiles]);
 
   const files = useMemo(() => graphicFiles(events, entries), [events, entries]);
 
@@ -107,20 +117,20 @@ export function VisualizationView() {
   const selectedHtml = selectedFile && /\.html?$/i.test(selectedFile) && selectedContent?.kind === 'text' ? selectedContent.content : undefined;
 
   return <Localized><div className="surface-page visualizer-page">
-    <header className="surface-heading"><Globe size={19} /><div><h2>Web y gráficas</h2><p>Previsualiza sitios, proyectos web y resultados visuales de tus tareas.</p></div></header>
+    <header className="surface-heading visualizer-heading"><Globe size={19} /><div><h2>Vista previa</h2><p>Abre tu web o revisa las imágenes del proyecto.</p></div>{onClose && <button type="button" className="visualizer-close" aria-label="Cerrar vista previa" title="Cerrar vista previa" onClick={onClose}><X size={16} /></button>}</header>
     <div className="visualizer-tabs" role="tablist" aria-label="Visualizador">
       <button type="button" role="tab" aria-selected={tab === 'web'} className={tab === 'web' ? 'is-active' : ''} onClick={() => setTab('web')}><Globe size={14} />Web</button>
-      <button type="button" role="tab" aria-selected={tab === 'graphs'} className={tab === 'graphs' ? 'is-active' : ''} onClick={() => { setTab('graphs'); if (!entries.length && session) void loadFiles(); }}><ChartNoAxesCombined size={14} />Gráficas{files.length > 0 && <span className="visualizer-count">{files.length}</span>}</button>
+      <button type="button" role="tab" aria-selected={tab === 'graphs'} className={tab === 'graphs' ? 'is-active' : ''} onClick={() => setTab('graphs')}><ChartNoAxesCombined size={14} />Imágenes y gráficas{files.length > 0 && <span className="visualizer-count">{files.length}</span>}</button>
     </div>
     {tab === 'web' ? <section className="visualizer-browser" aria-label="Navegador web">
       <form className="visualizer-address-bar" onSubmit={(event) => { event.preventDefault(); navigate(); }}>
         <button type="button" className="visualizer-reload" aria-label={english ? 'Reload page' : 'Recargar página'} disabled={!activeUrl} onClick={() => setReloadCount((count) => count + 1)}><RotateCw size={15} /></button>
         <Search size={14} />
-        <input type="text" inputMode="url" aria-label={english ? 'Web address' : 'Dirección web'} placeholder={english ? 'https://… or http://localhost:5173' : 'https://… o http://localhost:5173'} value={urlDraft} onChange={(event) => { setUrlDraft(event.target.value); setUrlError(''); }} />
+        <input type="text" inputMode="url" aria-label={english ? 'Web address' : 'Dirección web'} placeholder={english ? 'https://your-site.com or localhost:3000' : 'https://tu-web.com o localhost:3000'} value={urlDraft} onChange={(event) => { setUrlDraft(event.target.value); setUrlError(''); }} />
         <button type="submit" className="visualizer-go" disabled={!urlDraft.trim()}>{english ? 'Open' : 'Abrir'}</button>
       </form>
       {urlError && <p className="visualizer-security-note" role="alert">{urlError}</p>}
-      {activeUrl ? <iframe key={`${activeUrl}:${reloadCount}`} className="visualizer-frame" title={english ? 'Website preview' : 'Vista previa web'} src={activeUrl} sandbox="allow-scripts allow-forms" referrerPolicy="no-referrer" allow="camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'" /> : <div className="visualizer-welcome"><span className="visualizer-welcome-icon"><Globe size={23} /></span><strong>{english ? 'Preview a website' : 'Abre una página web'}</strong><p>{english ? 'Enter a public HTTPS address or the address of a local development server.' : 'Escribe una dirección HTTPS pública o la dirección de un servidor local de desarrollo.'}</p><small>{english ? 'Some sites block embedded previews. Local websites work best through their development server.' : 'Algunos sitios bloquean las vistas integradas. Los sitios locales funcionan mejor desde su servidor de desarrollo.'}</small></div>}
+      {active && activeUrl ? <iframe key={`${activeUrl}:${reloadCount}`} className="visualizer-frame" title={english ? 'Website preview' : 'Vista previa web'} src={activeUrl} sandbox="allow-scripts allow-forms" referrerPolicy="no-referrer" allow="camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'" /> : !activeUrl && <div className="visualizer-welcome"><span className="visualizer-welcome-icon"><Globe size={23} /></span><strong>{english ? 'See what you are creating' : 'Mira aquí lo que estás creando'}</strong><p>{english ? 'Open your website address here, or use the images tab to review project files.' : 'Abre la dirección de tu web o usa la pestaña de imágenes para revisar los archivos del proyecto.'}</p><details className="visualizer-preview-help"><summary>{english ? 'Preview not loading?' : '¿No carga la vista previa?'}</summary><small>{english ? 'Some sites block embedded previews. Try the address of your local development server.' : 'Algunos sitios bloquean la vista integrada. Prueba la dirección del servidor local de tu proyecto.'}</small></details></div>}
     </section> : <section className="visualizer-graphs" aria-label={english ? 'Project charts' : 'Gráficas del proyecto'}>
       {filesLoading && <div className="visualizer-welcome" role="status"><LoaderCircle size={19} className="visualizer-spinner" />{english ? 'Finding visual outputs…' : 'Buscando resultados visuales…'}</div>}
       {filesError && <p className="visualizer-security-note" role="alert">{filesError}</p>}
@@ -133,7 +143,7 @@ export function VisualizationView() {
         {selectionError && <div className="visualizer-output-empty" role="alert">{selectionError}</div>}
         {selectionLoading && <div className="visualizer-output-empty" role="status"><LoaderCircle size={17} className="visualizer-spinner" />{english ? 'Loading preview…' : 'Cargando vista previa…'}</div>}
         {!selectionLoading && selectedImage && <div className="visualizer-image-canvas"><img src={selectedImage} alt={`${english ? 'Chart' : 'Gráfica'}: ${selectedFile}`} /></div>}
-        {!selectionLoading && selectedHtml && <HtmlChart path={selectedFile} source={selectedHtml} />}
+        {!selectionLoading && active && selectedHtml && <HtmlChart path={selectedFile} source={selectedHtml} />}
         {!selectionLoading && selectedContent && (selectedContent.kind === 'too-large' || selectedContent.kind === 'binary' || (!selectedImage && !selectedHtml)) && <div className="visualizer-output-empty"><FileImage size={21} /><strong>{selectedContent.kind === 'too-large' ? (english ? 'File is too large to preview' : 'El archivo supera el límite de vista previa') : selectedContent.kind === 'binary' ? (english ? 'This format cannot be previewed' : 'Este formato no se puede previsualizar') : (english ? 'No preview is available' : 'No hay vista previa disponible')}</strong><small>{english ? 'Try saving the chart as PNG or SVG. For interactive content, start a local server and open it in Web.' : 'Prueba guardando la gráfica como PNG o SVG. Para contenido interactivo, inicia un servidor local y ábrelo en Web.'}</small></div>}
       </div>}
     </section>}

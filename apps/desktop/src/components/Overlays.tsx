@@ -1,19 +1,22 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
-import { Activity, Bot, Check, Code2, Command, FileCode2, GitBranch, Puzzle, Search, ShieldAlert, Settings2, TerminalSquare, X } from 'lucide-react';
+import { Activity, Bot, ChartNoAxesCombined, Check, Code2, Command, FileCode2, GitBranch, Puzzle, Search, ShieldAlert, Settings2, TerminalSquare, X } from 'lucide-react';
 import { IconButton, Kbd } from './ui';
 import type { PermissionDecision } from '../lib/contracts';
-import { Localized } from '../lib/localization';
+import { Localized, translate } from '../lib/localization';
+import { useDesktopStore } from '../lib/store';
 
 const actions = [
-  { id: 'Workspace', label: 'Enfocar chat', icon: Command, shortcut: 'Ctrl L' },
+  { id: 'Chat', label: 'Enfocar chat', icon: Command, shortcut: 'Ctrl L' },
   { id: 'Review', label: 'Revisar cambios', icon: FileCode2, shortcut: 'Ctrl ⇧ D' },
   { id: 'Terminal', label: 'Alternar terminal', icon: TerminalSquare, shortcut: 'Ctrl J' },
   { id: 'Sessions', label: 'Abrir sesiones', icon: Activity },
   { id: 'Agents', label: 'Abrir agentes', icon: Bot },
-  { id: 'Code Intelligence', label: 'Buscar símbolos', icon: Code2 },
+  { id: 'Code Intelligence', label: 'Abrir mapa del código', icon: Code2 },
   { id: 'Extensions', label: 'Abrir extensiones', icon: Puzzle },
-  { id: 'Git', label: 'Abrir Git', icon: GitBranch },
-  { id: 'Release Center', label: 'Abrir Release Center', icon: GitBranch },
+  { id: 'Git', label: 'Abrir cambios', icon: GitBranch },
+  { id: 'Visualizer', label: 'Abrir vista previa', icon: ChartNoAxesCombined },
+  { id: 'Activity', label: 'Ver uso y actividad', icon: Activity },
+  { id: 'Release Center', label: 'Publicar proyecto', icon: GitBranch },
   { id: 'Settings', label: 'Abrir ajustes', icon: Settings2 },
 ];
 
@@ -41,7 +44,8 @@ export function CommandPalette({ open, onClose, onAction }: { open: boolean; onC
   useModalFocus(dialogRef);
   const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState('');
-  const visible = useMemo(() => actions.filter((action) => `${action.label} ${action.id}`.toLowerCase().includes(query.trim().toLowerCase())), [query]);
+  const language = useDesktopStore((state) => state.language);
+  const visible = useMemo(() => actions.filter((action) => `${translate(action.label, language)} ${action.label} ${action.id}`.toLowerCase().includes(query.trim().toLowerCase())), [query, language]);
   useEffect(() => { if (open) { setQuery(''); inputRef.current?.focus(); } }, [open]);
   if (!open) return null;
   return <Localized><div className="overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div ref={dialogRef} className="command-palette" role="dialog" aria-modal="true" aria-label="Paleta de comandos" onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); onClose(); } }}><div className="palette-input"><Search size={16} /><input ref={inputRef} value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') onClose(); if (event.key === 'Enter' && visible[0]) onAction(visible[0].id); }} placeholder="Buscar vistas y acciones..." aria-label="Buscar comandos" /><Kbd>Esc</Kbd></div><div className="palette-section"><span>Acciones</span>{visible.map(({ id, label, icon: Icon, shortcut }) => <button type="button" key={id} onClick={() => onAction(id)}><Icon size={14} /><strong>{label}</strong><span className="panel-title-spacer" />{shortcut && <Kbd>{shortcut}</Kbd>}</button>)}{!visible.length && <div className="dropdown-empty">No hay acciones coincidentes.</div>}</div></div></div></Localized>;

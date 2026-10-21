@@ -584,6 +584,10 @@ fn wait_for_callback_until(
         }
         match listener.accept() {
             Ok((mut stream, _)) => {
+                // Windows can inherit the listener's nonblocking mode; partial headers must wait for the read timeout.
+                if stream.set_nonblocking(false).is_err() {
+                    continue;
+                }
                 let request_deadline = (Instant::now() + Duration::from_secs(3)).min(deadline);
                 let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
                 let mut buffer = [0_u8; 16_384];
@@ -934,6 +938,37 @@ mod tests {
                 tauri::async_runtime::block_on(verify_identity(token, "nonce", "client")).is_err()
             );
         }
+    }
+
+    #[test]
+    fn loopback_login_accepts_fragmented_http_headers() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let worker = thread::spawn(move || {
+            wait_for_callback_until(
+                listener,
+                "expected",
+                Instant::now() + Duration::from_secs(5),
+            )
+        });
+        let mut stream = TcpStream::connect(address).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        stream
+            .write_all(b"GET /auth/callback?state=expected&code=fragmented HTTP/1.1\r\n")
+            .unwrap();
+        thread::sleep(Duration::from_millis(160));
+        stream
+            .write_all(format!("Host: {address}\r\nConnection: close\r\n\r\n").as_bytes())
+            .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        let callback = worker.join().unwrap().unwrap();
+        assert!(callback
+            .query_pairs()
+            .any(|(key, value)| key == "code" && value == "fragmented"));
     }
 
     #[test]
