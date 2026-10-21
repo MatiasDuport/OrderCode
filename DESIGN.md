@@ -139,6 +139,8 @@ Oculto por defecto; incluye Terminal, Processes, Logs y Problems como vistas alt
 
 ### 5.1. Mensajes
 
+Las respuestas interpretan Markdown con títulos, tablas desplazables, listas, citas, enlaces y bloques de código con copia. Durante la escritura se conserva el formato parcial; el HTML generado no se ejecuta ni las imágenes remotas se cargan automáticamente. La actividad de la ejecución actual se sitúa entre la petición y la respuesta, con acción actual visible incluso contraída, estados individuales y detalles técnicos bajo demanda. Conservar las llamadas paralelas por identificador y mostrar los resultados ausentes como tales, sin asumir éxito. Al terminar, contraer la actividad. El historial largo carga filas anteriores bajo demanda y no mezcla ejecuciones distintas.
+
 - Texto y bloques de código legibles, copiables y sin contenedores gigantes.
 - Referencias a archivos, símbolos, diffs, pruebas y logs deben abrir su destino real.
 - Las llamadas de herramientas aparecen **colapsadas por defecto** en grupos por fase o tarea; mostrar nombre, estado y resumen, con detalles expandibles.

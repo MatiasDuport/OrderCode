@@ -2,6 +2,16 @@ import { Children, cloneElement, isValidElement, type ReactNode } from 'react';
 import { useDesktopStore, type AppLanguage } from './store';
 
 const english: Record<string, string> = Object.fromEntries([
+  ['Código', 'Code'], ['Copiar código', 'Copy code'], ['Código copiado', 'Code copied'], ['Copiado', 'Copied'], ['Copiar', 'Copy'],
+  ['Tabla de la respuesta', 'Response table'], ['Historial de tareas', 'Task history'],
+  ['Leer archivo', 'Read file'], ['Leyendo archivo', 'Reading file'], ['Modificar archivo', 'Edit file'], ['Modificando archivo', 'Editing file'],
+  ['Explorar archivos', 'Explore files'], ['Explorando archivos', 'Exploring files'], ['Buscar en el proyecto', 'Search project'], ['Buscando en el proyecto', 'Searching project'],
+  ['Consultar símbolos', 'Inspect symbols'], ['Consultando símbolos', 'Inspecting symbols'], ['Consultar contexto', 'Inspect context'], ['Consultando contexto', 'Inspecting context'],
+  ['Ejecutar comando', 'Run command'], ['Ejecutando comando', 'Running command'], ['Revisar estado de Git', 'Check Git status'], ['Revisando estado de Git', 'Checking Git status'],
+  ['Revisando cambios', 'Reviewing changes'], ['Consultar historial', 'View history'], ['Consultando historial', 'Reading history'], ['Consultar ramas', 'View branches'], ['Consultando ramas', 'Reading branches'],
+  ['Consultar repositorios', 'View remotes'], ['Consultando repositorios', 'Reading remotes'], ['Guardar versión', 'Save version'], ['Guardando versión', 'Saving version'],
+  ['Publicando cambios', 'Publishing changes'], ['La ejecución se detuvo', 'Execution stopped'], ['Esperando tu autorización', 'Waiting for your approval'],
+  ['Deteniendo la ejecución…', 'Stopping execution…'], ['Preparando la tarea…', 'Preparing task…'], ['Redactando la respuesta…', 'Writing response…'], ['Procesando la siguiente acción…', 'Processing next action…'],
   ['Sin proyecto abierto', 'No project open'],
   ['Abre un proyecto para usar una terminal.', 'Open a project to use a terminal.'],
   ['sin proyecto', 'no project'],

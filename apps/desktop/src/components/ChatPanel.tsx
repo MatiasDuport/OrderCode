@@ -1,11 +1,14 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Activity, Bot, Check, ChevronDown, CircleDashed, FileCode2, Search, Send, ShieldCheck, Square, FolderOpen, X, CircleHelp, Layers3, ExternalLink, Gauge, WandSparkles, ListChecks, Code2, ChartNoAxesCombined, Infinity as InfinityIcon } from 'lucide-react';
 import { cancelSession, compactSessionContext, createSession, health, isDesktopApp, listCustomAgents, listProviders, listProviderModels, loadUsageAnalytics, openExternalUrl, pickWorkspaceFolder, sendSessionMessage, updateSession } from '../lib/ipc';
 import { followSessionOperation } from '../lib/sessionExecution';
 import { useComposerDraftStore, useDesktopStore, type ChatMessage } from '../lib/store';
-import type { AgentProfile, HarnessEvent, PermissionProfile, RuntimeState, SessionRecord, WorkMode } from '../lib/contracts';
+import type { AgentProfile, PermissionProfile, SessionRecord, WorkMode } from '../lib/contracts';
 import type { ProviderInfo, ProviderModel } from '../lib/ipc';
 import { ModelPicker } from './ModelPicker';
+import { ChatMarkdown } from './ChatMarkdown';
+import { TaskActivity } from './TaskActivity';
+import { activityStateLabels as stateLabels } from '../lib/taskActivity';
 import { shortModelLabel } from '../lib/modelCatalog';
 import { OFFICIAL_AGENTS } from '../lib/agents';
 import { AnchoredPopover, Dropdown, DropdownOption, Kbd, StatusDot } from './ui';
@@ -49,71 +52,12 @@ function linkedMessageContent(content: string, onLinkError: (error: unknown) => 
   return parts.length ? parts : content;
 }
 
-function Message({ message, onLinkError }: { message: ChatMessage; onLinkError: (error: unknown) => void }) {
+const Message = memo(function Message({ message, streaming = false, onLinkError }: { message: ChatMessage; streaming?: boolean; onLinkError: (error: unknown) => void }) {
   return <Localized><article className={`message message--${message.role}`}>
     <div className={`avatar avatar--${message.role}`}>{message.role === 'user' ? 'MP' : <img src={orderCodeMark} alt="" aria-hidden="true" draggable={false} />}</div>
-    <div className="message-body"><div className="message-meta"><strong>{message.role === 'user' ? 'Tú' : 'OrderCode'}</strong><span>{message.timestamp}</span></div><p>{linkedMessageContent(message.content, onLinkError)}</p>{message.refs?.length ? <div className="message-refs">{message.refs.map((ref) => <span key={ref} className="file-ref"><FileCode2 size={12} />{ref}</span>)}</div> : null}</div>
+    <div className="message-body"><div className="message-meta"><strong>{message.role === 'user' ? 'Tú' : 'OrderCode'}</strong><span>{message.timestamp}</span></div>{message.role === 'assistant' ? <ChatMarkdown content={message.content} streaming={streaming} onLinkError={onLinkError} /> : <p>{linkedMessageContent(message.content, onLinkError)}</p>}{message.refs?.length ? <div className="message-refs">{message.refs.map((ref) => <span key={ref} className="file-ref"><FileCode2 size={12} />{ref}</span>)}</div> : null}</div>
   </article></Localized>;
-}
-
-const stateLabels: Record<RuntimeState, string> = { CREATED: 'Listo', PREPARING: 'Preparando', RUNNING: 'En curso', WAITING_APPROVAL: 'Pendiente de autorización', WAITING_USER: 'Esperando respuesta', PAUSING: 'Pausando', PAUSED: 'En pausa', COMPLETED: 'Completado', FAILED: 'Falló', CANCELLED: 'Cancelado', RECOVERY_REQUIRED: 'Sin resultado registrado' };
-
-function taskActivity(events: HarnessEvent[], active: boolean): HarnessEvent[] {
-  const rows: HarnessEvent[] = [], identities = new Map<string, number>(), pending = new Map<string, number[]>(), agents = new Map<string, number>();
-  const resolutions = new Map(events.filter((event) => event.type === 'permission.resolved' && event.permissionRequestId).map((event) => [event.permissionRequestId!, event]));
-  const terminalRuns = new Set(events.filter((event) => /^run\.(completed|failed|cancelled)$/.test(event.type ?? event.summary)).map((event) => event.runId));
-  for (const event of events) {
-    const type = event.type ?? event.summary;
-    if (type === 'agent.started' || type === 'agent.state' || type === 'agent.completed') {
-      const identity = event.agentRunId;
-      const index = identity ? agents.get(identity) : undefined;
-      if (index !== undefined) rows[index] = { ...rows[index], ...event, summary: event.agentName ?? event.summary };
-      else {
-        if (identity) agents.set(identity, rows.length);
-        rows.push({ ...event, summary: event.agentName ?? event.summary });
-      }
-    } else if (type === 'tool.started' || type === 'tool.completed') {
-      const tool = event.toolName ?? event.summary.split(' · ')[0];
-      // Delegation is represented by the richer agent lifecycle rows below.
-      if (tool === 'agents.delegate' && type === 'tool.started') continue;
-      if (tool === 'agents.delegate' && event.state === 'COMPLETED') continue;
-      if (!event.runId && ['git.status', 'git.diff', 'git.branches', 'git.remotes', 'git.history', 'git.tags'].includes(tool)) continue;
-      const group = `${event.agentRunId ?? event.runId ?? 'manual'}:${tool}`, identity = event.invocationId ? `${group}:${event.invocationId}` : undefined;
-      const queue = pending.get(group) ?? [];
-      if (type === 'tool.started') {
-        if (identity) identities.set(identity, rows.length);
-        queue.push(rows.length); pending.set(group, queue);
-        rows.push({ ...event, summary: tool });
-      } else {
-        while (queue.length && rows[queue[0]].state !== 'RUNNING') queue.shift();
-        const index = identity ? identities.get(identity) : queue.shift();
-        if (index !== undefined) rows[index] = { ...event, id: rows[index].id, summary: tool };
-        else rows.push({ ...event, summary: tool });
-      }
-    } else if (type === 'permission.requested') {
-      const resolution = event.permissionRequestId ? resolutions.get(event.permissionRequestId) : undefined;
-      rows.push(resolution ? { ...event, state: resolution.state, summary: `Autorización ${resolution.permissionDecision === 'reject' ? 'rechazada' : 'concedida'}: ${event.toolName ?? event.summary.replace(/^Autorización: /, '')}`, detail: resolution.detail, permissionDecision: resolution.permissionDecision } : event);
-    } else if (['run.failed', 'context.compacted', 'recovery.required'].includes(type)) rows.push(event);
-  }
-  return rows.map((event) => event.state === 'RUNNING' && (!active || terminalRuns.has(event.runId)) ? { ...event, state: 'RECOVERY_REQUIRED', detail: event.detail ?? 'Sin resultado registrado' } : event);
-}
-
-function ActivityGroup() {
-  const events = useDesktopStore((state) => state.events);
-  const runtimeState = useDesktopStore((state) => state.runtimeState);
-  const [expanded, setExpanded] = useState<boolean | null>(null);
-  const active = ['RUNNING', 'PREPARING', 'WAITING_APPROVAL'].includes(runtimeState);
-  const useful = useMemo(() => taskActivity(events, active), [events, active]);
-  const latestRun = events.at(-1)?.runId;
-  const primaryAgent = [...events].reverse().find((event) => event.runId === latestRun && event.agentName && !event.agentRunId)?.agentName;
-  useEffect(() => { setExpanded(null); }, [latestRun]);
-  if (!useful.length) return null;
-  const open = expanded ?? active;
-  const failed = runtimeState === 'FAILED' || runtimeState === 'CANCELLED';
-  return <Localized><section className="activity-group" aria-label="Ejecución de tareas"><button type="button" className={`activity-heading ${open ? 'is-open' : ''}`} aria-label="Mostrar actividad de tareas" aria-expanded={open} onClick={() => setExpanded(!open)}><ChevronDown size={13} />{active ? <CircleDashed className="activity-ring is-running" size={16} /> : failed ? <X className="activity-ring is-failed" size={15} /> : <Check className="activity-ring" size={15} />}<strong>Actividad de tareas</strong><span className="activity-task-count">{useful.length}</span>{primaryAgent && <span className="activity-primary-agent">{primaryAgent}</span>}<span className="panel-title-spacer" /><span className="muted">{stateLabels[runtimeState]}</span></button>
-    {open && <div className="activity-items">{useful.slice(-30).map((event) => <div className={`activity-item${event.agentRunId ? ' activity-item--agent' : ''}`} key={event.id} style={event.agentRunId ? { paddingLeft: `${Math.min(event.delegationDepth ?? 1, 4) * 12}px` } : undefined}><div className={`activity-status activity-status--${event.state.toLowerCase()}`}>{event.state === 'COMPLETED' ? <Check size={11} /> : event.state === 'FAILED' || event.state === 'CANCELLED' ? <X size={11} /> : <span />}</div><div className="activity-copy"><strong>{event.agentRunId ? `↳ ${event.summary}` : event.summary}</strong><small>{event.detail ?? stateLabels[event.state]}</small></div><span className="activity-result">{stateLabels[event.state]}</span></div>)}</div>}
-  </section></Localized>;
-}
+});
 
 function ChangedFiles({ onOpenReview }: { onOpenReview: () => void }) {
   const files = [...new Set(useDesktopStore((state) => state.events).flatMap((event) => event.changedFiles ?? []))];
@@ -427,6 +371,7 @@ function Composer({ onSubmit, onCancel, onConfigError, onOpenSettings, onOpenRev
 export function ChatPanel({ previewOpen, onTogglePreview, onOpenReview, onOpenSettings }: { previewOpen: boolean; onTogglePreview: () => void; onOpenReview: () => void; onOpenSettings: () => void }) {
   const { messages, streamingText, mode, permission, model, reasoningEffort, freeOnly, session, agentId, runtimeState, addMessage, addEvent, set } = useDesktopStore();
   const [error, setError] = useState<string | null>(null);
+  const onLinkError = useCallback((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)), []);
   const [openingWorkspace, setOpeningWorkspace] = useState(false);
   const [modelState, setModelState] = useState({ ready: false, label: '' });
   useEffect(() => { setError(null); }, [session?.id]);
@@ -486,19 +431,22 @@ export function ChatPanel({ previewOpen, onTogglePreview, onOpenReview, onOpenSe
     finally { setOpeningWorkspace(false); }
   };
   const empty = !messages.length && !streamingText;
+  const visibleMessages = messages.filter((message) => message.content.trim() || message.refs?.length);
+  const responseStart = visibleMessages.reduce((index, message, current) => message.role === 'user' ? current + 1 : index, 0);
   const stateLabel = stateLabels[runtimeState];
   const projectName = session?.projectPath.split(/[\\/]/).filter(Boolean).at(-1);
   const busy = ['RUNNING', 'PREPARING', 'WAITING_APPROVAL', 'PAUSING'].includes(runtimeState);
   return <Localized><main className={'chat-panel ' + (empty ? 'is-empty' : '')}>
     <div className="conversation-header"><div><h1>{projectName ?? 'Nueva conversación'}</h1>{(!empty || busy || error) && <p><StatusDot color={error || runtimeState === 'FAILED' ? 'red' : busy ? 'green' : 'muted'} />{error ? 'Error' : stateLabel}</p>}</div><button type="button" className={`conversation-preview-toggle${previewOpen ? ' is-active' : ''}`} aria-label={previewOpen ? 'Cerrar vista previa' : 'Abrir vista previa'} aria-pressed={previewOpen} aria-controls="preview-context-panel" title={previewOpen ? 'Cerrar vista previa' : 'Ver web y gráficas del proyecto'} onClick={onTogglePreview}><ChartNoAxesCombined size={16} /></button></div>
     <div className="conversation-stage"><div className="conversation-scroll">
-      {messages.some((message) => message.content.trim() || message.refs?.length) ? messages.filter((message) => message.content.trim() || message.refs?.length).map((message) => <Message message={message} key={message.id} onLinkError={(cause) => setError(cause instanceof Error ? cause.message : String(cause))} />) : <div className="conversation-empty"><strong>¿Qué quieres crear?</strong><p>{session && modelState.ready ? 'Describe el cambio y OrderCode se encarga del siguiente paso.' : 'Abre un proyecto y cuéntanos tu idea.'}</p>
+      {visibleMessages.length ? visibleMessages.slice(0, responseStart).map((message) => <Message message={message} key={message.id} onLinkError={onLinkError} />) : <div className="conversation-empty"><strong>¿Qué quieres crear?</strong><p>{session && modelState.ready ? 'Describe el cambio y OrderCode se encarga del siguiente paso.' : 'Abre un proyecto y cuéntanos tu idea.'}</p>
         {(!session || !modelState.ready) && <ol className="start-steps" aria-label="Primeros pasos">
           <li className={session ? 'is-complete' : ''}><span className="start-step-number">{session ? <Check size={16} /> : '1'}</span><div><strong>Tu proyecto</strong><p>{projectName ?? 'Elige una carpeta para guardar tu trabajo.'}</p></div><button type="button" disabled={openingWorkspace || busy} onClick={() => void openWorkspace()}>{openingWorkspace ? 'Abriendo…' : session ? 'Cambiar carpeta' : 'Abrir carpeta'}</button></li>
           <li className={modelState.ready ? 'is-complete' : ''}><span className="start-step-number">{modelState.ready ? <Check size={16} /> : '2'}</span><div><strong>Tu asistente</strong><p>{modelState.ready ? modelState.label : 'Conecta tu cuenta o utiliza un modelo local.'}</p></div>{modelState.ready ? <span className="start-step-ready">Listo</span> : <button type="button" onClick={onOpenSettings}>Conectar modelo</button>}</li>
         </ol>}
       </div>}
-      {streamingText && <Message message={{ id: 'assistant-stream', role: 'assistant', content: streamingText, timestamp: 'Ahora' }} onLinkError={(cause) => setError(cause instanceof Error ? cause.message : String(cause))} />}<ActivityGroup /><ChangedFiles onOpenReview={onOpenReview} />{error && <div className="inline-error" role="alert"><X size={14} /><span>{error}</span></div>}
+      <TaskActivity />{visibleMessages.slice(responseStart).map((message) => <Message message={message} key={message.id} onLinkError={onLinkError} />)}
+      {streamingText && <Message message={{ id: 'assistant-stream', role: 'assistant', content: streamingText, timestamp: 'Ahora' }} streaming onLinkError={onLinkError} />}<ChangedFiles onOpenReview={onOpenReview} />{error && <div className="inline-error" role="alert"><X size={14} /><span>{error}</span></div>}
     </div><Composer onSubmit={handleSubmit} onCancel={() => { if (session) { const revision = useDesktopStore.getState().sessionRevision; void cancelSession(session.id).then(() => { if (useDesktopStore.getState().sessionRevision === revision) set('runtimeState', 'CANCELLED'); }).catch((cause) => setError(String(cause))); } }} onConfigError={setError} onOpenSettings={onOpenSettings} onOpenReview={onOpenReview} onModelState={setModelState} /></div>
   </main></Localized>;
 }

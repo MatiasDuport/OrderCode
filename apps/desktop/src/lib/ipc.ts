@@ -274,6 +274,7 @@ function toDesktopEvent(event: Record<string, unknown>): HarnessEvent {
   const permissionToolName = toolName ?? String(request?.toolName ?? 'acción');
   const result = payload.result && typeof payload.result === 'object' ? payload.result as Record<string, unknown> : undefined;
   const resultData = result?.data && typeof result.data === 'object' ? result.data as Record<string, unknown> : {};
+  const activityTarget = [input?.path, input?.query, input?.command, request?.resource, resultData.path].find((value): value is string => typeof value === 'string' && !!value);
   const deployment = typeof resultData.jobId === 'string' ? resultData : undefined;
   const usage = payload.result && typeof payload.result === 'object' && (payload.result as Record<string, unknown>).usage && typeof (payload.result as Record<string, unknown>).usage === 'object' ? (payload.result as Record<string, unknown>).usage as Record<string, unknown> : undefined;
   const cost = typeof usage?.costUsd === 'number' && Number.isFinite(usage.costUsd)
@@ -289,6 +290,8 @@ function toDesktopEvent(event: Record<string, unknown>): HarnessEvent {
   const agentResultSummary = typeof agentResult?.summary === 'string' ? agentResult.summary : typeof agentResult?.content === 'string' ? agentResult.content : undefined;
   return {
     id: String(event.id ?? crypto.randomUUID()), sessionId: String(event.sessionId ?? ''), sequence: Number(event.sequence ?? 0), state: rawState as HarnessEvent['state'],
+    ...(typeof event.createdAt === 'string' ? { createdAt: event.createdAt } : {}),
+    ...(activityTarget ? { target: activityTarget.slice(0, 300) } : {}),
     type: String(event.type ?? ''),
     ...(toolName ? { toolName } : {}),
     ...(typeof payload.invocationId === 'string' ? { invocationId: payload.invocationId } : {}),
@@ -297,7 +300,7 @@ function toDesktopEvent(event: Record<string, unknown>): HarnessEvent {
     ...(typeof payload.agentRunId === 'string' ? { agentRunId: payload.agentRunId } : {}),
     ...(typeof payload.parentAgentRunId === 'string' ? { parentAgentRunId: payload.parentAgentRunId } : {}),
     ...(typeof payload.parentAgentId === 'string' ? { parentAgentId: payload.parentAgentId } : {}),
-    ...(typeof payload.delegationDepth === 'number' ? { delegationDepth: payload.delegationDepth } : {}),
+    ...(typeof (payload.delegationDepth ?? payload.depth) === 'number' ? { delegationDepth: Number(payload.delegationDepth ?? payload.depth) } : {}),
     summary: event.type === 'permission.requested' ? `Autorización: ${permissionToolName}` : event.type === 'permission.resolved' ? `Autorización ${decision === 'reject' ? 'rechazada' : 'concedida'}: ${permissionToolName}` : event.type === 'context.compacted' ? (payload.automatic === true ? 'Compactación automática del contexto' : 'Contexto de conversación compactado') : toolName ? `${toolName}${result ? ` · ${String(result.status ?? '')}` : ''}` : String(event.type ?? 'Actividad'),
     ...(['agent.started', 'agent.state', 'agent.completed'].includes(String(event.type)) ? { summary: agentName ?? 'Especialista' } : {}),
     ...(['agent.started', 'agent.state', 'agent.completed'].includes(String(event.type)) && typeof payload.task === 'string' ? { detail: payload.task } : {}),

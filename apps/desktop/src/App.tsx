@@ -28,6 +28,7 @@ import type { SessionRecord } from './lib/contracts';
 import { AnimatePresence, motion, MotionConfig, useReducedMotion } from 'motion/react';
 import './styles.css';
 import './workbench-theme.css';
+import './chat-content.css';
 
 const agents = OFFICIAL_AGENTS;
 

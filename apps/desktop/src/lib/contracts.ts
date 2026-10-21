@@ -74,6 +74,8 @@ export interface UsageAnalytics {
 
 export interface HarnessEvent {
   id: string;
+  createdAt?: string;
+  target?: string;
   type?: string;
   toolName?: string;
   invocationId?: string;

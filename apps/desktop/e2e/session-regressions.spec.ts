@@ -34,6 +34,7 @@ test.beforeEach(async ({ page }) => {
         if (command === 'plugin:dialog|open') return fixture.folderResult;
         if (command === 'plugin:event|listen') return 1;
         if (command === 'plugin:event|unlisten') return null;
+        if (command === 'plugin:opener|open_url') { Object.assign(fixture, { lastOpenedUrl: args.url }); return null; }
         if (command === 'workspace_tree') {
           const files = [
             { path: '.playwright-mcp', kind: 'directory', size: 0 },
@@ -518,6 +519,142 @@ test('pairs parallel tools and resolves permission activity without changing the
   expect(pendingPermission).toBeNull();
 });
 
+test('renders Markdown tables, lists and code safely in final and streamed answers', async ({ page, context }) => {
+  await openChatProject(page);
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  const content = [
+    '## Evaluación del proyecto', '', '**Resultado:** listo para continuar.', '',
+    '| Criterio | Evidencia | Puntaje |', '| --- | --- | ---: |', '| Estructura | `src/App.tsx` organizado | 9/10 |', '| Velocidad | Respuesta inmediata | 10/10 |', '',
+    '### Próximos pasos', '', '- [x] Revisar archivos', '- [ ] Optimizar recursos', '', '> Cambios pequeños y verificables.', '',
+    '```python', 'print("Listo")', '```', '',
+    '[Ver documentación](https://example.com/docs) y https://example.com/status', '',
+    '[No ejecutar](javascript:alert(1))', '<script>window.markdownExecuted = true</script>', '<img src="https://tracker.example.test/pixel" onerror="alert(1)">',
+    '![Imagen externa](https://tracker.example.test/plot.png)',
+  ].join('\n');
+  await page.evaluate(async (content) => {
+    const { useDesktopStore } = await import('/src/lib/store.ts');
+    useDesktopStore.setState({ messages: [{ id: 'prompt', role: 'user', content: 'Revisa el proyecto', timestamp: '12:00' }, { id: 'answer', role: 'assistant', content, timestamp: '12:01' }], runtimeState: 'COMPLETED', events: [], streamingText: '' });
+  }, content);
+  const answer = page.locator('.message--assistant .chat-markdown');
+  await expect(answer.getByRole('heading', { name: 'Evaluación del proyecto', level: 2 })).toBeVisible();
+  await expect(answer.getByRole('table').getByRole('row')).toHaveCount(3);
+  await expect(answer.locator('strong')).toContainText('Resultado:');
+  await expect(answer.locator('input[type="checkbox"]')).toHaveCount(2);
+  await expect(answer.locator('blockquote')).toContainText('Cambios pequeños');
+  await expect(answer.locator('pre code')).toHaveText('print("Listo")\n');
+  await answer.getByRole('button', { name: 'Copiar código' }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('print("Listo")');
+  await answer.getByRole('link', { name: 'Ver documentación' }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { auditFixture: { lastOpenedUrl?: string } }).auditFixture.lastOpenedUrl)).toBe('https://example.com/docs');
+  await expect(answer.locator('a[href^="javascript:"]')).toHaveCount(0);
+  await expect(answer.locator('script,img,iframe')).toHaveCount(0);
+  expect(await page.evaluate(() => (window as unknown as { markdownExecuted?: boolean }).markdownExecuted)).toBeUndefined();
+  await page.screenshot({ path: `${process.env.TEMP}/ordercode-chat-markdown-code.png` });
+  await page.locator('.conversation-scroll').evaluate((element) => { element.scrollTop = 0; });
+  await page.screenshot({ path: `${process.env.TEMP}/ordercode-chat-markdown-dark.png` });
+  await setTestTheme(page, 'light');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(answer.getByRole('table')).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: `${process.env.TEMP}/ordercode-chat-markdown-light-mobile.png` });
+  await page.evaluate(async () => {
+    const { useDesktopStore } = await import('/src/lib/store.ts');
+    useDesktopStore.setState({ messages: [{ id: 'stream-prompt', role: 'user', content: 'Sigue', timestamp: '12:02' }], runtimeState: 'RUNNING', streamingText: '### Escribiendo\n\n```ts\nconst value =' });
+  });
+  await expect(answer).toHaveAttribute('aria-busy', 'true');
+  await expect(answer.getByRole('heading', { name: 'Escribiendo' })).toBeVisible();
+  await expect(answer.locator('pre code')).toContainText('const value =');
+  await page.evaluate(async () => {
+    const { useDesktopStore } = await import('/src/lib/store.ts');
+    useDesktopStore.setState({ streamingText: '### Escribiendo\n\n```ts\nconst value = 1;\n```\n\n| Listo | Estado |\n| --- | --- |\n| Código | Correcto |' });
+  });
+  await expect(answer.getByRole('table')).toContainText('Correcto');
+});
+
+test('shows the current task and specialist while hiding payloads and isolating each run', async ({ page }) => {
+  await openChatProject(page);
+  await page.evaluate(() => {
+    const base = { sessionId: 'new-project', runId: 'visible-run', createdAt: new Date().toISOString() };
+    Object.assign((window as unknown as { auditFixture: object }).auditFixture, { holdRun: true, customEvents: [
+      { ...base, id: 'old', runId: 'older-run', sequence: 1501, type: 'tool.completed', payload: { toolName: 'fs.read', result: { status: 'completed', summary: 'Do not show old execution' } } },
+      { ...base, id: 'start', sequence: 1502, type: 'run.started', payload: { state: 'RUNNING' } },
+      { ...base, id: 'agent', sequence: 1503, type: 'agent.started', payload: { agentRunId: 'explore-child', agentName: 'Explore', depth: 1, state: 'RUNNING' } },
+      { ...base, id: 'read-start', sequence: 1504, type: 'tool.started', payload: { agentRunId: 'explore-child', toolName: 'fs.read', invocationId: 'read', input: { path: 'src/App.tsx' } } },
+      { ...base, id: 'read-end', sequence: 1505, type: 'tool.completed', payload: { agentRunId: 'explore-child', toolName: 'fs.read', invocationId: 'read', result: { status: 'completed', summary: 'fs.read completed. {"content":"INTERNAL_FILE_PAYLOAD"}' } } },
+      { ...base, id: 'exec', sequence: 1506, type: 'tool.started', payload: { toolName: 'process.exec', invocationId: 'exec', input: { command: 'pnpm typecheck' } } },
+    ] });
+  });
+  await page.getByRole('textbox', { name: 'Mensaje para OrderCode' }).fill('Revisa los archivos y comprueba los tipos');
+  await page.getByRole('button', { name: 'Enviar mensaje' }).click();
+  const activity = page.getByRole('region', { name: 'Ejecución de tareas' });
+  const toggle = activity.getByRole('button', { name: 'Mostrar actividad de tareas' });
+  await expect(activity.locator('.activity-live')).toContainText('Ejecutando comando');
+  await expect(activity.locator('.activity-live')).toContainText('pnpm typecheck');
+  await expect(activity.locator('.activity-item')).toHaveCount(3);
+  await expect(activity.locator('.activity-item--agent').first()).toContainText('Explore');
+  await expect(activity.locator('.activity-copy').filter({ hasText: 'Leer archivo' })).toContainText('src/App.tsx');
+  await expect(activity).not.toContainText('Do not show old execution');
+  await expect(activity).not.toContainText('INTERNAL_FILE_PAYLOAD');
+  expect(await toggle.evaluate((element) => getComputedStyle(element).display)).toBe('flex');
+  await page.screenshot({ path: `${process.env.TEMP}/ordercode-chat-task-live.png` });
+  await activity.getByLabel('Detalles de Leer archivo', { exact: true }).click();
+  await expect(activity.locator('.activity-detail')).toContainText('INTERNAL_FILE_PAYLOAD');
+  await toggle.click();
+  await expect(activity.locator('.activity-item')).toHaveCount(0);
+  await expect(activity.locator('.activity-live')).toContainText('Ejecutando comando');
+  await page.evaluate(() => {
+    const fixture = (window as unknown as { auditFixture: { customEvents: unknown[] } }).auditFixture;
+    const base = { sessionId: 'new-project', runId: 'visible-run', createdAt: new Date().toISOString() };
+    fixture.customEvents.push(
+      { ...base, id: 'exec-end', sequence: 1507, type: 'tool.completed', payload: { toolName: 'process.exec', invocationId: 'exec', result: { status: 'completed', summary: 'Types checked.' } } },
+      { ...base, id: 'agent-end', sequence: 1508, type: 'agent.completed', payload: { agentRunId: 'explore-child', agentName: 'Explore', state: 'COMPLETED' } },
+      { ...base, id: 'stream', sequence: 1509, type: 'provider.chunk', payload: { chunk: '### Resultado\n\nTipos verificados.' } },
+    );
+  });
+  await expect(activity.locator('.activity-live')).toContainText('Redactando la respuesta');
+  await expect(page.getByRole('heading', { name: 'Resultado' })).toBeVisible();
+  await page.evaluate(() => {
+    const fixture = (window as unknown as { auditFixture: { customEvents: unknown[]; holdRun: boolean } }).auditFixture;
+    fixture.customEvents.push({ id: 'done', sessionId: 'new-project', runId: 'visible-run', sequence: 1510, type: 'run.completed', payload: {} });
+    fixture.holdRun = false;
+  });
+  await expect(toggle).toContainText('Completado');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(activity.locator('.activity-live')).toHaveCount(0);
+  await toggle.click();
+  await expect(activity.locator('.activity-item[data-state="COMPLETED"]')).toHaveCount(3);
+});
+
+test('bounds long task history and never marks a missing tool result as successful', async ({ page }) => {
+  await openChatProject(page);
+  await page.evaluate(async () => {
+    const { useDesktopStore } = await import('/src/lib/store.ts');
+    const base = { sessionId: 'new-project', runId: 'long-run' };
+    useDesktopStore.setState({ runtimeState: 'COMPLETED', messages: [{ id: 'user', role: 'user', content: 'Revisa el historial', timestamp: '12:00' }], events: [
+      { ...base, id: 'orphan', sequence: 1, type: 'tool.started', toolName: 'fs.read', invocationId: 'orphan', state: 'RUNNING', summary: 'fs.read', target: 'missing.txt' },
+      ...Array.from({ length: 40 }, (_, index) => ({ ...base, id: `task-${index}`, sequence: index + 2, type: 'tool.completed', toolName: 'fs.read', invocationId: `task-${index}`, state: 'COMPLETED' as const, summary: 'fs.read', target: `src/file-${index}.ts` })),
+    ] });
+  });
+  const activity = page.getByRole('region', { name: 'Ejecución de tareas' });
+  const toggle = activity.getByRole('button', { name: 'Mostrar actividad de tareas' });
+  await toggle.click();
+  await expect(activity.locator('.activity-item')).toHaveCount(30);
+  await activity.getByRole('button', { name: 'Ver 11 tareas anteriores' }).click();
+  await expect(activity.locator('.activity-item')).toHaveCount(41);
+  const missing = activity.locator('.activity-item[data-state="RECOVERY_REQUIRED"]');
+  await expect(missing).toContainText('missing.txt');
+  await expect(missing).toContainText('Sin resultado registrado');
+  await expect(missing.locator('.task-spinner')).toHaveCount(0);
+  await expect(activity.locator('.activity-summary')).toContainText('40 de 41 completadas');
+  await page.evaluate(async () => {
+    const { useDesktopStore } = await import('/src/lib/store.ts');
+    const events = useDesktopStore.getState().events.slice(0, 1);
+    useDesktopStore.setState({ events, runtimeState: 'CANCELLED' });
+  });
+  await expect(activity.locator('.activity-item[data-state="CANCELLED"]')).toHaveCount(1);
+  await expect(activity.locator('.activity-item')).not.toContainText('Completado');
+});
+
 test('selects model-specific effort and chats with a project through the composer', async ({ page }) => {
   await page.goto('/');
   await page.locator('.composer-dropdown--model .dropdown-trigger').click();
@@ -727,7 +864,7 @@ test('starts a new conversation in the same project and preserves previous histo
   await page.evaluate(() => { Object.assign((window as unknown as { auditFixture: object }).auditFixture, { holdCreate: true }); });
   await page.getByRole('button', { name: 'Nueva conversación', exact: true }).click();
   await expect(page.locator('.app-body')).toHaveAttribute('inert');
-  await expect(page.getByRole('status')).toHaveText('Creando conversación…');
+  await expect(page.getByRole('status').filter({ hasText: /^Creando conversación…$/ })).toBeVisible();
   await page.evaluate(() => { Object.assign((window as unknown as { auditFixture: object }).auditFixture, { holdCreate: false }); });
   await expect(page.getByText('Persisted final answer', { exact: true })).toHaveCount(0);
   await expect(page.getByText('¿Qué quieres crear?', { exact: true })).toBeVisible();
