@@ -117,6 +117,7 @@ interface DesktopState {
   sidebarOpen: boolean;
   reviewOpen: boolean;
   previewOpen: boolean;
+  previewRequest: { url: string; id: string; projectPath?: string } | null;
   terminalOpen: boolean;
   terminalSessions: TerminalSessionInfo[];
   terminalBuffers: Record<string, string>;
@@ -155,6 +156,7 @@ export const useDesktopStore = create<DesktopState>((set) => ({
   sidebarOpen: false,
   reviewOpen: false,
   previewOpen: false,
+  previewRequest: null,
   terminalOpen: false,
   terminalSessions: [],
   terminalBuffers: {},
@@ -186,6 +188,7 @@ export const useDesktopStore = create<DesktopState>((set) => ({
     if (key === 'openFile' && value !== state.openFile) next.filePreview = null;
     if (key === 'session' && (value as SessionRecord | null)?.id !== state.session?.id) next.filePreview = null;
     if (key === 'session') next.reasoningEffort = (value as SessionRecord | null)?.reasoningEffort;
+    if (key === 'session' && (value as SessionRecord | null)?.projectPath !== state.session?.projectPath) next.previewRequest = null;
     if (key === 'session' && value && !state.session) useComposerDraftStore.getState().adoptDraft((value as SessionRecord).id);
     if (key === 'session' && (value as SessionRecord | null)?.id !== state.session?.id) next.sessionRevision = state.sessionRevision + 1;
     if (key === 'theme') next.themePreference = value as ThemePreference;

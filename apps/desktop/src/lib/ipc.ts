@@ -10,6 +10,8 @@ import type {
   McpServer,
   McpServerStatus,
   McpCatalogEntry,
+  ExtensionCatalogItem,
+  ExtensionInstallResult,
   CodeGraphResult,
   CodeSymbol,
   ExecutionBudget,
@@ -58,10 +60,18 @@ export async function removeMcpServerSecret(serverId: string, secretKey: string)
   await invoke<void>('mcp_server_secret_remove', { serverId, secretKey });
 }
 export async function mcpServerSecretStatus(serverId: string, secretKeys: string[]): Promise<Record<string, boolean>> {
-  if (!isTauri()) return {};
+  if (!isTauri() || !secretKeys.length) return {};
   return invoke<Record<string, boolean>>('mcp_server_secret_status', { serverId, secretKeys });
 }
 export async function searchMcpMarketplace(sessionId: string, query: string): Promise<McpCatalogEntry[]> { return rpc<McpCatalogEntry[]>('marketplace.search', { sessionId, query }); }
+export async function listExtensionCatalog(sessionId?: string): Promise<ExtensionCatalogItem[]> {
+  const value = await rpc<ExtensionCatalogItem[]>('extensions.catalog', sessionId ? { sessionId } : {});
+  if (!Array.isArray(value)) throw new Error('No se pudo cargar el catálogo de extensiones.');
+  return value;
+}
+export async function installExtension(sessionId: string, extensionId: string): Promise<ExtensionInstallResult> {
+  return rpc('extensions.install', { sessionId, extensionId, userApproved: true });
+}
 export async function installMcpMarketplaceEntry(sessionId: string, serverName: string, packageVersion: string): Promise<McpServer> {
   return rpc<McpServer>('marketplace.install', { sessionId, serverName, packageVersion });
 }
@@ -211,6 +221,12 @@ export async function openExternalUrl(value: string): Promise<void> {
   if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Solo se pueden abrir enlaces HTTP o HTTPS.');
   if (isTauri()) { await openUrl(url.href); return; }
   window.open(url.href, '_blank', 'noopener,noreferrer');
+}
+
+export type WebPreviewCheck = { url: string; status: number | null; issue: 'http' | 'embedded' | 'unavailable' | 'timeout' | 'app' | null };
+export async function checkWebPreview(url: string): Promise<WebPreviewCheck> {
+  if (!isTauri()) return { url, status: null, issue: null };
+  return invoke<WebPreviewCheck>('web_preview_check', { url, parentOrigin: window.location.origin });
 }
 
 export async function createSession(config: SessionConfig): Promise<SessionRecord> {

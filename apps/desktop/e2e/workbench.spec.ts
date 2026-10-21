@@ -182,6 +182,9 @@ test('keeps product surfaces visible without inventing unavailable runtime state
   await openTools(page, true);
   await page.getByRole('button', { name: 'Extensiones', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Extensiones' })).toBeVisible();
+  await expect(page.getByRole('tab', { name: /Explorar/ })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByText('El catálogo y las instalaciones están disponibles en OrderCode Desktop.')).toBeVisible();
+  await page.getByRole('tab', { name: /Instrucciones/ }).click();
   await expect(page.getByRole('tab', { name: /Instrucciones/ })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByRole('button', { name: 'Nuevo' })).toBeDisabled();
   await expect(page.getByText('Conecta un workspace para crear, importar y administrar Skills.')).toBeVisible();

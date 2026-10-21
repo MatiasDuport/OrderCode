@@ -109,3 +109,7 @@ summary.activity-row-heading:hover .activity-copy strong { color: var(--blue); }
   .activity-heading-chevron, .activity-detail-chevron { transition: none; }
 }
 :root[data-reduced-motion='true'] .task-spinner, :root[data-reduced-motion='true'] .activity-live-dot, :root[data-reduced-motion='true'] .chat-markdown.is-streaming::after { animation: none; }
+.chat-link { display: inline; }
+.chat-link-preview { display: inline-flex; vertical-align: middle; align-items: center; justify-content: center; width: 23px; height: 23px; margin-inline-start: 3px; padding: 0; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; }
+.chat-link-preview:hover, .chat-link-preview:focus-visible { border-color: var(--border); background: var(--surface-raised); color: var(--blue); }
+.chat-markdown code .chat-link a { white-space: normal; overflow-wrap: anywhere; }

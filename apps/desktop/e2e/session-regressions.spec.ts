@@ -1,12 +1,19 @@
 import { expect, test, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
+import { ExtensionCatalog as RuntimeExtensionCatalog } from '../../harness/src/extensions.js';
+import type { ExtensionCatalogItem } from '../src/lib/contracts';
 
 // Controlled native transport: regression checks, without paid calls or a user account.
 test.beforeEach(async ({ page }) => {
-  await page.addInitScript(() => {
+  // Read the real offline catalogue; only native mutations and connections are controlled.
+  const catalog = await new RuntimeExtensionCatalog(undefined as never, undefined as never, undefined as never, () => { throw new Error('No session expected for catalogue metadata'); }).list();
+  await page.addInitScript((catalogEntries: ExtensionCatalogItem[]) => {
     if (!localStorage.getItem('ordercode.desktop.preferences.v1')) localStorage.setItem('ordercode.desktop.preferences.v1', JSON.stringify({ language: 'es', autoCheckUpdates: false }));
     const fixture = { sessionsCreated: 0, ready: false, slowResolved: false, modelRequests: 0, polls: 0, maxPolls: 0, cursors: [] as number[], runRequests: 0, completeEvents: false, graphFailure: true, folderResult: 'C:/fixtures/new-project' as string | null, requests: [] as Array<{ method: string; params: Record<string, unknown> }> };
     const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    const extensions = fixture as typeof fixture & { catalogEntries: ExtensionCatalogItem[]; extensionInstallRequests: number; holdExtensionInstall?: boolean; extensionResolved?: boolean; extensionNeedsSetup?: boolean; extensionFailure?: boolean };
+    extensions.catalogEntries = catalogEntries;
+    extensions.extensionInstallRequests = 0;
     const rawSession = (id: string) => ({ id, projectPath: `C:/fixtures/${id}`, title: id, modelId: 'local-code', providerId: 'ollama', mode: 'build', permissionProfile: 'guided', state: 'COMPLETED', createdAt: new Date().toISOString(), sequence: 1500 });
     Object.assign(window, { auditFixture: fixture, __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: () => undefined }, __TAURI_INTERNALS__: {
       metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main' } },
@@ -17,6 +24,17 @@ test.beforeEach(async ({ page }) => {
         if (command === 'plugin:window|is_maximized') return false;
         if (command === 'harness_start') { await pause(150); fixture.ready = true; return { ok: true, harnessConnected: true, version: 'fixture', platform: 'windows' }; }
         if (command === 'workspace_open') return args.projectPath;
+        if (command === 'mcp_server_secret_status') return {};
+        if (command === 'web_preview_check') {
+          const state = fixture as typeof fixture & { previewChecks?: Record<string, unknown>; holdPreview?: boolean; previewPending?: boolean; previewResolved?: boolean; lastPreviewChecked?: string };
+          state.lastPreviewChecked = String(args.url);
+          if (String(args.url).includes('slow-preview')) {
+            state.previewPending = true;
+            while (state.holdPreview) await pause(25);
+            state.previewResolved = true;
+          }
+          return state.previewChecks?.[String(args.url)] ?? { url: args.url, status: 200, issue: null };
+        }
         if (command === 'workspace_read_file') {
           Object.assign(fixture, { lastFileRead: args.path });
           const delayedRead = fixture as unknown as { holdGraphicRead?: boolean; graphicReadPending?: boolean; graphicReadResolved?: boolean };
@@ -92,7 +110,34 @@ test.beforeEach(async ({ page }) => {
           { name: 'git.push', description: 'Publica cambios en el remoto.', effects: ['PUBLISH'] },
           { name: 'mcp.docs.search', description: 'Consulta documentación conectada.', effects: ['READ'] },
         ];
-        else if (method === 'skills.list') result = [{ id: 'style-guide', name: 'Guía del proyecto', description: 'Convenciones de interfaz.', enabled: true }];
+        else if (method === 'extensions.catalog') result = extensions.catalogEntries.map((entry) => String(params.sessionId).startsWith('other') ? { ...entry, installed: false, enabled: false, connected: false } : { ...entry });
+        else if (method === 'extensions.install') {
+          extensions.extensionInstallRequests += 1;
+          if (params.userApproved !== true) throw new Error('Explicit installation action required');
+          while (extensions.holdExtensionInstall) await pause(25);
+          extensions.extensionResolved = true;
+          if (extensions.extensionFailure) throw new Error('No se pudo descargar la extensión de prueba.');
+          const entry = extensions.catalogEntries.find((item) => item.id === params.extensionId)!;
+          entry.installed = true; entry.enabled = true; entry.connected = entry.kind === 'mcp' && !extensions.extensionNeedsSetup;
+          if (entry.kind === 'mcp') entry.serverId = `catalog-${entry.id}`;
+          result = { entry: { ...entry }, status: extensions.extensionNeedsSetup ? 'needs-setup' : 'ready', message: extensions.extensionNeedsSetup ? 'Configuración guardada; el servicio no respondió.' : undefined };
+        }
+        else if (method === 'skills.list') result = [{ id: 'style-guide', name: 'Guía del proyecto', description: 'Convenciones de interfaz.', enabled: true, resources: [] }, ...extensions.catalogEntries.filter((entry) => entry.kind === 'skill' && entry.installed).map((entry) => ({ id: entry.skillId, name: entry.name, description: entry.description, enabled: entry.enabled, resources: [] }))];
+        else if (method === 'skills.setEnabled') {
+          const entry = extensions.catalogEntries.find((item) => item.skillId === params.skillId);
+          if (entry) entry.enabled = Boolean(params.enabled);
+          result = extensions.catalogEntries.filter((item) => item.kind === 'skill' && item.installed).map((item) => ({ id: item.skillId, name: item.name, description: item.description, enabled: item.enabled, resources: [] }));
+        }
+        else if (method === 'skills.read') {
+          const entry = extensions.catalogEntries.find((item) => item.skillId === params.skillId)!;
+          result = { id: entry.skillId, sha256: 'a'.repeat(64), content: `---\nname: ordercode-${entry.id.slice(6)}\ndisplay-name: ${entry.name}\ncatalog-id: ${entry.id}\ndescription: ${entry.description}\nlicense: Apache-2.0\nversion: 1.0.0\n---\n\nInstrucciones iniciales.` };
+        }
+        else if (method === 'mcp.list') result = extensions.catalogEntries.filter((entry) => entry.kind === 'mcp' && entry.installed).map((entry) => ({ server: { id: entry.serverId, projectPath: 'C:/fixtures/new-project', name: entry.name, transport: entry.transport, args: [], secretKeys: [], enabled: entry.enabled, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, connected: entry.connected, toolCount: entry.connected ? 1 : 0, tools: entry.connected ? [{ name: 'query_docs', description: 'Consulta documentación', inputSchema: { type: 'object' }, readOnly: true }] : [] }));
+        else if (method === 'mcp.disconnect' || method === 'mcp.delete') {
+          const entry = extensions.catalogEntries.find((item) => item.serverId === params.serverId);
+          if (entry) { entry.connected = false; if (method === 'mcp.delete') { entry.installed = false; entry.enabled = false; } }
+          result = true;
+        }
         else if (method === 'agents.save') {
           const agents = fixture as typeof fixture & { customAgents?: Array<Record<string, unknown>>; failAgentSave?: boolean };
           if (agents.failAgentSave) throw new Error('Controlled agent save failure');
@@ -118,7 +163,7 @@ test.beforeEach(async ({ page }) => {
           ] };
         } else if (method === 'tool.invoke') {
           const input = params.input as Record<string, unknown>;
-          result = { status: 'completed', summary: 'File opened', data: { path: input.path, content: 'export function main() { return helper(); }' } };
+          result = { ok: true, status: 'completed', summary: 'File opened', data: { path: input.path, content: 'export function main() { return helper(); }' } };
         } else if (method === 'session.events') {
           const custom = (fixture as unknown as { customEvents?: unknown[] }).customEvents;
           if (custom) return { result: (custom as Array<{ sequence: number }>).filter((event) => event.sequence > Number(params.afterSequence ?? 0)) };
@@ -131,15 +176,15 @@ test.beforeEach(async ({ page }) => {
         return { result };
       },
     } });
-  });
+  }, catalog);
 });
 
 async function setTestTheme(page: Page, theme: 'light' | 'dark') {
   await page.evaluate(async (value) => { const path = '/src/lib/store.ts'; const { useDesktopStore } = await import(path); useDesktopStore.getState().set('theme', value); }, theme);
 }
 
-async function openChatProject(page: Page) {
-  await page.goto('/');
+async function openChatProject(page: Page, url = '/') {
+  await page.goto(url);
   await page.locator('.composer-dropdown--model .dropdown-trigger').click();
   await page.getByRole('option', { name: /Fast local code/ }).click();
   await page.getByRole('button', { name: 'Proyecto', exact: true }).click();
@@ -147,6 +192,115 @@ async function openChatProject(page: Page) {
   await expect(page.locator('.conversation-header h1')).toHaveText('new-project');
   await page.getByRole('button', { name: 'Cerrar proyecto', exact: true }).click();
 }
+
+async function openExtensions(page: Page) {
+  const tools = page.locator('[aria-controls="navigation-tools"]');
+  if (await tools.getAttribute('aria-expanded') !== 'true') await tools.click();
+  const advanced = page.locator('[aria-controls="navigation-advanced-tools"]');
+  if (await advanced.getAttribute('aria-expanded') !== 'true') await advanced.click();
+  await page.getByRole('button', { name: 'Extensiones', exact: true }).click();
+}
+
+test('extension catalogue is available before choosing a project and filters real Skill and MCP entries', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 950 });
+  await page.goto('/'); await openExtensions(page);
+  await expect(page.getByRole('tab', { name: /Explorar/ })).toHaveAttribute('aria-selected', 'true');
+  const catalog = page.getByRole('region', { name: 'Catálogo de extensiones' });
+  await expect(catalog.getByRole('article')).toHaveCount(11);
+  await expect(catalog.getByRole('button', { name: 'Abrir proyecto' })).toBeEnabled();
+  await expect(catalog.getByRole('button', { name: 'Instalar Diseño web' })).toBeDisabled();
+  await catalog.getByRole('button', { name: 'Skills', exact: true }).click();
+  await expect(catalog.getByRole('article')).toHaveCount(6);
+  await catalog.getByRole('button', { name: 'MCP', exact: true }).click();
+  await expect(catalog.getByRole('article')).toHaveCount(5);
+  await catalog.getByRole('searchbox', { name: 'Buscar Skills y MCP' }).fill('context7');
+  await expect(catalog.getByRole('article', { name: 'Context7' })).toBeVisible();
+  await expect(catalog.getByRole('article')).toHaveCount(1);
+  await catalog.getByRole('searchbox').fill('no-existe');
+  await expect(catalog.getByText('No hay coincidencias')).toBeVisible();
+  await catalog.getByRole('button', { name: 'Limpiar búsqueda' }).click();
+  await expect(catalog.getByRole('article')).toHaveCount(11);
+  await page.getByRole('tab', { name: /Explorar/ }).press('ArrowRight');
+  await expect(page.getByRole('tab', { name: /Instrucciones/ })).toHaveAttribute('aria-selected', 'true');
+  await page.getByRole('tab', { name: /Instrucciones/ }).press('Home');
+  await expect(page.getByRole('tab', { name: /Explorar/ })).toHaveAttribute('aria-selected', 'true');
+  expect(await page.evaluate(() => (window as unknown as { auditFixture: { extensionInstallRequests: number } }).auditFixture.extensionInstallRequests)).toBe(0);
+  if (process.env.TEMP) await page.screenshot({ path: `${process.env.TEMP}/ordercode-extension-catalog-dark.png`, animations: 'disabled' });
+  await setTestTheme(page, 'light');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(catalog.getByRole('button', { name: 'Skills', exact: true })).toBeInViewport();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  if (process.env.TEMP) await page.screenshot({ path: `${process.env.TEMP}/ordercode-extension-catalog-light-mobile.png`, animations: 'disabled' });
+});
+
+test('extension installation is one action, updates managers and reconnects without claiming a failed MCP is ready', async ({ page }) => {
+  await openChatProject(page); await openExtensions(page);
+  const catalog = page.getByRole('region', { name: 'Catálogo de extensiones' });
+  await expect(catalog.getByRole('article')).toHaveCount(11);
+  await catalog.getByRole('button', { name: 'Instalar Diseño web' }).evaluate((button: HTMLButtonElement) => { button.click(); button.click(); });
+  await expect(catalog.getByRole('button', { name: 'Activa Diseño web' })).toBeDisabled();
+  expect(await page.evaluate(() => (window as unknown as { auditFixture: { extensionInstallRequests: number } }).auditFixture.extensionInstallRequests)).toBe(1);
+  await page.getByRole('tab', { name: /Instrucciones/ }).click();
+  await expect(page.getByRole('switch', { name: 'Desactivar Diseño web' })).toBeVisible();
+  await page.getByRole('button', { name: 'Editar Diseño web' }).click();
+  await page.getByRole('region', { name: 'Editor de Skill' }).getByRole('textbox', { name: 'Instrucciones', exact: true }).fill('Mi guía adaptada al proyecto.');
+  await page.getByRole('button', { name: 'Guardar Skill', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Editor de Skill' })).toHaveCount(0);
+  const content = await page.evaluate(() => {
+    const requests = (window as unknown as { auditFixture: { requests: Array<{ method: string; params: { name?: string; input?: { content?: string } } }> } }).auditFixture.requests;
+    return requests.filter((request) => request.method === 'tool.invoke' && request.params.name === 'fs.write').at(-1)?.params.input?.content;
+  });
+  expect(content).toContain('catalog-id: "skill:web-design"');
+  expect(content).toContain('name: "ordercode-web-design"');
+  expect(content).toContain('Mi guía adaptada al proyecto.');
+  await page.getByRole('switch', { name: 'Desactivar Diseño web' }).click();
+  await page.getByRole('tab', { name: /Explorar/ }).click();
+  await expect(catalog.getByRole('button', { name: 'Activar Diseño web' })).toBeEnabled();
+  await catalog.getByRole('button', { name: 'Activar Diseño web' }).click();
+  await expect(catalog.getByRole('button', { name: 'Activa Diseño web' })).toBeDisabled();
+  await page.evaluate(() => Object.assign((window as unknown as { auditFixture: object }).auditFixture, { extensionNeedsSetup: true }));
+  await catalog.getByRole('button', { name: 'Conectar Context7' }).click();
+  await expect(catalog.getByText('Configuración guardada; el servicio no respondió.')).toBeVisible();
+  await expect(catalog.getByRole('button', { name: 'Conectar Context7' })).toBeEnabled();
+  await expect(catalog.getByRole('button', { name: 'Conectado Context7' })).toHaveCount(0);
+  await page.evaluate(() => Object.assign((window as unknown as { auditFixture: object }).auditFixture, { extensionNeedsSetup: false }));
+  await catalog.getByRole('button', { name: 'Conectar Context7' }).click();
+  await expect(catalog.getByRole('button', { name: 'Conectado Context7' })).toBeDisabled();
+  await page.getByRole('tab', { name: /Conexiones/ }).click();
+  await expect(page.locator('.mcp-server-card').getByText('Context7', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Desconectar', exact: true }).click();
+  await page.getByRole('tab', { name: /Explorar/ }).click();
+  await expect(catalog.getByRole('button', { name: 'Conectar Context7' })).toBeEnabled();
+});
+
+test('extension catalogue respects read-only modes and ignores an installation response from a previous project', async ({ page }) => {
+  await openChatProject(page); await openExtensions(page);
+  const catalog = page.getByRole('region', { name: 'Catálogo de extensiones' });
+  await page.evaluate(async () => {
+    const { useDesktopStore } = await import('/src/lib/store.ts'); useDesktopStore.getState().set('mode', 'Plan');
+  });
+  await expect(catalog.getByRole('button', { name: 'Instalar Diseño web' })).toBeDisabled();
+  await expect(catalog.getByText(/Para instalar, usa Auto o Build/)).toBeVisible();
+  await page.evaluate(async () => {
+    const { useDesktopStore } = await import('/src/lib/store.ts'); useDesktopStore.setState({ mode: 'Auto', permission: 'Lectura' });
+  });
+  await expect(catalog.getByRole('button', { name: 'Conectar Context7' })).toBeDisabled();
+  await page.evaluate(async () => {
+    const { useDesktopStore } = await import('/src/lib/store.ts'); useDesktopStore.getState().set('permission', 'Guiado');
+    Object.assign((window as unknown as { auditFixture: object }).auditFixture, { holdExtensionInstall: true });
+  });
+  await catalog.getByRole('button', { name: 'Conectar Context7' }).click();
+  await expect(catalog.getByRole('status')).toContainText('Conectando MCP…');
+  await page.evaluate(async () => {
+    const { useDesktopStore } = await import('/src/lib/store.ts'); const state = useDesktopStore.getState();
+    state.set('session', { ...state.session!, id: 'other-project', projectPath: 'C:/fixtures/other-project' });
+    Object.assign((window as unknown as { auditFixture: object }).auditFixture, { holdExtensionInstall: false });
+  });
+  await expect.poll(() => page.evaluate(() => (window as unknown as { auditFixture: { extensionResolved?: boolean } }).auditFixture.extensionResolved)).toBe(true);
+  await expect(catalog.getByRole('button', { name: 'Conectar Context7' })).toBeEnabled();
+  await expect(catalog.getByRole('button', { name: 'Conectado Context7' })).toHaveCount(0);
+  await expect(catalog.getByText('Lista para usar en tu próxima tarea.')).toHaveCount(0);
+});
 
 test('selects enabled specialists and restores the continuous task indicator after navigating away', async ({ page }) => {
   await openChatProject(page);
@@ -463,6 +617,125 @@ test('keeps the web preview within its project when switching to a different wor
   await expect(address).toHaveValue('');
   await expect(preview.locator('iframe[title="Vista previa web"]')).toHaveCount(0);
   await expect(page.locator('.conversation-header h1')).toHaveText('other-workspace');
+});
+
+test('opens code-formatted chat URLs in the quick web preview and preserves the address', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.route('https://project.example.test/**', (route) => route.fulfill({ contentType: 'text/html', body: '<main>Proyecto visible</main>' }));
+  await openChatProject(page);
+  await page.evaluate(async () => {
+    const { useDesktopStore } = await import('/src/lib/store.ts');
+    useDesktopStore.setState({ messages: [{ id: 'url', role: 'assistant', content: 'Tu proyecto está en `https://project.example.test/`.', timestamp: '12:00' }] });
+  });
+  await page.locator('.chat-markdown code').getByRole('link').click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { auditFixture: { lastOpenedUrl?: string } }).auditFixture.lastOpenedUrl)).toBe('https://project.example.test/');
+  await page.getByRole('button', { name: 'Ver en vista previa: https://project.example.test/' }).click();
+  const preview = page.getByRole('complementary', { name: 'Vista previa' });
+  await expect(preview.getByRole('textbox', { name: 'Dirección web' })).toHaveValue('https://project.example.test/');
+  await expect(preview.frameLocator('iframe[title="Vista previa web"]').getByText('Proyecto visible')).toBeVisible();
+  await expect(preview.getByText('Comprobando enlace…')).toHaveCount(0);
+  await preview.getByRole('button', { name: 'Cerrar vista previa' }).click();
+  await expect(preview.locator('iframe')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Abrir vista previa', exact: true }).click();
+  await expect(preview.getByRole('textbox', { name: 'Dirección web' })).toHaveValue('https://project.example.test/');
+  await expect(preview.frameLocator('iframe[title="Vista previa web"]').getByText('Proyecto visible')).toBeVisible();
+  await preview.getByRole('button', { name: '¿No se ve la página?' }).click();
+  await expect(preview.getByText(/La web puede bloquear la vista integrada/)).toBeVisible();
+});
+
+test('web preview explains HTTP, embedding and local connection failures and ignores stale checks', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openChatProject(page);
+  await page.evaluate(() => Object.assign((window as unknown as { auditFixture: object }).auditFixture, { previewChecks: {
+    'https://missing.example.test/': { url: 'https://missing.example.test/', status: 404, issue: 'http' },
+    'https://blocked.example.test/': { url: 'https://blocked.example.test/', status: 200, issue: 'embedded' },
+    'http://localhost:3999/': { url: 'http://localhost:3999/', status: null, issue: 'unavailable' },
+  } }));
+  await page.getByRole('button', { name: 'Abrir vista previa', exact: true }).click();
+  const preview = page.getByRole('complementary', { name: 'Vista previa' });
+  const address = preview.getByRole('textbox', { name: 'Dirección web' });
+  const go = preview.getByRole('button', { name: 'Abrir', exact: true });
+  for (const [url, title] of [
+    ['https://missing.example.test', 'No hay una página en esta dirección'],
+    ['https://blocked.example.test', 'Esta web no permite la vista integrada'],
+    ['localhost:3999', 'No se pudo abrir la página'],
+  ]) {
+    await address.fill(url!); await go.click();
+    await expect(preview.getByRole('alert').getByText(title!)).toBeVisible();
+    await expect(preview.locator('iframe')).toHaveCount(0);
+  }
+  await expect(preview.getByText(/servidor del proyecto esté iniciado/)).toBeVisible();
+  await preview.getByRole('alert').getByRole('button', { name: 'Abrir en el navegador' }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { auditFixture: { lastOpenedUrl?: string } }).auditFixture.lastOpenedUrl)).toBe('http://localhost:3999/');
+  if (process.env.TEMP) await preview.screenshot({ path: `${process.env.TEMP}/ordercode-web-preview-error.png`, animations: 'disabled' });
+  await setTestTheme(page, 'light');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(address).toBeInViewport();
+  await expect(preview.getByRole('alert').getByRole('button', { name: 'Reintentar' })).toBeInViewport();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  if (process.env.TEMP) await preview.screenshot({ path: `${process.env.TEMP}/ordercode-web-preview-light-mobile.png`, animations: 'disabled' });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await address.fill('javascript:alert(1)'); await go.click();
+  await expect(preview.getByText(/Usa una dirección HTTPS válida/)).toBeVisible();
+  await address.fill('http://127.0.0.1:5174/'); await go.click();
+  await expect(preview.getByText('Esta dirección pertenece a OrderCode')).toBeVisible();
+  await page.evaluate(() => Object.assign((window as unknown as { auditFixture: object }).auditFixture, { holdPreview: true }));
+  await address.fill('https://slow-preview.example.test/'); await go.click();
+  await expect(preview.getByRole('status')).toHaveText('Comprobando enlace…');
+  await page.evaluate(async () => {
+    const { useDesktopStore } = await import('/src/lib/store.ts');
+    const state = useDesktopStore.getState();
+    state.set('session', { ...state.session!, id: 'next-project', projectPath: 'C:/fixtures/next-project' });
+    Object.assign((window as unknown as { auditFixture: object }).auditFixture, { holdPreview: false });
+  });
+  await expect.poll(() => page.evaluate(() => (window as unknown as { auditFixture: { previewResolved?: boolean } }).auditFixture.previewResolved)).toBe(true);
+  await expect(address).toHaveValue('');
+  await expect(preview.locator('iframe')).toHaveCount(0);
+  await expect(preview.getByText('Mira aquí lo que estás creando')).toBeVisible();
+  await page.evaluate(async () => {
+    const { useDesktopStore } = await import('/src/lib/store.ts');
+    useDesktopStore.getState().set('language', 'en');
+  });
+  await preview.getByRole('textbox', { name: 'Web address' }).fill('https://missing.example.test/');
+  await preview.getByRole('button', { name: 'Open', exact: true }).click();
+  await expect(preview.getByText('There is no page at this address')).toBeVisible();
+  await expect(preview.getByRole('button', { name: 'Retry' })).toBeVisible();
+});
+
+test('installed-shell preview loads module apps while CSP prevents navigation back to the native app', async ({ page }) => {
+  const config = JSON.parse(await readFile(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
+  let escapedRequests = 0;
+  await page.route('http://tauri.localhost/**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === '/escape') escapedRequests += 1;
+    const response = await route.fetch({ url: `http://127.0.0.1:5174${url.pathname}${url.search}` });
+    await route.fulfill({ response, headers: { ...response.headers(), ...(url.pathname === '/' ? { 'content-security-policy': config.app.security.csp } : {}) } });
+  });
+  await page.route('https://interactive.example.test/**', (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/app.js') return route.fulfill({ contentType: 'text/javascript', body: `const data = await fetch('/data.json').then(r => r.json()); document.querySelector('h1').textContent = data.title; try { window.parent.document.body.dataset.escaped = 'yes'; } catch { document.querySelector('p').textContent = 'Acceso al chat bloqueado'; } document.querySelector('button').onclick = () => { location.href = 'http://tauri.localhost/escape'; };` });
+    if (path === '/data.json') return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ title: 'Web interactiva lista' }) });
+    return route.fulfill({ contentType: 'text/html', body: '<!doctype html><h1>Cargando app</h1><p></p><button>Volver al origen nativo</button><script type="module" src="/app.js"></script>' });
+  });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openChatProject(page, 'http://tauri.localhost/');
+  await page.getByRole('button', { name: 'Abrir vista previa', exact: true }).click();
+  const preview = page.getByRole('complementary', { name: 'Vista previa' });
+  await preview.getByRole('textbox', { name: 'Dirección web' }).fill('https://interactive.example.test/');
+  await preview.getByRole('button', { name: 'Abrir', exact: true }).click();
+  const frame = preview.frameLocator('iframe[title="Vista previa web"]');
+  await expect(frame.getByText('Web interactiva lista')).toBeVisible();
+  await expect(frame.getByText('Acceso al chat bloqueado')).toBeVisible();
+  await expect(preview.locator('iframe')).toHaveAttribute('sandbox', 'allow-scripts allow-forms allow-same-origin');
+  expect(await page.evaluate(() => document.body.dataset.escaped)).toBeUndefined();
+  if (process.env.TEMP) await preview.screenshot({ path: `${process.env.TEMP}/ordercode-web-preview-interactive.png`, animations: 'disabled' });
+  await frame.getByRole('button', { name: 'Volver al origen nativo' }).click();
+  await page.waitForTimeout(200);
+  expect(escapedRequests).toBe(0);
+  await expect(page.locator('.conversation-header h1')).toHaveText('new-project');
+  await preview.getByRole('tab', { name: /Imágenes y gráficas/ }).click();
+  await preview.getByRole('button', { name: 'graphs/report.html' }).click();
+  await expect(preview.frameLocator('iframe[title="Gráfica graphs/report.html"]').getByText('Gráfica estática')).toBeVisible();
 });
 
 test('pairs parallel tools and resolves permission activity without changing the run state', async ({ page }) => {

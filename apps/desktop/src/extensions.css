@@ -1,0 +1,68 @@
+.extension-catalog { display: flex; min-width: 0; flex-direction: column; gap: 17px; padding: 8px 0 24px; }
+.extension-catalog-toolbar { display: flex; min-width: 0; align-items: center; flex-wrap: wrap; gap: 10px; }
+.extension-catalog-search { display: flex; flex: 1 1 240px; min-width: 150px; align-items: center; gap: 9px; height: 37px; padding: 0 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--muted); }
+.extension-catalog-search:focus-within { border-color: var(--blue); }
+.extension-catalog-search > input { width: 100%; min-width: 0; padding: 0; border: 0; outline: 0; background: transparent; color: var(--frost); font: inherit; font-size: 12px; }
+.extension-catalog-search > input::placeholder { color: var(--muted); }
+.extension-catalog-filters { display: flex; align-items: center; gap: 3px; padding: 3px; border: 1px solid var(--border); border-radius: 8px; }
+.extension-catalog-filters > button { min-width: 45px; height: 29px; padding: 0 10px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; }
+.extension-catalog-filters > button.is-active { background: var(--surface-raised); color: var(--frost); box-shadow: 0 1px 4px #0001; }
+.extension-catalog-refresh { display: grid; flex: 0 0 35px; width: 35px; height: 35px; place-items: center; padding: 0; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; }
+.extension-catalog-caption { display: flex; justify-content: space-between; gap: 12px; align-items: center; color: var(--frost); font-size: 12px; }
+.extension-catalog-caption > small { color: var(--muted); font-size: 10px; }
+.extension-catalog-grid { display: grid; min-width: 0; grid-template-columns: repeat(auto-fill,minmax(min(100%,285px),1fr)); gap: 12px; align-items: stretch; }
+.extension-catalog-card { position: relative; display: flex; min-width: 0; min-height: 242px; flex-direction: column; gap: 0; padding: 20px; border: 1px solid var(--border); border-radius: 11px; background: color-mix(in srgb,var(--surface) 72%,transparent); transition: border-color 160ms ease, background-color 160ms ease; }
+.extension-catalog-card:hover { border-color: var(--border-strong); background: var(--surface); }
+.extension-catalog-card.is-ready { border-color: color-mix(in srgb,var(--ion) 25%,var(--border)); }
+.extension-catalog-card-top { display: flex; align-items: center; gap: 10px; min-height: 33px; margin-bottom: 13px; }
+.extension-catalog-icon { display: grid; flex: 0 0 33px; width: 33px; height: 33px; place-items: center; border: 1px solid color-mix(in srgb,var(--blue) 16%,var(--border)); border-radius: 9px; background: color-mix(in srgb,var(--blue) 7%,transparent); color: var(--blue); }
+.extension-catalog-icon.is-skill { border-color: color-mix(in srgb,var(--violet) 16%,var(--border)); background: color-mix(in srgb,var(--violet) 7%,transparent); color: var(--violet); }
+.extension-catalog-kind { display: flex; min-width: 0; align-items: center; gap: 7px; color: var(--muted); font-size: 10px; }
+.extension-catalog-kind > span { opacity: .5; }
+.extension-catalog-ready { margin-left: auto; color: var(--ion); }
+.extension-catalog-card > h3 { margin: 0 0 7px; color: var(--frost); font-size: 14px; font-weight: 750; line-height: 1.4; }
+.extension-catalog-card > p { min-height: 3.2em; margin: 0 0 12px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.extension-catalog-requirements { display: flex; flex-wrap: wrap; gap: 5px; margin-top: auto; padding-bottom: 15px; }
+.extension-catalog-requirements > span { color: var(--muted); font-size: 10px; }
+.extension-catalog-card-bottom { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding-top: 13px; border-top: 1px solid var(--border); }
+.extension-catalog-card-bottom > details { flex: 1; min-width: 0; font-size: 10px; color: var(--muted); }
+.extension-catalog-card-bottom summary { display: flex; align-items: center; gap: 5px; width: fit-content; min-height: 30px; cursor: pointer; list-style: none; }
+.extension-catalog-card-bottom summary::-webkit-details-marker { display: none; }
+.extension-catalog-card-bottom details[open] summary { color: var(--frost); }
+.extension-catalog-card-bottom details > div { display: flex; flex-direction: column; gap: 8px; padding: 8px 0; line-height: 1.6; overflow-wrap: anywhere; }
+.extension-catalog-card-bottom details a { display: inline-flex; align-items: center; gap: 4px; color: var(--blue); }
+.extension-catalog-card-bottom details ul { display: grid; gap: 6px; margin: 0; padding-left: 14px; list-style: disc; }
+.extension-catalog-card-bottom details small { font-size: 10px; }
+.extension-catalog-install { display: flex; flex: 0 0 auto; align-items: center; justify-content: center; gap: 6px; min-width: 83px; height: 31px; padding: 0 11px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface-raised); color: var(--frost); font: inherit; font-size: 11px; cursor: pointer; }
+.extension-catalog-install:hover:not(:disabled) { border-color: var(--blue); color: var(--blue); }
+.extension-catalog-install:disabled { opacity: .45; cursor: default; }
+.is-ready .extension-catalog-install:disabled { opacity: 1; color: var(--ion); border-color: transparent; background: transparent; }
+.extension-catalog button:focus-visible, .extension-catalog a:focus-visible, .extension-catalog summary:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+.extension-catalog-project { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); }
+.extension-catalog-project strong { color: var(--frost); font-size: 12px; }
+.extension-catalog-project p { margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.extension-catalog-project > button, .extension-catalog-empty > button, .extension-catalog-feedback > button { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; padding: 8px 11px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface-raised); color: var(--frost); font: inherit; font-size: 11px; cursor: pointer; }
+.extension-install-progress, .extension-catalog-feedback { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; margin: 0; padding: 11px 13px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--muted); font-size: 11px; line-height: 1.6; }
+.extension-install-progress strong { color: var(--frost); font-weight: 650; }
+.extension-install-progress small { margin-left: auto; font-size: 10px; }
+.extension-catalog-feedback.is-error { color: var(--danger); border-color: color-mix(in srgb,var(--danger) 30%,var(--border)); }
+.extension-catalog-feedback > span { flex: 1 1 200px; }
+.extension-catalog-feedback > button { padding: 4px 7px; }
+.extension-catalog-empty { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 48px 20px; color: var(--muted); text-align: center; font-size: 12px; }
+.extension-catalog-empty strong { color: var(--frost); }
+.extension-catalog-empty p { margin: 0; }
+.extension-catalog-footnote { max-width: 700px; margin: 3px 0 0; color: var(--muted); font-size: 10px; line-height: 1.7; }
+@media (max-width: 640px) {
+  .extension-surface .extension-tabs { gap: 2px; }
+  .extension-surface .extension-tabs [role=tab] { padding-inline: 8px; gap: 4px; }
+  .extension-surface .extension-tab-copy strong { font-size: 11px; }
+  .extension-catalog-toolbar { gap: 8px; }
+  .extension-catalog-search { flex-basis: 100%; }
+  .extension-catalog-filters { flex: 1; }
+  .extension-catalog-filters > button { flex: 1; }
+  .extension-catalog-project { align-items: flex-start; flex-direction: column; }
+  .extension-catalog-card { min-height: 0; padding: 17px; }
+  .extension-install-progress small { margin-left: 23px; }
+}
+@media (prefers-reduced-motion: reduce) { .extension-catalog-card { transition: none; } }
+:root[data-reduced-motion='true'] .extension-catalog-card { transition: none; }

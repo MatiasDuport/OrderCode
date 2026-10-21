@@ -7,6 +7,7 @@ export * from "./context.js";
 export * from "./agents.js";
 export * from "./code.js";
 export * from "./errors.js";
+export * from "./extensions.js";
 export * from "./logging.js";
 export * from "./orchestrator.js";
 export * from "./permissions.js";

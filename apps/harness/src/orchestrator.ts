@@ -14,6 +14,7 @@ import { ToolRegistry } from "./tools.js";
 import { SkillRegistry } from "./skills.js";
 import { McpRegistry } from "./mcp.js";
 import { McpMarketplace } from "./marketplace.js";
+import { ExtensionCatalog } from "./extensions.js";
 import { ReleaseCenter } from "./release.js";
 import type { ExecutionBudget } from "@ordercode/shared";
 import type { AgentProfile, AgentProfileDraft, AgentRole, HarnessEvent, MessageRecord, PermissionDecision, PermissionProfile, ProviderModel, ProviderRequest, ProviderToolCall, ProviderTurn, RunMode, RunResult, RuntimeState, SessionRecord, ToolDefinition, ToolResult, UsageAnalytics, UsageAnalyticsQuery, UsageCallRecord, UsageMetrics } from "./types.js";
@@ -161,6 +162,7 @@ export class HarnessRuntime {
   readonly skills: SkillRegistry;
   readonly mcp: McpRegistry;
   readonly marketplace: McpMarketplace;
+  readonly extensions: ExtensionCatalog;
   readonly release: ReleaseCenter;
   private readonly logs: FileLogStore;
   private readonly pendingRuns = new Map<string, PendingRunCheckpoint>();
@@ -196,6 +198,7 @@ export class HarnessRuntime {
     }, this.code, this.release);
     this.mcp = new McpRegistry(this.persistence, this.tools);
     this.marketplace = new McpMarketplace(this.persistence, this.mcp);
+    this.extensions = new ExtensionCatalog(this.skills, this.mcp, this.permissions, (id) => this.getSession(id));
     this.recoverInterruptedRuns();
   }
 

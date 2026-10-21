@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { Activity, BookOpen, Bot, Code2, FolderOpen, GitBranch, ArrowLeft, Puzzle, Server } from 'lucide-react';
+import { Activity, BookOpen, Bot, Code2, Compass, FolderOpen, GitBranch, ArrowLeft, Puzzle, Server } from 'lucide-react';
 import { ChatPanel } from './components/ChatPanel';
 import { OFFICIAL_AGENTS } from './lib/agents';
 import { listen } from '@tauri-apps/api/event';
@@ -8,6 +8,7 @@ const AgentStudio = lazy(() => import('./components/AgentStudio').then((module) 
 const McpManager = lazy(() => import('./components/McpManager').then((module) => ({ default: module.McpManager })));
 const McpMarketplace = lazy(() => import('./components/McpMarketplace').then((module) => ({ default: module.McpMarketplace })));
 const SkillsManager = lazy(() => import('./components/SkillsManager').then((module) => ({ default: module.SkillsManager })));
+const ExtensionCatalog = lazy(() => import('./components/ExtensionCatalog').then((module) => ({ default: module.ExtensionCatalog })));
 const VisualizationView = lazy(() => import('./components/VisualizationView').then((module) => ({ default: module.VisualizationView })));
 const CommandPalette = lazy(() => import('./components/Overlays').then((module) => ({ default: module.CommandPalette })));
 const ApprovalDialog = lazy(() => import('./components/Overlays').then((module) => ({ default: module.ApprovalDialog })));
@@ -29,6 +30,7 @@ import { AnimatePresence, motion, MotionConfig, useReducedMotion } from 'motion/
 import './styles.css';
 import './workbench-theme.css';
 import './chat-content.css';
+import './extensions.css';
 
 const agents = OFFICIAL_AGENTS;
 
@@ -349,9 +351,9 @@ function ReleaseSurface() {
 
 function ExtensionsSurface() {
   const session = useDesktopStore((state) => state.session);
-  const [activeTab, setActiveTab] = useState<'skills' | 'mcps'>('skills');
-  const [loadedTabs, setLoadedTabs] = useState({ skills: true, mcps: false });
-  const activateTab = (tab: 'skills' | 'mcps') => {
+  const [activeTab, setActiveTab] = useState<'catalog' | 'skills' | 'mcps'>('catalog');
+  const [loadedTabs, setLoadedTabs] = useState({ catalog: true, skills: false, mcps: false });
+  const activateTab = (tab: 'catalog' | 'skills' | 'mcps') => {
     setActiveTab(tab);
     setLoadedTabs((loaded) => loaded[tab] ? loaded : { ...loaded, [tab]: true });
   };
@@ -366,12 +368,15 @@ function ExtensionsSurface() {
     else return;
     event.preventDefault();
     tabs[nextIndex]?.focus();
-    activateTab(nextIndex === 0 ? 'skills' : 'mcps');
+    activateTab((['catalog', 'skills', 'mcps'] as const)[nextIndex]!);
   };
 
   return <Localized><div className="surface-page extension-surface">
-    <div className="surface-heading"><Puzzle size={18} /><div><h2>Extensiones</h2><p>Enséñale instrucciones a tu asistente o conecta herramientas externas.</p></div></div>
+    <div className="surface-heading"><Puzzle size={18} /><div><h2>Extensiones</h2><p>Instala Skills y conecta herramientas para tu proyecto.</p></div></div>
     <div className="extension-tabs" role="tablist" aria-label="Tipos de extensiones">
+      <button id="extensions-tab-catalog" type="button" role="tab" aria-selected={activeTab === 'catalog'} aria-controls="extensions-panel-catalog" tabIndex={activeTab === 'catalog' ? 0 : -1} className={activeTab === 'catalog' ? 'is-active' : ''} onClick={() => activateTab('catalog')} onKeyDown={handleTabKeyDown}>
+        <span className="extension-tab-icon"><Compass size={15} /></span><span className="extension-tab-copy"><strong>Explorar</strong><small>Skills y MCP listos para añadir</small></span>
+      </button>
       <button id="extensions-tab-skills" type="button" role="tab" aria-selected={activeTab === 'skills'} aria-controls="extensions-panel-skills" tabIndex={activeTab === 'skills' ? 0 : -1} className={activeTab === 'skills' ? 'is-active' : ''} onClick={() => activateTab('skills')} onKeyDown={handleTabKeyDown}>
         <span className="extension-tab-icon"><BookOpen size={15} /></span><span className="extension-tab-copy"><strong>Instrucciones</strong><small>Skills del proyecto</small></span>
       </button>
@@ -379,6 +384,9 @@ function ExtensionsSurface() {
         <span className="extension-tab-icon"><Server size={15} /></span><span className="extension-tab-copy"><strong>Conexiones</strong><small>Herramientas mediante MCP</small></span>
       </button>
     </div>
+    <section id="extensions-panel-catalog" className="extension-tab-panel" role="tabpanel" aria-labelledby="extensions-tab-catalog" tabIndex={0} hidden={activeTab !== 'catalog'}>
+      {loadedTabs.catalog && <Suspense fallback={<div className="surface-empty" role="status">Cargando catálogo…</div>}><ExtensionCatalog /></Suspense>}
+    </section>
     <section id="extensions-panel-skills" className="extension-tab-panel" role="tabpanel" aria-labelledby="extensions-tab-skills" tabIndex={0} hidden={activeTab !== 'skills'}>
       {loadedTabs.skills && <Suspense fallback={<div className="surface-empty" role="status">Cargando Skills…</div>}><SkillsManager sessionId={session?.id} /></Suspense>}
     </section>
@@ -411,6 +419,7 @@ export default function App() {
   const executing = runtimeState === 'RUNNING' || runtimeState === 'PREPARING';
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [previewMounted, setPreviewMounted] = useState(false);
+  useEffect(() => { if (previewOpen) setPreviewMounted(true); }, [previewOpen]);
   const [bootstrapError, setBootstrapError] = useState('');
   const [creatingConversation, setCreatingConversation] = useState(false);
   const creatingConversationRef = useRef(false);

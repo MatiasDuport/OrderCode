@@ -248,6 +248,31 @@ export interface McpCatalogEntry {
   updateAvailable: boolean;
 }
 
+export interface ExtensionCatalogItem {
+  id: string;
+  kind: 'skill' | 'mcp';
+  name: string;
+  description: string;
+  category: string;
+  publisher: string;
+  version: string;
+  sourceUrl: string;
+  license?: string;
+  requirements: string[];
+  installed: boolean;
+  enabled: boolean;
+  connected: boolean;
+  skillId?: string;
+  serverId?: string;
+  transport?: McpTransport;
+}
+
+export interface ExtensionInstallResult {
+  entry: ExtensionCatalogItem;
+  status: 'ready' | 'installed' | 'needs-setup';
+  message?: string;
+}
+
 export interface McpToolSummary {
   name: string;
   description: string;

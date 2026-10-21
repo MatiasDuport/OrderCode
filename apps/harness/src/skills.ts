@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, readdir, readFile, realpath } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, readFile, realpath } from "node:fs/promises";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Persistence } from "./persistence.js";
 
@@ -19,6 +19,7 @@ const MAX_ACTIVE_SKILLS = 12;
 const MAX_ACTIVE_CONTEXT_CHARS = 16_000;
 
 export class SkillRegistry {
+  private readonly mutations = new Map<string, Promise<unknown>>();
   constructor(private readonly persistence: Persistence) {}
 
   async list(projectPath: string): Promise<ProjectSkill[]> {
@@ -32,12 +33,58 @@ export class SkillRegistry {
       if (content === undefined) continue;
       const metadata = parseFrontmatter(content);
       const folderName = relative(root, file).split(/[\\/]/).at(-2) ?? "Skill";
-      skills.push({ id, name: metadata.name || folderName, description: metadata.description || "Sin descripción.", enabled: enabled.has(id), resources: await this.findResources(root, dirname(file)) });
+      skills.push({ id, name: metadata.displayName || metadata.name || folderName, description: metadata.description || "Sin descripción.", enabled: enabled.has(id), resources: await this.findResources(root, dirname(file)) });
     }
     return skills.sort((left, right) => left.name.localeCompare(right.name));
   }
 
   async setEnabled(projectPath: string, skillId: string, enabled: boolean): Promise<ProjectSkill[]> {
+    const root = await realpath(resolve(projectPath));
+    return this.serialize(root, () => this.setEnabledUnlocked(root, skillId, enabled));
+  }
+
+  /** Installs a bundled, self-contained skill without replacing existing user content. */
+  async installBundled(projectPath: string, folder: string, content: string, authorize?: () => void): Promise<ProjectSkill[]> {
+    if (!/^ordercode-[a-z0-9-]+$/.test(folder)) throw new Error("Invalid bundled skill directory.");
+    const root = await realpath(resolve(projectPath));
+    return this.serialize(root, async () => {
+      const id = `.agents/skills/${folder}/SKILL.md`;
+      const current = await this.list(root);
+      if (!current.some((skill) => skill.id === id && skill.enabled) && current.filter((skill) => skill.enabled).length >= MAX_ACTIVE_SKILLS) throw new Error(`At most ${MAX_ACTIVE_SKILLS} project skills can be active in one workspace.`);
+      let cursor = root;
+      for (const part of [".agents", "skills", folder]) {
+        cursor = join(cursor, part);
+        authorize?.();
+        try { await mkdir(cursor); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+        const info = await lstat(cursor);
+        if (!info.isDirectory() || info.isSymbolicLink() || !await safeProjectPath(root, cursor)) throw new Error("Skill installation requires regular directories inside the project; symbolic links are rejected.");
+      }
+      const file = join(cursor, "SKILL.md");
+      if (!await safeProjectPath(root, cursor)) throw new Error("Skill path escaped the project.");
+      try {
+        authorize?.();
+        const handle = await open(file, "wx", 0o600);
+        try { await handle.writeFile(content, "utf8"); } finally { await handle.close(); }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        const existingContent = await this.readSkillFile(root, id);
+        const bundled = parseFrontmatter(content);
+        const existing = existingContent === undefined ? undefined : parseFrontmatter(existingContent);
+        const sameCatalogSkill = bundled.catalogId && existing?.catalogId === bundled.catalogId && existing.name === bundled.name;
+        if (existingContent !== content && !sameCatalogSkill) throw new Error("A different skill already exists at this location. Existing files were preserved. Si es una Skill personalizada, actívala en Instrucciones.");
+      }
+      return this.setEnabledUnlocked(root, id, true, authorize);
+    });
+  }
+
+  private async serialize<T>(root: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.mutations.get(root) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(operation);
+    this.mutations.set(root, next);
+    try { return await next; } finally { if (this.mutations.get(root) === next) this.mutations.delete(root); }
+  }
+
+  private async setEnabledUnlocked(projectPath: string, skillId: string, enabled: boolean, authorize?: () => void): Promise<ProjectSkill[]> {
     if (typeof enabled !== "boolean" || typeof skillId !== "string" || !skillId || skillId.includes("\0") || skillId.includes("..") || skillId.startsWith("/") || /^[a-z]:/i.test(skillId)) {
       throw new Error("Skill path or enabled state is invalid.");
     }
@@ -51,6 +98,7 @@ export class SkillRegistry {
       if (!next.has(relativeId) && next.size >= MAX_ACTIVE_SKILLS) throw new Error(`At most ${MAX_ACTIVE_SKILLS} project skills can be active in one workspace.`);
       next.add(relativeId);
     } else next.delete(relativeId);
+    authorize?.();
     this.persistence.setEnabledSkills(root, [...next]);
     return this.list(root);
   }
@@ -70,7 +118,8 @@ export class SkillRegistry {
     const active = (await Promise.all(enabled.map(async (id) => {
       const content = await this.readSkillFile(root, id);
       if (content === undefined) return undefined;
-      const name = parseFrontmatter(content).name || relative(root, resolve(root, id)).split(/[\\/]/).at(-2) || "Skill";
+      const metadata = parseFrontmatter(content);
+      const name = metadata.displayName || metadata.name || relative(root, resolve(root, id)).split(/[\\/]/).at(-2) || "Skill";
       const resources = await this.findResources(root, dirname(resolve(root, id)));
       return { id, name, content, resources };
     }))).filter((skill): skill is NonNullable<typeof skill> => Boolean(skill));
@@ -149,17 +198,21 @@ async function safeProjectPath(root: string, target: string): Promise<boolean> {
   return true;
 }
 
-function parseFrontmatter(content: string): { name?: string; description?: string } {
+interface SkillMetadata { name?: string; description?: string; displayName?: string; catalogId?: string }
+
+function parseFrontmatter(content: string): SkillMetadata {
   const match = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
   if (!match) return {};
-  const result: { name?: string; description?: string } = {};
+  const result: SkillMetadata = {};
   for (const line of (match[1] ?? "").split(/\r?\n/)) {
-    const item = line.match(/^(name|description):\s*(.*?)\s*$/);
+    const item = line.match(/^(name|description|display-name|catalog-id):\s*(.*?)\s*$/);
     if (!item) continue;
     const value = (item[2] ?? "").replace(/^(?:"([\s\S]*)"|'([\s\S]*)')$/, (_all, doubleQuoted: string | undefined, singleQuoted: string | undefined) => doubleQuoted ?? singleQuoted ?? "").trim();
     if (!value) continue;
     if (item[1] === "name") result.name = value.slice(0, 120);
-    else result.description = value.slice(0, 500);
+    else if (item[1] === "display-name") result.displayName = value.slice(0, 120);
+    else if (item[1] === "catalog-id" && /^skill:[a-z0-9-]+$/.test(value)) result.catalogId = value;
+    else if (item[1] === "description") result.description = value.slice(0, 500);
   }
   return result;
 }

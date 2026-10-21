@@ -1,7 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import { resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
 import { HarnessError } from "./errors.js";
 import type { Persistence } from "./persistence.js";
 import type { McpServer, McpServerDraft, McpServerStatus, McpToolSummary, ToolEffect, ToolDefinition } from "./types.js";
@@ -77,8 +80,45 @@ function safeChildEnvironment(secrets: Record<string, string>): Record<string, s
     : ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL"];
   const environment: Record<string, string> = {};
   for (const key of allowed) if (process.env[key]) environment[key] = process.env[key]!;
+  const inheritedPath = environment.PATH ?? environment.Path ?? "";
+  delete environment.Path;
+  environment.PATH = `${dirname(process.execPath)}${delimiter}${inheritedPath}`;
   for (const [key, value] of Object.entries(secrets)) if (SECRET_KEY.test(key)) environment[key] = value;
   return environment;
+}
+
+export function resolveMcpExecutable(command: string, args: string[]): { command: string; args: string[] } {
+  if (!/^npx(?:\.cmd|\.exe)?$/i.test(command)) return { command, args: [...args] };
+  const cli = fileURLToPath(new URL("./npm/bin/npx-cli.js", import.meta.url));
+  if (!existsSync(cli)) throw new HarnessError("MCP_NPM_UNAVAILABLE", "El instalador npm interno no está disponible. Reinstala o vuelve a compilar OrderCode.");
+  return { command: process.execPath, args: [cli, ...args] };
+}
+
+export function resolveMcpLaunch(server: Pick<McpServer, "command" | "args" | "projectPath">, credentials: Record<string, string> = {}): { command: string; args: string[]; cwd: string; env: Record<string, string> } {
+  const executable = resolveMcpExecutable(server.command!, server.args);
+  const environment = safeChildEnvironment(credentials);
+  let workingDirectory = server.projectPath;
+  if (executable.command === process.execPath && executable.args[0]?.endsWith("npx-cli.js")) {
+    environment.NPM_CONFIG_REGISTRY = "https://registry.npmjs.org";
+    environment.NPM_CONFIG_CACHE = join(homedir(), ".ordercode", "npm-cache");
+    environment.NPM_CONFIG_LOGLEVEL = "error";
+    environment.NPM_CONFIG_UPDATE_NOTIFIER = "false";
+    environment.NPM_CONFIG_AUDIT = "false";
+    environment.NPM_CONFIG_FUND = "false";
+    environment.NPM_CONFIG_LOGS_MAX = "0";
+    if (server.args.includes("@playwright/mcp@0.0.83")) {
+      // Distinct absent config files bypass personal credentials. npm rejects loading
+      // the same path twice, including NUL or /dev/null, for user and global config.
+      const npmRoot = resolve(dirname(executable.args[0]!), "..");
+      environment.NPM_CONFIG_USERCONFIG = join(npmRoot, "ordercode-disabled-user.npmrc");
+      environment.NPM_CONFIG_GLOBALCONFIG = join(npmRoot, "ordercode-disabled-global.npmrc");
+      environment.NPM_CONFIG_IGNORE_SCRIPTS = "true";
+      workingDirectory = npmRoot;
+      // Browser artifacts belong to the workspace, never to the packaged npm directory.
+      if (!server.args.some((argument) => argument === "--output-dir" || argument.startsWith("--output-dir="))) executable.args.push("--output-dir", join(server.projectPath, ".playwright-mcp"));
+    }
+  }
+  return { ...executable, cwd: workingDirectory, env: environment };
 }
 
 export class McpRegistry {
@@ -98,7 +138,7 @@ export class McpRegistry {
 
   get(id: string): McpServer | undefined { return this.persistence.getMcpServer(id); }
 
-  async save(draft: McpServerDraft): Promise<McpServer> {
+  async save(draft: McpServerDraft, authorize?: () => void): Promise<McpServer> {
     if (!draft || typeof draft !== "object") throw new HarnessError("INVALID_MCP_SERVER", "MCP server configuration is required.");
     if (!validText(draft.projectPath, 4096)) throw new HarnessError("INVALID_MCP_SERVER", "Choose a workspace for this MCP server.");
     const projectPath = resolve(draft.projectPath);
@@ -127,6 +167,7 @@ export class McpRegistry {
       updatedAt: new Date().toISOString(),
     };
     await this.disconnect(server.id);
+    authorize?.();
     this.persistence.saveMcpServer(server);
     this.errors.delete(server.id);
     return server;
@@ -147,7 +188,7 @@ export class McpRegistry {
     return true;
   }
 
-  async connect(id: string): Promise<McpServerStatus> {
+  async connect(id: string, authorize?: () => void): Promise<McpServerStatus> {
     const server = this.persistence.getMcpServer(id);
     if (!server) throw new HarnessError("MCP_SERVER_NOT_FOUND", "MCP server not found.");
     if (!server.enabled) throw new HarnessError("MCP_SERVER_DISABLED", "Enable this MCP server before connecting.");
@@ -155,15 +196,20 @@ export class McpRegistry {
     const credentials = this.credentials.get(id) ?? {};
     const client = new Client({ name: "ordercode", version: "0.1.0" });
     let transport: StdioClientTransport | StreamableHTTPClientTransport;
+    let startupDiagnostic = "";
     if (server.transport === "stdio") {
-      transport = new StdioClientTransport({ command: server.command!, args: server.args, cwd: server.projectPath, env: safeChildEnvironment(credentials), stderr: "ignore", maxBufferSize: 5_000_000 });
+      const curatedBrowser = server.args.includes("@playwright/mcp@0.0.83") && /^npx(?:\.cmd|\.exe)?$/i.test(server.command!);
+      transport = new StdioClientTransport({ ...resolveMcpLaunch(server, credentials), stderr: curatedBrowser ? "pipe" : "ignore", maxBufferSize: 5_000_000 });
+      if (curatedBrowser) transport.stderr?.on("data", (chunk: Buffer | string) => { startupDiagnostic = `${startupDiagnostic}${String(chunk)}`.slice(-4000); });
     } else {
       const authorization = credentials.__AUTHORIZATION__;
       transport = new StreamableHTTPClientTransport(new URL(server.endpoint!), { requestInit: { headers: authorization ? { Authorization: `Bearer ${authorization}` } : {} }, onInsufficientScope: "throw", redirectPolicy: "same-origin" });
     }
-    const timer = setTimeout(() => client.close().catch(() => undefined), CONNECT_TIMEOUT_MS);
+    const timeout = server.transport === "stdio" && /^npx(?:\.cmd|\.exe)?$/i.test(server.command!) ? 120_000 : CONNECT_TIMEOUT_MS;
+    const timer = setTimeout(() => client.close().catch(() => undefined), timeout);
     try {
-      await client.connect(transport);
+      authorize?.();
+      await client.connect(transport, { timeout });
       const response = await client.listTools();
       if (response.tools.length > MAX_TOOLS) throw new HarnessError("MCP_TOOL_LIMIT", `This MCP server exposes more than ${MAX_TOOLS} tools.`);
       const tools: McpToolSummary[] = response.tools.map((tool) => ({ name: tool.name.slice(0, 128), description: String(tool.description ?? "External MCP tool.").slice(0, 1000), inputSchema: safeSchema(tool.inputSchema), readOnly: tool.annotations?.readOnlyHint === true }));
@@ -188,7 +234,7 @@ export class McpRegistry {
       return this.list(server.projectPath).find((item) => item.server.id === id)!;
     } catch (error) {
       this.tools.unregisterMcpTools(server.id);
-      const message = sanitizeError(error, Object.values(credentials));
+      const message = sanitizeError(startupDiagnostic.trim() ? `${error instanceof Error ? error.message : String(error)}: ${startupDiagnostic.trim()}` : error, Object.values(credentials));
       this.errors.set(id, message);
       await client.close().catch(() => undefined);
       throw new HarnessError("MCP_CONNECTION_FAILED", message, { serverId: id });

@@ -92,6 +92,14 @@ export class JsonRpcServer {
         return this.runtime.resolvePermission(object.requestId, object.decision as Parameters<HarnessRuntime["resolvePermission"]>[1]);
       }
       case "permission.pending": return this.runtime.permissions.getPending(typeof object.sessionId === "string" ? object.sessionId : undefined);
+      case "extensions.catalog": {
+        if (object.sessionId !== undefined && (typeof object.sessionId !== "string" || !object.sessionId)) throw new Error("A valid session id is required.");
+        return this.runtime.extensions.list(object.sessionId as string | undefined);
+      }
+      case "extensions.install": {
+        if (typeof object.sessionId !== "string" || !object.sessionId || typeof object.extensionId !== "string") throw new Error("A session and catalog extension id are required.");
+        return this.runtime.extensions.install(object.sessionId, object.extensionId, object.userApproved);
+      }
       case "tools.list": {
         const session = typeof object.sessionId === "string" ? this.runtime.getSession(object.sessionId) : undefined;
         return this.runtime.tools.list(session?.projectPath);

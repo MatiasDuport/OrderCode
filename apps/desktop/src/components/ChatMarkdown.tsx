@@ -1,10 +1,11 @@
 import { Children, isValidElement, memo, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import Markdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Check, Copy, ExternalLink } from 'lucide-react';
+import { Check, Copy, ExternalLink, PanelRightOpen } from 'lucide-react';
 import { openExternalUrl } from '../lib/ipc';
 import { Localized, translate } from '../lib/localization';
 import { useDesktopStore } from '../lib/store';
+import { normalizeVisualizerUrl, openWebPreview } from '../lib/webPreview';
 
 const plugins = [remarkGfm];
 
@@ -18,6 +19,11 @@ function safeLink(value: string): string {
 
 function codeText(children: ReactNode): string {
   return Children.toArray(children).map((child) => isValidElement<{ children?: ReactNode }>(child) ? codeText(child.props.children) : String(child ?? '')).join('');
+}
+
+function ChatLink({ href, children, onError }: { href: string; children: ReactNode; onError: (error: unknown) => void }) {
+  const language = useDesktopStore((state) => state.language);
+  return <span className="chat-link"><a href={href} target="_blank" rel="noopener noreferrer" onClick={(event) => { event.preventDefault(); void openExternalUrl(href).catch(onError); }}>{children}<ExternalLink size={11} aria-hidden="true" /></a>{normalizeVisualizerUrl(href) && <button type="button" className="chat-link-preview" aria-label={`${translate('Ver en vista previa', language)}: ${href}`} title={translate('Ver en vista previa', language)} onClick={() => openWebPreview(href)}><PanelRightOpen size={13} /></button>}</span>;
 }
 
 function CodeBlock({ children, onError }: { children?: ReactNode; onError: (error: unknown) => void }) {
@@ -41,7 +47,8 @@ export const ChatMarkdown = memo(function ChatMarkdown({ content, streaming = fa
   const language = useDesktopStore((state) => state.language);
   const tableLabel = translate('Tabla de la respuesta', language);
   const components = useMemo<Components>(() => ({
-      a: ({ href, children }) => !href ? <span>{children}</span> : href.startsWith('#') ? <a href={href}>{children}</a> : <a href={href} target="_blank" rel="noopener noreferrer" onClick={(event) => { event.preventDefault(); void openExternalUrl(href).catch(onLinkError); }}>{children}<ExternalLink size={11} aria-hidden="true" /></a>,
+      a: ({ href, children }) => !href ? <span>{children}</span> : href.startsWith('#') ? <a href={href}>{children}</a> : <ChatLink href={href} onError={onLinkError}>{children}</ChatLink>,
+      code: ({ children, className }) => { const text = codeText(children); const url = !className && /^https?:\/\/\S+$/.test(text) ? safeLink(text) : ''; return <code className={className}>{url ? <ChatLink href={url} onError={onLinkError}>{children}</ChatLink> : children}</code>; },
       img: ({ src, alt }) => src ? <a href={src} target="_blank" rel="noopener noreferrer" onClick={(event) => { event.preventDefault(); void openExternalUrl(src).catch(onLinkError); }}>{alt || 'Imagen'}<ExternalLink size={11} aria-hidden="true" /></a> : <span>{alt}</span>,
       pre: ({ children }) => <CodeBlock onError={onLinkError}>{children}</CodeBlock>,
       table: ({ children, ...props }) => { const { node: _node, ...attributes } = props; return <div className="markdown-table-scroll" tabIndex={0} role="region" aria-label={tableLabel}><table {...attributes}>{children}</table></div>; },

@@ -2,6 +2,8 @@
 
 mod chatgpt;
 mod xai;
+mod preview;
+use preview::web_preview_check;
 
 use serde::Serialize;
 use base64::Engine as _;
@@ -1051,7 +1053,7 @@ fn harness_request_timeout(method: &str) -> Option<Duration> {
     Some(Duration::from_secs(match method {
         "shutdown" => 5,
         "health" => 10,
-        "agents.test" | "code.index" | "code.graph" | "provider.models" | "mcp.connect" | "marketplace.install" => 900,
+        "agents.test" | "code.index" | "code.graph" | "provider.models" | "mcp.connect" | "marketplace.install" | "extensions.install" => 900,
         _ => 60,
     }))
 }
@@ -1079,7 +1081,7 @@ pub fn run() {
                 });
             }
         })
-        .invoke_handler(tauri::generate_handler![health, harness_start, harness_request, harness_stop, updater_check, updater_download, updater_install, workspace_open, activate_session, terminal_open, terminal_write, terminal_resize, terminal_close, workspace_tree, workspace_read_file, git_status, provider_keys_status, provider_set_key, provider_remove_key, chatgpt_account_status, chatgpt_connect, chatgpt_disconnect, xai_account_status, xai_connect, xai_cancel_login, xai_disconnect, mcp_server_secret_set, mcp_server_secret_remove, mcp_server_secret_status, release_hook_set, release_hook_remove, release_hook_status])
+        .invoke_handler(tauri::generate_handler![health, harness_start, harness_request, harness_stop, updater_check, updater_download, updater_install, workspace_open, activate_session, terminal_open, terminal_write, terminal_resize, terminal_close, workspace_tree, workspace_read_file, web_preview_check, git_status, provider_keys_status, provider_set_key, provider_remove_key, chatgpt_account_status, chatgpt_connect, chatgpt_disconnect, xai_account_status, xai_connect, xai_cancel_login, xai_disconnect, mcp_server_secret_set, mcp_server_secret_remove, mcp_server_secret_status, release_hook_set, release_hook_remove, release_hook_status])
         .setup(|app| { if let Some(window) = app.get_webview_window("main") { let _ = window.set_title("OrderCode"); } Ok(()) })
         .run(tauri::generate_context!())
         .expect("error while running OrderCode");
@@ -1152,6 +1154,7 @@ mod tests {
         assert_eq!(harness_request_timeout("permission.resolve"), None);
         assert_eq!(harness_request_timeout("tool.invoke"), None);
         assert_eq!(harness_request_timeout("provider.models"), Some(Duration::from_secs(900)));
+        assert_eq!(harness_request_timeout("extensions.install"), Some(Duration::from_secs(900)));
     }
 
     #[test]

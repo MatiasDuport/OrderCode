@@ -37,9 +37,10 @@ export function McpManager() {
     setError('');
     try {
       const next = await listMcpServers(session.id);
+      if (useDesktopStore.getState().session?.id !== session.id) return;
       setServers(next);
       const statuses = await Promise.all(next.map(async ({ server }) => [server.id, await mcpServerSecretStatus(server.id, server.secretKeys)] as const));
-      setSecretStatus(Object.fromEntries(statuses.map(([id, state]) => [id, Object.values(state).every(Boolean)])));
+      if (useDesktopStore.getState().session?.id === session.id) setSecretStatus(Object.fromEntries(statuses.map(([id, state]) => [id, Object.values(state).every(Boolean)])));
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
   };
 
@@ -90,6 +91,7 @@ export function McpManager() {
       for (const [key, value] of Object.entries(secrets)) await setMcpServerSecret(server.id, key, value);
       await configureMcpCredentials(server.id, secrets);
       await refresh();
+      window.dispatchEvent(new Event('ordercode:catalog-changed'));
       setDraft(null);
       setNotice(`“${server.name}” quedó guardado. Sus credenciales se almacenan de forma segura en este equipo.`);
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
@@ -112,6 +114,7 @@ export function McpManager() {
         if (draft?.id === id) setDraft(null);
       }
       await refresh();
+      window.dispatchEvent(new Event('ordercode:catalog-changed'));
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setBusy(''); }
   };

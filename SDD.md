@@ -157,6 +157,10 @@ La autorización del modelo no sustituye controles nativos. Identificar operacio
 
 **Skills Manager:** compatibilidad con `SKILL.md`, recursos asociados, instalación, creación, edición, activación, importación y carga progresiva.
 
+El catálogo inicial se incluye en la aplicación y se puede explorar sin proyecto ni solicitudes externas. Ofrece seis Skills propias y autocontenidas (diseño web, depuración, revisión, pruebas, documentación y rendimiento), cuatro MCP de documentación remotos (DeepWiki, Microsoft Learn, Context7 y Cloudflare Docs) y Playwright MCP con paquete npm fijado. Las Skills se instalan y activan en el proyecto mediante una acción explícita, sin sobrescribir contenido existente; las ediciones conservan su identidad de catálogo y pueden reactivarse. Los MCP solo se muestran conectados tras negociar el protocolo y descubrir herramientas. Un fallo conserva la configuración y muestra un estado recuperable. El servicio remoto controla su versión y sus cuotas; Context7 ofrece acceso básico sujeto a límites.
+
+OrderCode empaqueta npm junto al runtime incluido para ejecutar paquetes MCP locales sin exigir Node o npx al usuario final. La primera conexión descarga el paquete; la disponibilidad del navegador de Playwright se comprueba al utilizar sus herramientas. En Windows se propone Edge con perfil aislado. Las instalaciones manuales no se exponen como herramientas del modelo: el gesto del usuario autoriza únicamente la acción solicitada, pasa por Permission Engine y respeta los rechazos del modo Plan, Lectura y las reglas del proyecto. No concede permisos generales para llamadas posteriores.
+
 **Marketplace:** fuentes autorizadas, búsqueda, instalación y actualización; mostrar origen, publicador, versión, permisos y riesgos. No ejecutar instaladores arbitrarios silenciosamente.
 
 Todas las herramientas externas pasarán por el Permission Engine.
