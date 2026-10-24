@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "OrderCode",
-  "version": "0.3.20",
+  "version": "0.3.21",
   "identifier": "com.ordercode.desktop",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -28,19 +28,28 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["msi"],
+    "targets": "all",
     "createUpdaterArtifacts": true,
     "resources": {
       "../../harness/dist/": "harness/",
       "binaries/": "binaries/"
     },
-    "icon": ["icons/icon.ico", "icons/32x32.png", "icons/128x128.png", "icons/icon.icns"]
+    "icon": [
+      "icons/icon.ico",
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.icns"
+    ]
   },
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZBRTk0RjczQjE0MjU3QzEKUldUQlYwS3hjMC9wK245Ky92THE5bFdjS2o5SzhjbjJEQTRBa3Q1d05lcnZ5dk5YYURaOTZJQkUK",
-      "endpoints": ["https://github.com/MatiasDuport/OrderCode/releases/latest/download/latest.json"],
-      "windows": { "installMode": "passive" }
+      "endpoints": [
+        "https://github.com/MatiasDuport/OrderCode/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }
