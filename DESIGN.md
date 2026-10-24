@@ -3,7 +3,7 @@
 
 > **Versión:** 1.3  
 > **Estado:** Contrato de diseño para Plan y Build  
-> **Plataformas:** Windows y macOS; Linux posteriormente  
+> **Plataformas:** Windows, macOS y Linux  
 > **Principio:** Máxima capacidad, mínima interfaz.
 
 ## 0. Propósito y alcance
