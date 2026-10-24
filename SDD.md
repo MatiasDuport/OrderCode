@@ -1,7 +1,7 @@
 # ORDERCODE — SDD 2.2
 
 **Producto:** Harness autónomo de programación mediante IA.  
-**Plataformas:** Windows 11 y macOS; Linux posteriormente.  
+**Plataformas:** Windows 11, macOS Apple Silicon/Intel y Linux x64/ARM64.  
 **Estado:** Especificación técnica, pendiente de implementación.  
 **Principio:** Máxima inteligencia, mínimo consumo, orden absoluto.
 
