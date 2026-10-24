@@ -12,7 +12,7 @@ function UpdateStatus() {
     if (action === 'install') void installUpdate().catch(() => undefined);
   };
   return <section className="settings-card updater-status-card" aria-live="polite">
-    <div className="settings-card-heading"><strong>Estado de actualizaciones</strong><span>WINDOWS · 64 BITS</span></div>
+    <div className="settings-card-heading"><strong>Estado de actualizaciones</strong><span>WINDOWS · macOS · LINUX</span></div>
     <p>{update.phase === 'checking' ? 'Buscando una versión nueva…' : update.phase === 'available' ? `OrderCode ${update.version} está disponible.` : update.phase === 'downloading' ? 'Descargando y verificando la firma…' : update.phase === 'downloaded' ? `OrderCode ${update.version} se descargó y verificó. Puedes instalarlo cuando termines tu trabajo.` : update.phase === 'installing' ? 'Cerrando procesos e iniciando el instalador…' : update.phase === 'up-to-date' ? 'Tienes la versión más reciente publicada.' : update.error ?? 'Las actualizaciones públicas están disponibles para todos y no requieren una cuenta de GitHub.'}</p>
     {update.phase === 'available' && update.notes && <div className="updater-release-notes">{update.notes.slice(0, 4000)}</div>}
     {update.phase === 'downloading' && <div className="updater-progress" role="progressbar" aria-label="Progreso de descarga" aria-valuemin={0} aria-valuemax={update.contentLength ?? undefined} aria-valuenow={update.contentLength ? update.downloadedBytes : undefined}><span style={{ width: update.contentLength ? `${Math.min(100, update.downloadedBytes / update.contentLength * 100)}%` : '30%' }} /></div>}
