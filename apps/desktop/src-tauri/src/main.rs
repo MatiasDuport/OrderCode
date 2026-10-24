@@ -305,9 +305,6 @@ async fn stop_harness_unlocked(state: &BrokerState) -> Result<(), String> {
 #[tauri::command]
 async fn updater_check(app: tauri::AppHandle, state: State<'_, UpdaterState>) -> Result<Option<UpdateMetadata>, String> {
     let _operation = state.operation.lock().await;
-    if !cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        return Err("Las actualizaciones están disponibles para OrderCode en Windows de 64 bits.".into());
-    }
     let updater = app.updater_builder()
         .timeout(Duration::from_secs(25))
         .build().map_err(|error| format!("No se pudo preparar el actualizador: {error}"))?;
@@ -370,9 +367,6 @@ fn begin_harness_request(state: &BrokerState) -> Result<ActiveHarnessRequest<'_>
 #[tauri::command]
 async fn updater_install(updates: State<'_, UpdaterState>, broker: State<'_, BrokerState>, editor_dirty: bool) -> Result<(), String> {
     let _operation = updates.operation.lock().await;
-    if !cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        return Err("La instalación automática está disponible para OrderCode en Windows de 64 bits.".into());
-    }
     if editor_dirty { return Err("Guarda o descarta los cambios pendientes del editor antes de actualizar.".into()); }
     if broker.update_installing.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
         return Err("La instalación de una actualización ya está en curso.".into());
@@ -1062,7 +1056,27 @@ fn rpc_id_key(value: &serde_json::Value) -> String {
     match value { serde_json::Value::String(value) => format!("s:{value}"), serde_json::Value::Number(value) => format!("n:{value}"), serde_json::Value::Null => "null".into(), _ => "invalid".into() }
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn extend_gui_path() {
+    let mut paths: Vec<PathBuf> = env::split_paths(&env::var_os("PATH").unwrap_or_default()).collect();
+    let mut additional = vec![PathBuf::from("/usr/local/bin")];
+    if cfg!(target_os = "macos") {
+        additional.push(PathBuf::from("/opt/homebrew/bin"));
+        additional.push(PathBuf::from("/opt/local/bin"));
+    }
+    if let Some(home) = env::var_os("HOME") {
+        additional.push(PathBuf::from(&home).join(".local/bin"));
+        additional.push(PathBuf::from(home).join(".cargo/bin"));
+    }
+    for path in additional {
+        if path.is_dir() && !paths.contains(&path) { paths.push(path); }
+    }
+    if let Ok(combined) = env::join_paths(paths) { env::set_var("PATH", combined); }
+}
+
 pub fn run() {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    extend_gui_path();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
