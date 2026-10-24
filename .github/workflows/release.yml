@@ -2,65 +2,110 @@ name: OrderCode desktop release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
+    tags: ['v*']
+    paths: ['.github/workflows/release.yml']
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: ordercode-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  windows-x64:
-    runs-on: windows-latest
+  desktop:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - { name: windows-x64, runner: windows-latest, bundles: msi }
+          - { name: macos-arm64, runner: macos-15, bundles: dmg }
+          - { name: macos-x64, runner: macos-15-intel, bundles: dmg }
+          - { name: linux-x64, runner: ubuntu-22.04, bundles: 'appimage,deb' }
+          - { name: linux-arm64, runner: ubuntu-22.04-arm, bundles: 'appimage,deb' }
     steps:
       - uses: actions/checkout@v4
-
       - uses: pnpm/action-setup@v4
         with:
           version: 11.21.0
-
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
-
       - uses: dtolnay/rust-toolchain@stable
-
-      - name: Check release version
-        shell: pwsh
-        run: |
-          $version = (Get-Content -LiteralPath 'apps/desktop/src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json).version
-          if ($env:GITHUB_REF_NAME -ne "v$version") { throw "Tag $env:GITHUB_REF_NAME must match the app version v$version." }
-
-      - name: Check release secrets
-        shell: pwsh
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+      - name: Linux dependencies
+        if: startsWith(matrix.name, 'linux-')
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libxdo-dev patchelf xdg-utils
+      - name: Verify version and signing key
+        shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) { throw 'Set the TAURI_SIGNING_PRIVATE_KEY Actions secret before creating a release.' }
-
-      - name: Install locked dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build shared contracts and Harness
-        run: pnpm build
-
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const version = require('./apps/desktop/src-tauri/tauri.conf.json').version;
+          if (version !== require('./package.json').version || version !== require('./apps/desktop/package.json').version) throw Error('Version mismatch');
+          if (process.env.GITHUB_REF_TYPE === 'tag' && process.env.GITHUB_REF_NAME !== 'v' + version) throw Error('Tag mismatch');
+          NODE
+          test -n "$TAURI_SIGNING_PRIVATE_KEY" || { echo 'Missing TAURI_SIGNING_PRIVATE_KEY'; exit 1; }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           projectPath: apps/desktop
           tauriScript: pnpm exec tauri
-          args: --bundles msi
+          args: --bundles ${{ matrix.bundles }}
           owner: MatiasDuport
           repo: OrderCode
-          releaseCommitish: main
-          tagName: ${{ github.ref_name }}
-          releaseName: OrderCode ${{ github.ref_name }}
-          releaseBody: Actualización oficial de OrderCode Desktop. Los instaladores se verifican con la firma de OrderCode.
-          releaseDraft: false
+          releaseCommitish: ${{ github.sha }}
+          tagName: v0.3.21
+          releaseName: OrderCode v0.3.21
+          releaseBody: OrderCode Desktop para Windows, macOS Apple Silicon/Intel y Linux x64/ARM64. macOS requiere firma y notarización de Apple para evitar las advertencias de Gatekeeper.
+          releaseDraft: true
           prerelease: false
           uploadUpdaterJson: true
           uploadUpdaterSignatures: true
+  publish:
+    needs: desktop
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Validate downloadables before publishing
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release view v0.3.21 --repo MatiasDuport/OrderCode --json assets --jq '.assets[].name' > assets.txt
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const items = fs.readFileSync('assets.txt','utf8').trim().split('\n');
+          for (const [suffix, minimum] of [['.msi',1],['.dmg',2],['.AppImage',2],['.deb',2],['.sig',5]]) {
+            if (items.filter(x => x.endsWith(suffix)).length < minimum) throw Error('Missing '+suffix+' assets');
+          }
+          NODE
+          gh release download v0.3.21 --repo MatiasDuport/OrderCode --pattern latest.json
+          node - <<'NODE'
+          const manifest = require('./latest.json');
+          for (const target of ['windows-x86_64','darwin-aarch64','darwin-x86_64','linux-x86_64','linux-aarch64']) {
+            if (!manifest.platforms?.[target]?.signature || !manifest.platforms[target].url) throw Error('Missing update signature: '+target);
+          }
+          NODE
+          gh release edit v0.3.21 --repo MatiasDuport/OrderCode --draft=false
