@@ -1,77 +1,59 @@
-<p align="center">
-  <img src="brand/LogoSinFondo.png" alt="OrderCode" width="112" />
-</p>
+# OrderCode
 
-<h1 align="center">OrderCode</h1>
-
-<p align="center">Un harness de escritorio para planificar, desarrollar y verificar software con agentes de IA.</p>
-
-<p align="center">
-  <a href="https://github.com/MatiasDuport/OrderCode/releases/latest">
-    <img src="https://img.shields.io/badge/Descargar-Windows%20x64-83aaff?style=for-the-badge&logo=windows&logoColor=white" alt="Descargar para Windows x64" />
-  </a>
-  <a href="https://github.com/MatiasDuport/OrderCode/releases/latest">
-    <img src="https://img.shields.io/github/v/release/MatiasDuport/OrderCode?display_name=tag&style=for-the-badge&label=LATEST" alt="Última versión" />
-  </a>
-  <a href="LICENSE">
-    <img src="https://img.shields.io/github/license/MatiasDuport/OrderCode?style=for-the-badge" alt="Licencia Apache-2.0" />
-  </a>
-</p>
-
-<p align="center"><strong>Plan</strong> antes de cambiar · <strong>Build</strong> para implementar · <strong>Auto</strong> para delegar el flujo</p>
-
----
-
-## Empieza en minutos
-
-1. [Descarga OrderCode para Windows x64](https://github.com/MatiasDuport/OrderCode/releases/latest).
-2. Abre el instalador `.msi` y sigue los pasos.
-3. Abre OrderCode y elige una carpeta de proyecto.
-4. Conecta un proveedor de modelos en **Ajustes → Modelos** o elige uno disponible.
-5. Escribe lo que quieres hacer y selecciona **Plan**, **Build** o **Auto**.
-
-> ¿Ya tienes OrderCode instalado? Busca e instala nuevas versiones en **Ajustes → Actualizaciones**.
-
-## Un espacio de trabajo para todo el cambio
-
-| Planifica | Implementa | Verifica |
-| --- | --- | --- |
-| Define el objetivo y revisa el plan antes de modificar el proyecto. | Trabaja con el proyecto, el terminal y las herramientas locales desde la conversación. | Inspecciona los cambios, consulta el grafo del código y visualiza páginas o gráficas. |
-
-- **Modelos a tu medida:** selector enfocado en modelos de programación, filtros por proveedor y niveles de razonamiento solo cuando el modelo los admite.
-- **Control explícito:** elige cómo trabaja OrderCode y qué permisos puede usar en tu proyecto.
-- **Continuidad local:** conserva conversaciones, eventos y preferencias en el dispositivo.
-- **Actualizaciones verificadas:** OrderCode comprueba la firma del instalador antes de instalar una actualización.
+OrderCode es una aplicación de escritorio para desarrollar software con agentes de IA mediante un harness propio. Ofrece modos **Plan**, **Build** y **Auto**, terminal integrada, editor, Git, selección de modelos y controles de permisos.
 
 ## Descargas
 
-La publicación más reciente contiene el instalador para Windows x64, su firma y los metadatos del actualizador.
+**[Ver los instaladores oficiales](https://github.com/MatiasDuport/OrderCode/releases/latest)**
 
-<p align="center">
-  <a href="https://github.com/MatiasDuport/OrderCode/releases/latest">
-    <img src="https://img.shields.io/badge/Ver%20descarga%20e%20instrucciones-83aaff?style=for-the-badge&logo=github&logoColor=white" alt="Abrir descargas de OrderCode" />
-  </a>
-</p>
+| Sistema | Arquitectura | Archivo |
+| --- | --- | --- |
+| Windows 11 | x64 | `.msi` |
+| macOS | Apple Silicon (M1+) | `.dmg` (arm64/aarch64) |
+| macOS | Intel | `.dmg` (x64/x86_64) |
+| Linux | x64 | `.AppImage` o `.deb` |
+| Linux | ARM64 | `.AppImage` o `.deb` |
 
-## Proyecto abierto
+En macOS, abre el DMG y arrastra OrderCode a Aplicaciones. La firma y notarización de Apple requieren credenciales de Apple Developer en GitHub Actions; si faltan, Gatekeeper puede mostrar una advertencia.
 
-OrderCode se distribuye bajo la licencia [Apache-2.0](LICENSE). El código fuente y las versiones publicadas están disponibles en este repositorio.
+En Linux, instala el `.deb` con el gestor de paquetes (Ubuntu/Debian), o ejecuta el AppImage:
 
-<details>
-  <summary>Compilar desde el código fuente</summary>
+```bash
+chmod +x OrderCode*.AppImage
+./OrderCode*.AppImage
+```
 
-  Requisitos: Node.js, pnpm y Rust estable.
+Linux requiere WebKitGTK 4.1 y otras librerías de escritorio. El `.deb` resuelve las dependencias mediante el gestor de paquetes. Para recibir actualizaciones integradas en Linux, utiliza **AppImage**; los usuarios de `.deb` deberán instalar una versión posterior manualmente.
 
-  ```powershell
-  pnpm install --frozen-lockfile
-  pnpm --filter @ordercode/desktop tauri:dev
-  ```
+## Primer uso
 
-  Para generar los paquetes de producción:
+1. Instala OrderCode para tu sistema y CPU.
+2. Abre una carpeta de proyecto.
+3. Conecta un proveedor en **Ajustes → Modelos**.
+4. Selecciona **Plan**, **Build** o **Auto** y describe tu objetivo.
 
-  ```powershell
-  pnpm build
-  ```
-</details>
+Las actualizaciones se comprueban en **Ajustes → Actualizaciones**. Los paquetes del actualizador se verifican mediante firma criptográfica antes de instalarse. Las firmas de actualización no sustituyen la firma y notarización de Apple.
 
-<p align="center"><sub>OrderCode · Apache-2.0 · Windows x64</sub></p>
+## Desarrollo
+
+Se requiere Node.js 24+, pnpm 11, Rust estable y, para Linux, las dependencias de desarrollo de Tauri 2. La compilación utiliza Node incluido en la aplicación instalada, por lo que no es necesario que los usuarios finales instalen Node globalmente.
+
+```bash
+pnpm install --frozen-lockfile
+pnpm build
+pnpm --filter @ordercode/desktop tauri:dev
+```
+
+Para producir paquetes locales ejecuta `pnpm exec tauri build --bundles dmg` en macOS, `--bundles appimage,deb` en Linux o `--bundles msi` en Windows desde `apps/desktop`.
+
+## Publicación
+
+El workflow `.github/workflows/release.yml` compila paquetes nativos para cinco objetivos: Windows x64, macOS ARM64, macOS Intel, Linux x64 y Linux ARM64. Solo publica el release cuando están presentes los paquetes, firmas y manifiesto de actualización por plataforma. Requiere el secret `TAURI_SIGNING_PRIVATE_KEY` (y `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` si corresponde). Para evitar advertencias de Gatekeeper, configura además los secrets de certificado/notarización Apple indicados en el workflow.
+
+Para una nueva versión actualiza coordinadamente los números de versión en el monorepo y publica el tag `vX.Y.Z`.
+
+## Documentación
+
+La especificación de producto está en `SDD.md`, la interfaz en `DESIGN.md` y las reglas de trabajo en `AGENTS.md`.
+
+Licencia [Apache-2.0](LICENSE).
