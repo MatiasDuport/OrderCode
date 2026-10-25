@@ -174,6 +174,8 @@ El [workflow de publicación](.github/workflows/release.yml) compila en paralelo
 
 Las compilaciones de macOS usan firma ad-hoc cuando no hay credenciales de Apple Developer; en ese caso no están notarizadas y pueden requerir autorización en **Privacidad y seguridad**.
 
+Si falla únicamente la publicación y los seis paquetes siguen en el borrador, el workflow permite reintentar con `publish_existing` y el `source_commit` completo de esos paquetes. Se repiten las comprobaciones de integridad y firma sin recompilar; no se aceptan paquetes de commits diferentes.
+
 Configura el secret `TAURI_SIGNING_PRIVATE_KEY` y, si corresponde, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Para la firma y notarización de Apple, configura también los secrets indicados en el workflow.
 
 Para una nueva versión, coordina los números de versión del monorepo y la configuración del workflow antes de publicar el tag `vX.Y.Z`.

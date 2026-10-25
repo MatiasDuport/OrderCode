@@ -4,6 +4,15 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      publish_existing:
+        description: Verify and publish existing draft bundles without rebuilding
+        type: boolean
+        default: false
+      source_commit:
+        description: Full source commit of existing bundles (required for publish_existing)
+        type: string
+        default: ''
 
 permissions:
   contents: write
@@ -18,8 +27,11 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
+      source_commit: ${{ steps.version.outputs.source_commit }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_commit || github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -28,13 +40,20 @@ jobs:
         id: version
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUBLISH_EXISTING: ${{ inputs.publish_existing }}
+          REQUESTED_COMMIT: ${{ inputs.source_commit }}
         shell: bash
         run: |
           set -euo pipefail
+          if test "$PUBLISH_EXISTING" = true; then
+            [[ "$REQUESTED_COMMIT" =~ ^[a-f0-9]{40}$ ]] || { echo 'Recovery requires the full source commit of the existing bundles.'; exit 1; }
+          fi
+          SOURCE_COMMIT=$(git rev-parse HEAD)
           VERSION=$(node .github/scripts/release.mjs version)
           TAG="v$VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "source_commit=$SOURCE_COMMIT" >> "$GITHUB_OUTPUT"
           cat > release-notes.md <<'NOTES'
           OrderCode Desktop para Windows x64 y ARM64, macOS Intel y Apple Silicon, y Linux x64 y ARM64.
 
@@ -45,13 +64,15 @@ jobs:
           NOTES
           if gh release view "$TAG" --json isDraft --jq .isDraft > draft-state.txt; then
             test "$(cat draft-state.txt)" = true || { echo 'This version is already published. Bump its version before releasing again.'; exit 1; }
-            gh release edit "$TAG" --draft --target "$GITHUB_SHA" --title "OrderCode $TAG" --notes-file release-notes.md
+            gh release edit "$TAG" --draft --target "$SOURCE_COMMIT" --title "OrderCode $TAG" --notes-file release-notes.md
           else
-            gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "OrderCode $TAG" --notes-file release-notes.md
+            test "$PUBLISH_EXISTING" != true || { echo 'Recovery requires an existing draft release.'; exit 1; }
+            gh release create "$TAG" --draft --target "$SOURCE_COMMIT" --title "OrderCode $TAG" --notes-file release-notes.md
           fi
 
   desktop:
     needs: prepare
+    if: ${{ !inputs.publish_existing }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -65,6 +86,8 @@ jobs:
           - { name: linux-arm64, runner: ubuntu-22.04-arm, architecture: arm64, target: aarch64-unknown-linux-gnu, bundles: 'appimage,deb' }
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.source_commit }}
       - uses: pnpm/action-setup@v4
         with:
           version: 11.21.0
@@ -121,31 +144,44 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.prepare.outputs.tag }}
+          SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
         run: |
           set -euo pipefail
-          node .github/scripts/release.mjs collect '${{ matrix.name }}' 'apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle' release-assets
+          GITHUB_SHA="$SOURCE_COMMIT" node .github/scripts/release.mjs collect '${{ matrix.name }}' 'apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle' release-assets
           gh release upload "$TAG" release-assets/* --clobber
 
   publish:
     needs: [prepare, desktop]
+    if: ${{ always() && needs.prepare.result == 'success' && (needs.desktop.result == 'success' || (inputs.publish_existing && needs.desktop.result == 'skipped')) }}
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.source_commit }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24
       - name: Install signature verifier
-        run: sudo apt-get update && sudo apt-get install -y minisign
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release download 0.12 --repo jedisct1/minisign --pattern minisign-0.12-linux.tar.gz
+          echo '9a599b48ba6eb7b1e80f12f36b94ceca7c00b7a5173c95c3efc88d9822957e73  minisign-0.12-linux.tar.gz' | sha256sum --check
+          tar -xzf minisign-0.12-linux.tar.gz minisign-linux/x86_64/minisign
+          chmod +x minisign-linux/x86_64/minisign
+          echo "$PWD/minisign-linux/x86_64" >> "$GITHUB_PATH"
       - name: Assemble, verify all signatures and publish
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.prepare.outputs.tag }}
+          SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
         run: |
           set -euo pipefail
           test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true
           gh release download "$TAG" --dir downloaded
-          node .github/scripts/release.mjs assemble downloaded verified
+          GITHUB_SHA="$SOURCE_COMMIT" node .github/scripts/release.mjs assemble downloaded verified
           node --input-type=module <<'NODE'
           import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
           import { execFileSync } from 'node:child_process';
