@@ -107,6 +107,7 @@ Elige el formato y la arquitectura de tu equipo. En Releases encontrarás los pa
 | Sistema | Tu equipo | Paquete |
 | :--- | :--- | :--- |
 | **Windows 11** | x64 | Instalador `.msi` |
+| **Windows 11** | ARM64 · Snapdragon | Instalador `.exe` · aplicación nativa ARM64 |
 | **macOS** | Apple Silicon · M1 o posterior | Imagen `.dmg` · ARM64 |
 | **macOS** | Intel | Imagen `.dmg` · x64 |
 | **Linux** | x64 o ARM64 | `.AppImage` o `.deb` |
@@ -158,6 +159,7 @@ Para producir un paquete local, ejecuta el comando de tu sistema desde `apps/des
 | Sistema | Comando |
 | :--- | :--- |
 | Windows | `pnpm exec tauri build --bundles msi` |
+| Windows ARM64 | `pnpm exec tauri build --target aarch64-pc-windows-msvc --bundles nsis` |
 | macOS | `pnpm exec tauri build --bundles dmg` |
 | Linux | `pnpm exec tauri build --bundles appimage,deb` |
 
@@ -168,7 +170,9 @@ La aplicación instalada incluye su runtime de Node.js. Los usuarios finales no 
 <details>
 <summary><strong>Publicación y actualizaciones firmadas</strong></summary>
 
-El [workflow de publicación](.github/workflows/release.yml) compila para Windows x64, macOS Apple Silicon, macOS Intel, Linux x64 y Linux ARM64. El release se publica cuando están presentes los paquetes y las firmas requeridas, junto con el manifiesto de actualización de cada plataforma.
+El [workflow de publicación](.github/workflows/release.yml) compila en paralelo para Windows x64 y ARM64, macOS Apple Silicon e Intel, y Linux x64 y ARM64, utilizando equipos de la arquitectura correspondiente. Se inicia manualmente o al subir una etiqueta `v<versión>`. La versión permanece como borrador hasta reunir los seis destinos, comprobar que proceden del mismo commit y verificar las firmas de sus actualizadores. Después se publica un único manifiesto de actualización.
+
+Las compilaciones de macOS usan firma ad-hoc cuando no hay credenciales de Apple Developer; en ese caso no están notarizadas y pueden requerir autorización en **Privacidad y seguridad**.
 
 Configura el secret `TAURI_SIGNING_PRIVATE_KEY` y, si corresponde, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Para la firma y notarización de Apple, configura también los secrets indicados en el workflow.
 

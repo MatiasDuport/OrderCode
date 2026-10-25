@@ -2,7 +2,6 @@ name: OrderCode desktop release
 
 on:
   push:
-    branches: [main]
     tags: ['v*']
   workflow_dispatch:
 
@@ -10,22 +9,60 @@ permissions:
   contents: write
 
 concurrency:
-  group: ordercode-release-${{ github.ref }}
+  group: ordercode-desktop-release
   cancel-in-progress: false
 
 jobs:
+  prepare:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: node --test .github/scripts/release.test.mjs
+      - name: Prepare draft for this source commit
+        id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(node .github/scripts/release.mjs version)
+          TAG="v$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          cat > release-notes.md <<'NOTES'
+          OrderCode Desktop para Windows x64 y ARM64, macOS Intel y Apple Silicon, y Linux x64 y ARM64.
+
+          - Windows x64: instalador MSI. Windows ARM64: instalador EXE, aplicación nativa ARM64.
+          - macOS: DMG para Intel y Apple Silicon. Sin credenciales de Apple Developer se utiliza firma ad-hoc, sin notarización; macOS puede solicitar autorización en Privacidad y seguridad.
+          - Linux: AppImage con actualización integrada o paquete DEB.
+          - Los paquetes del actualizador se verifican con la firma de OrderCode.
+          NOTES
+          if gh release view "$TAG" --json isDraft --jq .isDraft > draft-state.txt; then
+            test "$(cat draft-state.txt)" = true || { echo 'This version is already published. Bump its version before releasing again.'; exit 1; }
+            gh release edit "$TAG" --draft --target "$GITHUB_SHA" --title "OrderCode $TAG" --notes-file release-notes.md
+          else
+            gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "OrderCode $TAG" --notes-file release-notes.md
+          fi
+
   desktop:
+    needs: prepare
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
-      max-parallel: 1
       matrix:
         include:
-          - { name: windows-x64, runner: windows-latest, bundles: msi }
-          - { name: macos-arm64, runner: macos-15, bundles: dmg }
-          - { name: macos-x64, runner: macos-15-intel, bundles: dmg }
-          - { name: linux-x64, runner: ubuntu-22.04, bundles: 'appimage,deb' }
-          - { name: linux-arm64, runner: ubuntu-22.04-arm, bundles: 'appimage,deb' }
+          - { name: windows-x64, runner: windows-latest, architecture: x64, target: x86_64-pc-windows-msvc, bundles: msi }
+          - { name: windows-arm64, runner: windows-11-arm, architecture: arm64, target: aarch64-pc-windows-msvc, bundles: nsis }
+          - { name: macos-arm64, runner: macos-15, architecture: arm64, target: aarch64-apple-darwin, bundles: dmg }
+          - { name: macos-x64, runner: macos-15-intel, architecture: x64, target: x86_64-apple-darwin, bundles: dmg }
+          - { name: linux-x64, runner: ubuntu-22.04, architecture: x64, target: x86_64-unknown-linux-gnu, bundles: 'appimage,deb' }
+          - { name: linux-arm64, runner: ubuntu-22.04-arm, architecture: arm64, target: aarch64-unknown-linux-gnu, bundles: 'appimage,deb' }
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -34,77 +71,101 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          architecture: ${{ matrix.architecture }}
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: apps/desktop/src-tauri
+          key: ${{ matrix.name }}
       - name: Linux dependencies
         if: startsWith(matrix.name, 'linux-')
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libxdo-dev patchelf xdg-utils
-      - name: Verify version and signing key
+      - name: Verify architecture and signing key
         shell: bash
         env:
+          EXPECTED_ARCH: ${{ matrix.architecture }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
-          node - <<'NODE'
-          const fs = require('node:fs');
-          const version = require('./apps/desktop/src-tauri/tauri.conf.json').version;
-          if (version !== require('./package.json').version || version !== require('./apps/desktop/package.json').version) throw Error('Version mismatch');
-          if (process.env.GITHUB_REF_TYPE === 'tag' && process.env.GITHUB_REF_NAME !== 'v' + version) throw Error('Tag mismatch');
-          NODE
+          set -euo pipefail
+          node -e 'if (process.arch !== process.env.EXPECTED_ARCH) throw Error("Node architecture does not match the native package")'
+          node .github/scripts/release.mjs version
           test -n "$TAURI_SIGNING_PRIVATE_KEY" || { echo 'Missing TAURI_SIGNING_PRIVATE_KEY'; exit 1; }
+      - name: Configure optional Apple signing
+        if: startsWith(matrix.name, 'macos-')
+        env:
+          OPTIONAL_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          OPTIONAL_APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          OPTIONAL_APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          OPTIONAL_APPLE_ID: ${{ secrets.APPLE_ID }}
+          OPTIONAL_APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          OPTIONAL_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: node .github/scripts/release.mjs apple-signing
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      - uses: tauri-apps/tauri-action@v1
+      - name: Build native installer and signed updater
+        uses: tauri-apps/tauri-action@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           projectPath: apps/desktop
           tauriScript: pnpm exec tauri
-          args: --bundles ${{ matrix.bundles }}
-          owner: MatiasDuport
-          repo: OrderCode
-          releaseCommitish: ${{ github.sha }}
-          tagName: v0.3.21
-          releaseName: OrderCode v0.3.21
-          releaseBody: OrderCode Desktop para Windows, macOS Apple Silicon/Intel y Linux x64/ARM64. macOS requiere firma y notarización de Apple para evitar las advertencias de Gatekeeper.
-          releaseDraft: true
-          prerelease: false
-          uploadUpdaterJson: true
-          uploadUpdaterSignatures: true
-  publish:
-    needs: desktop
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Validate downloadables before publishing
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+      - name: Upload this platform to the draft
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
-          gh release view v0.3.21 --repo MatiasDuport/OrderCode --json assets --jq '.assets[].name' > assets.txt
-          node - <<'NODE'
-          const fs = require('node:fs');
-          const items = fs.readFileSync('assets.txt','utf8').trim().split('\n');
-          for (const [suffix, minimum] of [['.msi',1],['.dmg',2],['.AppImage',2],['.deb',2],['.sig',5]]) {
-            if (items.filter(x => x.endsWith(suffix)).length < minimum) throw Error('Missing '+suffix+' assets');
+          node .github/scripts/release.mjs collect '${{ matrix.name }}' 'apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle' release-assets
+          gh release upload "$TAG" release-assets/* --clobber
+
+  publish:
+    needs: [prepare, desktop]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install signature verifier
+        run: sudo apt-get update && sudo apt-get install -y minisign
+      - name: Assemble, verify all signatures and publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true
+          gh release download "$TAG" --dir downloaded
+          node .github/scripts/release.mjs assemble downloaded verified
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
+          import { execFileSync } from 'node:child_process';
+          import { join, basename } from 'node:path';
+          const config = JSON.parse(readFileSync('apps/desktop/src-tauri/tauri.conf.json','utf8'));
+          const manifest = JSON.parse(readFileSync('verified/latest.json','utf8'));
+          writeFileSync('update-key.pub', Buffer.from(config.plugins.updater.pubkey,'base64'));
+          for (const entry of Object.values(manifest.platforms)) {
+            const name = decodeURIComponent(basename(new URL(entry.url).pathname));
+            writeFileSync('update.sig', Buffer.from(entry.signature,'base64'));
+            execFileSync('minisign',['-Vm',join('verified',name),'-p','update-key.pub','-x','update.sig'],{stdio:'inherit'});
+          }
+          // Remove only stale detached signatures for installers replaced by this build.
+          for (const name of readdirSync('downloaded')) {
+            if (name.endsWith('.sig') && existsSync(join('verified',name.slice(0,-4))) && !existsSync(join('verified',name))) {
+              execFileSync('gh',['release','delete-asset',process.env.TAG,name,'--yes'],{stdio:'inherit'});
+            }
           }
           NODE
-          gh release download v0.3.21 --repo MatiasDuport/OrderCode --pattern latest.json
-          node - <<'NODE'
-          const manifest = require('./latest.json');
-          for (const target of ['windows-x86_64','darwin-aarch64','darwin-x86_64','linux-x86_64','linux-aarch64']) {
-            if (!manifest.platforms?.[target]?.signature || !manifest.platforms[target].url) throw Error('Missing update signature: '+target);
-          }
-          NODE
-          gh release edit v0.3.21 --repo MatiasDuport/OrderCode --draft=false
+          gh release upload "$TAG" verified/* --clobber
+          for platform in windows-x64 windows-arm64 macos-arm64 macos-x64 linux-x64 linux-arm64; do
+            gh release delete-asset "$TAG" "$platform.bundle.json" --yes
+          done
+          gh release edit "$TAG" --draft=false --latest
