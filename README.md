@@ -160,7 +160,7 @@ Para producir un paquete local, ejecuta el comando de tu sistema desde `apps/des
 | :--- | :--- |
 | Windows | `pnpm exec tauri build --bundles msi` |
 | Windows ARM64 | `pnpm exec tauri build --target aarch64-pc-windows-msvc --bundles nsis` |
-| macOS | `pnpm exec tauri build --bundles dmg` |
+| macOS | `pnpm exec tauri build --bundles app,dmg` |
 | Linux | `pnpm exec tauri build --bundles appimage,deb` |
 
 La aplicación instalada incluye su runtime de Node.js. Los usuarios finales no necesitan instalar Node globalmente.
