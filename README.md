@@ -1,13 +1,13 @@
 <p align="center">
   <picture>
     <source media="(max-width: 600px)" srcset="brand/readme-hero-compact.svg" />
-    <img src="brand/readme-hero.svg" width="1200" alt="OrderCode. Tu idea, lista para tomar forma. Un espacio de escritorio para desarrollar software con agentes de IA." />
+    <img src="brand/readme-hero.svg" width="1200" alt="OrderCode. Tu idea, lista para tomar forma. Motor propio de agentes de IA optimizado para velocidad y ahorro de tokens." />
   </picture>
 </p>
 
 <p align="center">
   Abre tu proyecto, describe lo que quieres crear y sigue cada cambio.<br />
-  <strong>Agentes, modelos y herramientas en un mismo lugar.</strong>
+  <strong>Diseñado para avanzar más rápido y aprovechar mejor cada token.</strong>
 </p>
 
 <p align="center">
@@ -17,6 +17,7 @@
 <p align="center">
   <a href="#empieza-en-tres-pasos">Primeros pasos</a> &nbsp;·&nbsp;
   <a href="#un-espacio-para-todo-el-proyecto">Qué puedes hacer</a> &nbsp;·&nbsp;
+  <a href="#velocidad-y-ahorro-desde-el-motor">Velocidad y ahorro</a> &nbsp;·&nbsp;
   <a href="#descargas">Plataformas</a> &nbsp;·&nbsp;
   <a href="#desarrollo">Desarrollo</a>
 </p>
@@ -27,6 +28,16 @@
 </p>
 
 <br />
+
+## Velocidad y ahorro desde el motor
+
+El motor propio de OrderCode busca reducir tanto el tiempo de trabajo como el contexto que consume cada tarea.
+
+| Menos espera | Menos tokens |
+| :--- | :--- |
+| **Índices incrementales y caché.** Reutiliza archivos ya analizados y resultados vigentes para evitar trabajo repetido. | **Contexto selectivo y compactación.** Prioriza información relevante y acota resultados extensos antes de enviarlos al modelo. |
+
+El impacto depende de la tarea, el proyecto, el modelo y el proveedor. Estas optimizaciones actúan sobre el trabajo del motor y el contexto; la velocidad de respuesta del modelo depende también del servicio conectado.
 
 ## Empieza en tres pasos
 
