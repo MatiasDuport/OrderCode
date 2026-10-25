@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(max-width: 600px)" srcset="brand/readme-hero-compact.svg" />
-    <img src="brand/readme-hero.svg" width="1200" alt="OrderCode. Tu idea, lista para tomar forma. Motor propio de agentes de IA optimizado para velocidad y ahorro de tokens." />
+    <source media="(max-width: 600px)" srcset="brand/readme-hero-compact.svg?v=2" />
+    <img src="brand/readme-hero.svg?v=2" width="1200" alt="OrderCode. Tu idea, lista para tomar forma. Motor propio de agentes de IA optimizado para velocidad y ahorro de tokens." />
   </picture>
 </p>
 
