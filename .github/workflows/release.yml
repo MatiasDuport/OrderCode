@@ -64,7 +64,13 @@ jobs:
           NOTES
           if gh release view "$TAG" --json isDraft --jq .isDraft > draft-state.txt; then
             test "$(cat draft-state.txt)" = true || { echo 'This version is already published. Bump its version before releasing again.'; exit 1; }
-            gh release edit "$TAG" --draft --target "$SOURCE_COMMIT" --title "OrderCode $TAG" --notes-file release-notes.md
+            if test "$PUBLISH_EXISTING" = true; then
+              test "$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish)" = "$SOURCE_COMMIT" || { echo 'Draft target differs from the bundle source commit.'; exit 1; }
+              git fetch --depth=1 origin "refs/tags/$TAG:refs/tags/$TAG"
+              test "$(git rev-parse "$TAG^{commit}")" = "$SOURCE_COMMIT" || { echo 'Recovery requires the version tag to point at the bundle source commit.'; exit 1; }
+            else
+              gh release edit "$TAG" --draft --target "$SOURCE_COMMIT" --title "OrderCode $TAG" --notes-file release-notes.md
+            fi
           else
             test "$PUBLISH_EXISTING" != true || { echo 'Recovery requires an existing draft release.'; exit 1; }
             gh release create "$TAG" --draft --target "$SOURCE_COMMIT" --title "OrderCode $TAG" --notes-file release-notes.md
